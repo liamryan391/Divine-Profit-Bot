@@ -312,6 +312,7 @@ h2 {
 .terminal-log,
 .roi-list,
 .recommendation-list,
+.external-list,
 .import-result,
 .upgrade-grid {
   display: grid;
@@ -341,6 +342,45 @@ h2 {
   border-radius: 8px;
   background: var(--surface-3);
   border-left: 3px solid var(--blue);
+}
+
+.external-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border-left: 3px solid var(--blue);
+}
+
+.external-row div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.external-row span,
+.external-row small {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.external-row small {
+  grid-column: 1 / -1;
+}
+
+.external-connected {
+  border-left-color: var(--green);
+}
+
+.external-ready,
+.external-disabled {
+  border-left-color: var(--gold);
+}
+
+.external-error {
+  border-left-color: var(--red);
 }
 
 .roi-row.recommendation-push {

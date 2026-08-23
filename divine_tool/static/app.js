@@ -2,6 +2,7 @@ const state = {
   latest: null,
   report: null,
   importResult: null,
+  external: null,
   toastTimer: null,
 };
 
@@ -38,7 +39,7 @@ function render(payload) {
   $("#modulesValue").textContent = payload.config.channels.length;
   $("#modulesDetail").textContent = `${runningStrategyCount(payload)} active strategy signals`;
   $("#templeLevel").textContent = payload.version;
-  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v1.2 after scoring data";
+  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v1.6 for action approvals";
   $("#progressFill").style.width = `${Math.min(status.progress_pct, 100)}%`;
   $("#timeRemaining").textContent = `Time remaining: ${status.days_left} day${status.days_left === 1 ? "" : "s"}`;
   $("#judgementBadge").textContent = titleCase(status.judgement);
@@ -284,6 +285,40 @@ function renderReport(report) {
   $("#reportPreview").textContent = report.markdown;
 }
 
+function renderExternal(snapshot) {
+  state.external = snapshot;
+  const list = $("#externalList");
+  const meta = $("#externalMeta");
+  list.replaceChildren();
+  if (!snapshot) {
+    meta.textContent = "not synced";
+    list.appendChild(emptyRow("Refresh to check live external signals."));
+    return;
+  }
+
+  meta.textContent = `${snapshot.connected_count} connected`;
+  for (const connection of snapshot.connections || []) {
+    const row = document.createElement("div");
+    row.className = `external-row external-${connection.state}`;
+    row.innerHTML = `
+      <div>
+        <strong></strong>
+        <span></span>
+      </div>
+      <b class="tag"></b>
+      <small></small>
+    `;
+    row.querySelector("strong").textContent = connection.name;
+    row.querySelector("span").textContent = connection.summary;
+    row.querySelector(".tag").textContent = connection.state;
+    const detail = connection.items && connection.items.length
+      ? connection.items.slice(0, 4).map(externalItemText).join(" - ")
+      : connection.next_action || "No live values returned.";
+    row.querySelector("small").textContent = detail;
+    list.appendChild(row);
+  }
+}
+
 function hydrateMoodControls(config) {
   const moodNames = Object.keys(config.moods || {});
   for (const select of [$("#activeMood"), $("#quotaMood")]) {
@@ -463,6 +498,24 @@ function attachImportControls() {
   });
 }
 
+function attachExternalControls() {
+  $("#externalButton").addEventListener("click", refreshExternalConnections);
+}
+
+async function refreshExternalConnections() {
+  const button = $("#externalButton");
+  button.disabled = true;
+  try {
+    const payload = await request("/api/external");
+    renderExternal(payload.external);
+    showToast("External signals refreshed");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderImportResult(result) {
   state.importResult = result;
   const target = $("#importResult");
@@ -520,6 +573,13 @@ function titleCase(value) {
     .join(" ");
 }
 
+function externalItemText(item) {
+  if (item.one_unit) return `${item.currency}: ${item.one_unit}`;
+  if (item.net) return `${item.currency}: ${item.net} net (${item.transaction_count})`;
+  if (item.label) return `${item.label}: ${item.value}`;
+  return JSON.stringify(item);
+}
+
 function slugify(value) {
   return String(value)
     .toLowerCase()
@@ -534,5 +594,7 @@ attachForm("#exceptionForm", "/api/exception", "Exception added");
 attachPulse();
 attachReportControls();
 attachImportControls();
+attachExternalControls();
 refresh();
+refreshExternalConnections();
 setInterval(refresh, 10000);

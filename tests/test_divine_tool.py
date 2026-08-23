@@ -13,6 +13,7 @@ from divine_tool.core import (
     DivineToolError,
     add_income,
     enqueue_command,
+    external_connections_snapshot,
     generate_opportunities,
     generate_report,
     import_income_csv,
@@ -20,6 +21,7 @@ from divine_tool.core import (
     load_config,
     parse_money_to_minor,
     process_command_inbox,
+    save_config,
     set_mood,
     set_quota,
     status_report,
@@ -86,6 +88,10 @@ class DivineToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             set_quota(data_dir, "watchful", parse_money_to_minor("1000"), "week")
+            config = load_config(data_dir)
+            config["integrations"]["currency_rates"]["enabled"] = False
+            config["integrations"]["github"]["enabled"] = False
+            save_config(data_dir, config)
             server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -135,6 +141,12 @@ class DivineToolTests(unittest.TestCase):
                 self.assertTrue(import_payload["ok"])
                 self.assertEqual(import_payload["import_result"]["imported_count"], 1)
                 self.assertEqual(import_payload["state"]["status"]["earned_minor"], 4500)
+
+                with urlopen(f"{base_url}/api/external") as response:
+                    external_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertIn("external", external_payload)
+                self.assertEqual(external_payload["external"]["disabled_count"], 3)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -310,6 +322,70 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(rows[0]["currency"], "USD")
             self.assertEqual(rows[0]["strategy"], "affiliate_referral")
             self.assertEqual(result["rows"][1]["reason"], "Non-GBP row needs a GBP equivalent column.")
+
+    def test_external_connections_snapshot_uses_read_only_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            def fake_fetch(url: str, _headers: dict[str, str] | None = None):
+                if "frankfurter" in url:
+                    return [
+                        {"date": "2026-08-21", "base": "GBP", "quote": "USD", "rate": 1.25},
+                        {"date": "2026-08-21", "base": "GBP", "quote": "EUR", "rate": 1.10},
+                    ]
+                if url.endswith("/repos/liamryan391/Divine-Profit-Bot"):
+                    return {"stargazers_count": 7, "updated_at": "2026-08-22T12:00:00Z"}
+                if "/commits?" in url:
+                    return [{"sha": "a"}, {"sha": "b"}]
+                if "/issues?" in url:
+                    return [{"number": 1}, {"number": 2, "pull_request": {}}]
+                if "/pulls?" in url:
+                    return [{"number": 2}]
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            snapshot = external_connections_snapshot(data_dir, today=date(2026, 8, 23), fetch_json=fake_fetch)
+            connections = {item["id"]: item for item in snapshot["connections"]}
+
+            self.assertEqual(snapshot["connected_count"], 2)
+            self.assertEqual(connections["currency_rates"]["state"], "connected")
+            self.assertEqual(connections["currency_rates"]["items"][0]["currency"], "USD")
+            self.assertEqual(connections["currency_rates"]["items"][0]["one_unit"], "£0.80")
+            self.assertEqual(connections["github"]["items"][0]["value"], "2")
+            self.assertEqual(connections["github"]["items"][1]["value"], "1")
+            self.assertEqual(connections["github"]["items"][2]["value"], "1")
+            self.assertEqual(connections["payments"]["state"], "ready")
+            self.assertEqual(connections["product_analytics"]["state"], "disabled")
+
+    def test_external_payment_snapshot_uses_env_key_without_storing_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            config = load_config(data_dir)
+            config["integrations"]["currency_rates"]["enabled"] = False
+            config["integrations"]["github"]["enabled"] = False
+            config["integrations"]["payments"]["enabled"] = True
+            save_config(data_dir, config)
+
+            def fake_fetch(url: str, headers: dict[str, str] | None = None):
+                self.assertIn("stripe.com/v1/balance_transactions", url)
+                self.assertIn("Authorization", headers or {})
+                self.assertNotIn("sk_test", url)
+                return {
+                    "data": [
+                        {"currency": "gbp", "net": 1500},
+                        {"currency": "gbp", "net": -125},
+                    ]
+                }
+
+            snapshot = external_connections_snapshot(
+                data_dir,
+                fetch_json=fake_fetch,
+                environ={"DIVINE_STRIPE_SECRET_KEY": "sk_test_readonly"},
+            )
+            payments = {item["id"]: item for item in snapshot["connections"]}["payments"]
+
+            self.assertEqual(payments["state"], "connected")
+            self.assertEqual(payments["items"][0]["net"], "£13.75")
+            self.assertEqual(payments["items"][0]["transaction_count"], "2")
 
 
 if __name__ == "__main__":

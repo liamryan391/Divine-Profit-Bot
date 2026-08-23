@@ -14,6 +14,7 @@ from .core import (
     default_data_dir,
     enqueue_command,
     ensure_state,
+    external_connections_snapshot,
     format_money,
     generate_opportunities,
     generate_report,
@@ -120,6 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     importer.add_argument("--strategy", default="", help="Default strategy id when the CSV has no strategy column.")
     importer.add_argument("--dry-run", action="store_true", help="Parse and detect duplicates without writing income.")
     importer.set_defaults(func=cmd_import)
+
+    external = sub.add_parser("external", help="Show read-only external connection signals.")
+    external.add_argument("--format", choices=["text", "json"], default="text")
+    external.set_defaults(func=cmd_external)
 
     upgrade = sub.add_parser("upgrade", help="Show upgrade recommendations.")
     upgrade.set_defaults(func=cmd_upgrade)
@@ -307,6 +312,32 @@ def cmd_import(args: argparse.Namespace, data_dir: Path) -> int:
             detail = row.get("reason") or f"existing income #{row.get('existing_id')}"
             print(f"- row {row.get('row_number', '?')}: {row['status']} - {detail}")
     return 0
+
+
+def cmd_external(args: argparse.Namespace, data_dir: Path) -> int:
+    snapshot = external_connections_snapshot(data_dir)
+    if args.format == "json":
+        print(json.dumps(snapshot, indent=2, sort_keys=True))
+        return 0
+
+    print("External connections:")
+    for connection in snapshot["connections"]:
+        print(f"- {connection['name']}: {connection['state']} - {connection['summary']}")
+        for item in connection.get("items", [])[:4]:
+            print(f"  - {format_external_item(item)}")
+        if connection.get("next_action"):
+            print(f"  next: {connection['next_action']}")
+    return 0
+
+
+def format_external_item(item: dict[str, object]) -> str:
+    if "one_unit" in item:
+        return f"{item['currency']} = {item['one_unit']}"
+    if "net" in item:
+        return f"{item['currency']} net {item['net']} across {item.get('transaction_count', '0')} transaction(s)"
+    if "label" in item:
+        return f"{item['label']}: {item['value']}"
+    return json.dumps(item, sort_keys=True)
 
 
 def cmd_upgrade(_args: argparse.Namespace, data_dir: Path) -> int:

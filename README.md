@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v1.4.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v1.5.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -29,6 +29,7 @@ python -m divine_tool opportunities
 python -m divine_tool roi
 python -m divine_tool report --period week
 python -m divine_tool import .\income-export.csv --type payment --dry-run
+python -m divine_tool external
 python -m divine_tool upgrade
 ```
 
@@ -108,6 +109,7 @@ The local web app provides:
 - Strategy ROI comparing current period, previous period, average conversion size, return per effort, and pause/push recommendations.
 - Weekly and monthly report generation with quota results, missed-quota review, ROI summary, priority opportunities, upgrades, and income entries.
 - Manual CSV imports for generic income, payment exports, and affiliate reports, with dry-run review and duplicate detection.
+- Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
 
 Run it with:
 
@@ -148,6 +150,24 @@ python -m divine_tool import .\affiliate-report.csv --type affiliate
 Supported import types are `generic`, `payment`, and `affiliate`. The importer accepts common column names such as `date`, `paid_at`, `amount`, `net_amount`, `commission`, `currency`, `gbp_equivalent`, `source`, `description`, `program`, `strategy`, `channel`, `transaction_id`, `reference`, and `sale_id`.
 
 Dry runs show rows that are ready, duplicate, or skipped without writing to the ledger. Non-GBP rows need a GBP equivalent column so quota accounting stays explicit.
+
+## External Connections
+
+Refresh read-only external signals from the CLI:
+
+```powershell
+python -m divine_tool external
+python -m divine_tool external --format json
+```
+
+The dashboard also has an External Signals panel with a manual refresh button. The current connector set includes:
+
+- Currency rates through Frankfurter, using public no-key GBP fiat rates.
+- GitHub telemetry for `liamryan391/Divine-Profit-Bot`, including recent commits, open issues, open PRs, and stars.
+- Payment summaries through either a local summary file or Stripe balance transactions when explicitly enabled.
+- Product analytics summaries from a local JSON export when configured.
+
+Payment connectors do not store secrets in the project. To try Stripe later, set `integrations.payments.enabled` to `true` in `.divine_tool/config.json` and provide a restricted key through the `DIVINE_STRIPE_SECRET_KEY` environment variable.
 
 ## Strategy ROI
 

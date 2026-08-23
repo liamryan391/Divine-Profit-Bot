@@ -15,6 +15,7 @@ from .core import (
     add_income,
     enqueue_command,
     ensure_state,
+    external_connections_snapshot,
     format_money,
     generate_opportunities,
     generate_report,
@@ -84,6 +85,9 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     query = parse_qs(parsed.query)
                     period = query.get("period", ["week"])[0]
                     self.send_json({"report": generate_report(data_dir, period_name=period)})
+                    return
+                if parsed.path == "/api/external":
+                    self.send_json({"external": external_connections_snapshot(data_dir)})
                     return
                 self.serve_static(parsed.path)
             except DivineToolError as exc:

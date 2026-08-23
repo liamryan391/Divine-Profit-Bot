@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import sqlite3
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -73,6 +77,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "automation": {
         "check_interval_seconds": 300,
         "command_file": "commands.jsonl",
+    },
+    "integrations": {
+        "currency_rates": {
+            "enabled": True,
+            "provider": "frankfurter",
+            "base_url": "https://api.frankfurter.dev/v2",
+            "base_currency": "GBP",
+            "targets": ["USD", "EUR"],
+        },
+        "github": {
+            "enabled": True,
+            "repository": "liamryan391/Divine-Profit-Bot",
+            "lookback_days": 7,
+        },
+        "payments": {
+            "enabled": False,
+            "provider": "stripe",
+            "env_var": "DIVINE_STRIPE_SECRET_KEY",
+            "limit": 10,
+            "summary_file": "",
+        },
+        "product_analytics": {
+            "enabled": False,
+            "summary_file": "",
+        },
     },
     "ethical_rules": [
         "No theft, fraud, scams, spam, market manipulation, unauthorized access, coercion, or evasion.",
@@ -240,6 +269,22 @@ def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
                 changed = True
         channels.append(current)
     migrated["channels"] = channels
+
+    default_integrations = DEFAULT_CONFIG.get("integrations", {})
+    current_integrations = dict(migrated.get("integrations", {}))
+    for name, defaults in default_integrations.items():
+        if name not in current_integrations:
+            current_integrations[name] = defaults
+            changed = True
+            continue
+        if isinstance(defaults, dict):
+            current = dict(current_integrations.get(name, {}))
+            for key, value in defaults.items():
+                if key not in current:
+                    current[key] = value
+                    changed = True
+            current_integrations[name] = current
+    migrated["integrations"] = current_integrations
 
     return migrated, changed
 
@@ -704,6 +749,355 @@ def existing_import_id(data_dir: Path, fingerprint: str) -> int | None:
             (fingerprint,),
         ).fetchone()
     return int(row["id"]) if row else None
+
+
+FetchJson = Callable[[str, dict[str, str] | None], Any]
+
+
+def fetch_external_json(url: str, headers: dict[str, str] | None = None) -> Any:
+    request = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(request, timeout=6) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def external_connections_snapshot(
+    data_dir: Path,
+    today: date | None = None,
+    fetch_json: FetchJson | None = None,
+    environ: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    integrations = config.get("integrations", {})
+    fetcher = fetch_json or fetch_external_json
+    env = environ if environ is not None else os.environ
+    today = today or date.today()
+    builders = [
+        ("currency_rates", "Currency Rates", currency_rates_snapshot),
+        ("github", "GitHub Telemetry", github_snapshot),
+        ("payments", "Payment Summaries", payment_snapshot),
+        ("product_analytics", "Product Analytics", product_analytics_snapshot),
+    ]
+    connections = []
+
+    for key, display_name, builder in builders:
+        settings = dict(integrations.get(key, {}))
+        try:
+            connections.append(builder(data_dir, settings, today, fetcher, env))
+        except Exception as exc:
+            connections.append(
+                {
+                    "id": key,
+                    "name": display_name,
+                    "state": "error",
+                    "summary": str(exc),
+                    "items": [],
+                    "next_action": "Check the connector settings and try again.",
+                }
+            )
+
+    return {
+        "generated_at": now_iso(),
+        "connected_count": sum(1 for item in connections if item["state"] == "connected"),
+        "ready_count": sum(1 for item in connections if item["state"] == "ready"),
+        "disabled_count": sum(1 for item in connections if item["state"] == "disabled"),
+        "error_count": sum(1 for item in connections if item["state"] == "error"),
+        "connections": connections,
+    }
+
+
+def currency_rates_snapshot(
+    _data_dir: Path,
+    settings: dict[str, Any],
+    _today: date,
+    fetch_json: FetchJson,
+    _environ: dict[str, str],
+) -> dict[str, Any]:
+    if not settings.get("enabled", False):
+        return disabled_connection(
+            "currency_rates",
+            "Currency Rates",
+            "Currency-rate lookup is disabled.",
+            "Enable currency_rates in config when live rates are useful.",
+        )
+
+    provider = str(settings.get("provider", "frankfurter"))
+    base_currency = str(settings.get("base_currency", "GBP")).upper()
+    if base_currency != "GBP":
+        raise DivineToolError("Currency-rate integration currently expects GBP as the base currency.")
+    targets = [str(item).upper() for item in settings.get("targets", []) if str(item).strip()]
+    if not targets:
+        return ready_connection(
+            "currency_rates",
+            "Currency Rates",
+            "No target currencies are configured.",
+            "Add fiat target currencies to integrations.currency_rates.targets.",
+        )
+
+    base_url = str(settings.get("base_url", "https://api.frankfurter.dev/v2")).rstrip("/")
+    query = urllib.parse.urlencode({"base": base_currency, "quotes": ",".join(targets)})
+    url = f"{base_url}/rates?{query}"
+    payload = fetch_json(url, {"User-Agent": "Divine-Tool/1.5"})
+    if isinstance(payload, list):
+        rates = {str(row.get("quote", "")).upper(): row.get("rate") for row in payload if isinstance(row, dict)}
+        updated_at = str(payload[0].get("date", "")) if payload and isinstance(payload[0], dict) else ""
+    else:
+        rates = payload.get("rates", {})
+        updated_at = str(payload.get("date", ""))
+    items = []
+    for currency in targets:
+        if currency not in rates:
+            continue
+        quoted = Decimal(str(rates[currency]))
+        if quoted <= 0:
+            continue
+        rate_to_gbp = Decimal("1") / quoted
+        one_unit_minor = int((rate_to_gbp * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        items.append(
+            {
+                "currency": currency,
+                "base_rate": str(quoted),
+                "rate_to_gbp": str(rate_to_gbp.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)),
+                "one_unit": format_money(one_unit_minor),
+            }
+        )
+
+    if not items:
+        return ready_connection(
+            "currency_rates",
+            "Currency Rates",
+            "No matching live rates came back from the provider.",
+            "Check configured target currencies.",
+        )
+
+    return {
+        "id": "currency_rates",
+        "name": "Currency Rates",
+        "state": "connected",
+        "provider": provider,
+        "summary": f"{len(items)} live fiat rate(s) from {provider}",
+        "updated_at": updated_at,
+        "items": items,
+        "source_url": url,
+        "next_action": "Use live rates as a check before recording non-GBP income.",
+    }
+
+
+def github_snapshot(
+    _data_dir: Path,
+    settings: dict[str, Any],
+    today: date,
+    fetch_json: FetchJson,
+    environ: dict[str, str],
+) -> dict[str, Any]:
+    if not settings.get("enabled", False):
+        return disabled_connection(
+            "github",
+            "GitHub Telemetry",
+            "GitHub telemetry is disabled.",
+            "Enable github in config when project activity should be visible.",
+        )
+
+    repository = str(settings.get("repository", "")).strip()
+    if "/" not in repository:
+        return ready_connection(
+            "github",
+            "GitHub Telemetry",
+            "No owner/repo is configured.",
+            "Set integrations.github.repository to owner/repo.",
+        )
+
+    owner, repo = repository.split("/", 1)
+    safe_owner = urllib.parse.quote(owner, safe="")
+    safe_repo = urllib.parse.quote(repo, safe="")
+    base_url = f"https://api.github.com/repos/{safe_owner}/{safe_repo}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Divine-Tool/1.5",
+        "X-GitHub-Api-Version": "2026-03-10",
+    }
+    token = environ.get("GITHUB_TOKEN") or environ.get("DIVINE_GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    lookback_days = max(int(settings.get("lookback_days", 7)), 1)
+    since = datetime.combine(today - timedelta(days=lookback_days), datetime.min.time()).isoformat() + "Z"
+    repo_payload = fetch_json(base_url, headers)
+    commits = fetch_json(f"{base_url}/commits?{urllib.parse.urlencode({'since': since, 'per_page': 100})}", headers)
+    issues = fetch_json(f"{base_url}/issues?{urllib.parse.urlencode({'state': 'open', 'per_page': 100})}", headers)
+    pulls = fetch_json(f"{base_url}/pulls?{urllib.parse.urlencode({'state': 'open', 'per_page': 100})}", headers)
+    open_issues = [item for item in issues if "pull_request" not in item]
+
+    items = [
+        {"label": f"Commits {lookback_days}d", "value": str(len(commits))},
+        {"label": "Open Issues", "value": str(len(open_issues))},
+        {"label": "Open PRs", "value": str(len(pulls))},
+        {"label": "Stars", "value": str(repo_payload.get("stargazers_count", 0))},
+    ]
+    return {
+        "id": "github",
+        "name": "GitHub Telemetry",
+        "state": "connected",
+        "provider": "github",
+        "summary": f"{repository} activity is available",
+        "updated_at": repo_payload.get("updated_at", ""),
+        "items": items,
+        "source_url": base_url,
+        "next_action": "Use project activity to prioritize build work that supports revenue.",
+    }
+
+
+def payment_snapshot(
+    data_dir: Path,
+    settings: dict[str, Any],
+    _today: date,
+    fetch_json: FetchJson,
+    environ: dict[str, str],
+) -> dict[str, Any]:
+    summary_file = str(settings.get("summary_file", "")).strip()
+    if summary_file:
+        return payment_file_snapshot(data_dir, summary_file)
+
+    if not settings.get("enabled", False):
+        return ready_connection(
+            "payments",
+            "Payment Summaries",
+            "Payment connector is ready but not enabled.",
+            "Enable it only with a read-only key or keep using CSV imports.",
+        )
+
+    provider = str(settings.get("provider", "stripe")).lower()
+    if provider != "stripe":
+        return ready_connection(
+            "payments",
+            "Payment Summaries",
+            f"Provider '{provider}' is not implemented yet.",
+            "Use provider stripe or a local summary file.",
+        )
+
+    env_var = str(settings.get("env_var", "DIVINE_STRIPE_SECRET_KEY"))
+    secret = environ.get(env_var)
+    if not secret:
+        return ready_connection(
+            "payments",
+            "Payment Summaries",
+            f"Stripe is enabled but {env_var} is not set.",
+            "Set the environment variable with a restricted read-only key before refreshing.",
+        )
+
+    limit = min(max(int(settings.get("limit", 10)), 1), 100)
+    url = f"https://api.stripe.com/v1/balance_transactions?{urllib.parse.urlencode({'limit': limit})}"
+    auth = base64.b64encode(f"{secret}:".encode("utf-8")).decode("ascii")
+    payload = fetch_json(url, {"Authorization": f"Basic {auth}", "User-Agent": "Divine-Tool/1.5"})
+    transactions = payload.get("data", [])
+    return payment_transactions_connection("stripe", transactions, url)
+
+
+def payment_file_snapshot(data_dir: Path, summary_file: str) -> dict[str, Any]:
+    path = Path(summary_file)
+    if not path.is_absolute():
+        path = data_dir / path
+    if not path.exists():
+        return ready_connection(
+            "payments",
+            "Payment Summaries",
+            f"Payment summary file not found: {path}",
+            "Check integrations.payments.summary_file or import the export as CSV.",
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    transactions = payload.get("transactions", [])
+    provider = str(payload.get("provider", "manual"))
+    return payment_transactions_connection(provider, transactions, str(path))
+
+
+def payment_transactions_connection(provider: str, transactions: list[dict[str, Any]], source_url: str) -> dict[str, Any]:
+    totals: dict[str, dict[str, int]] = {}
+    for transaction in transactions:
+        currency = str(transaction.get("currency", "GBP")).upper()
+        net_minor = int(transaction.get("net_minor", transaction.get("net", 0)))
+        totals.setdefault(currency, {"minor": 0, "count": 0})
+        totals[currency]["minor"] += net_minor
+        totals[currency]["count"] += 1
+
+    items = [
+        {
+            "currency": currency,
+            "net": format_money(values["minor"], currency),
+            "transaction_count": str(values["count"]),
+        }
+        for currency, values in sorted(totals.items())
+    ]
+    return {
+        "id": "payments",
+        "name": "Payment Summaries",
+        "state": "connected" if transactions else "ready",
+        "provider": provider,
+        "summary": f"{len(transactions)} read-only payment transaction(s) reviewed",
+        "items": items,
+        "source_url": source_url,
+        "next_action": "Import settled income rows only after review.",
+    }
+
+
+def product_analytics_snapshot(
+    data_dir: Path,
+    settings: dict[str, Any],
+    _today: date,
+    _fetch_json: FetchJson,
+    _environ: dict[str, str],
+) -> dict[str, Any]:
+    summary_file = str(settings.get("summary_file", "")).strip()
+    if not settings.get("enabled", False) and not summary_file:
+        return disabled_connection(
+            "product_analytics",
+            "Product Analytics",
+            "Product analytics summaries are disabled.",
+            "Add a local analytics summary file when product metrics should guide priorities.",
+        )
+    if not summary_file:
+        return ready_connection(
+            "product_analytics",
+            "Product Analytics",
+            "Product analytics is enabled but no summary file is configured.",
+            "Set integrations.product_analytics.summary_file to a local JSON export.",
+        )
+
+    path = Path(summary_file)
+    if not path.is_absolute():
+        path = data_dir / path
+    if not path.exists():
+        return ready_connection(
+            "product_analytics",
+            "Product Analytics",
+            f"Analytics summary file not found: {path}",
+            "Check integrations.product_analytics.summary_file.",
+        )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    metrics = payload.get("metrics", {})
+    items = [{"label": title_case_from_key(key), "value": str(value)} for key, value in list(metrics.items())[:6]]
+    return {
+        "id": "product_analytics",
+        "name": "Product Analytics",
+        "state": "connected" if items else "ready",
+        "provider": str(payload.get("provider", "local")),
+        "summary": str(payload.get("summary", f"{len(items)} product metric(s) reviewed")),
+        "items": items,
+        "source_url": str(path),
+        "next_action": "Use conversion and usage signals to pick the next revenue feature.",
+    }
+
+
+def title_case_from_key(value: str) -> str:
+    return " ".join(part.capitalize() for part in str(value).replace("_", " ").split())
+
+
+def disabled_connection(identifier: str, name: str, summary: str, next_action: str) -> dict[str, Any]:
+    return {"id": identifier, "name": name, "state": "disabled", "summary": summary, "items": [], "next_action": next_action}
+
+
+def ready_connection(identifier: str, name: str, summary: str, next_action: str) -> dict[str, Any]:
+    return {"id": identifier, "name": name, "state": "ready", "summary": summary, "items": [], "next_action": next_action}
 
 
 def list_income(data_dir: Path, limit: int = 20) -> list[sqlite3.Row]:
@@ -1219,7 +1613,7 @@ def generate_upgrades(data_dir: Path, today: date | None = None) -> list[str]:
         return [
             "Unlock payment reminders for invoices and retainers.",
             "Add lead scoring so the highest-value opportunities are contacted first.",
-            "Add real currency-rate ingestion with human approval before counting non-GBP income.",
+            "Add human-approved drafts for invoices, outreach, and content prompts.",
             "Add a local web dashboard for quota progress, command history, and channel ROI.",
             "Add exportable weekly reports for the Creator.",
         ]
