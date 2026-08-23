@@ -1,5 +1,6 @@
 const state = {
   latest: null,
+  report: null,
   toastTimer: null,
 };
 
@@ -50,6 +51,7 @@ function render(payload) {
   renderLogs(payload.events);
   renderIncome(payload.income);
   renderUpgrades(payload.upgrades);
+  renderReport(payload.report);
   hydrateMoodControls(payload.config);
   hydrateStrategyControls(payload.config);
 }
@@ -268,6 +270,19 @@ function renderUpgrades(upgrades) {
   }
 }
 
+function renderReport(report) {
+  if (!report) {
+    $("#reportTitle").textContent = "No report generated";
+    $("#reportMeta").textContent = "Choose a period and generate a report.";
+    $("#reportPreview").textContent = "";
+    return;
+  }
+  state.report = report;
+  $("#reportTitle").textContent = report.title;
+  $("#reportMeta").textContent = `${report.period.start} to ${report.period.end} - ${report.earned} earned of ${report.quota}`;
+  $("#reportPreview").textContent = report.markdown;
+}
+
 function hydrateMoodControls(config) {
   const moodNames = Object.keys(config.moods || {});
   for (const select of [$("#activeMood"), $("#quotaMood")]) {
@@ -377,6 +392,39 @@ function attachPulse() {
   });
 }
 
+function attachReportControls() {
+  $("#reportButton").addEventListener("click", async () => {
+    const button = $("#reportButton");
+    button.disabled = true;
+    try {
+      const period = $("#reportPeriod").value;
+      const payload = await request(`/api/report?period=${encodeURIComponent(period)}`);
+      renderReport(payload.report);
+      showToast("Report generated");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("#downloadReportButton").addEventListener("click", () => {
+    if (!state.report) {
+      showToast("Generate a report first");
+      return;
+    }
+    const filename = `${slugify(state.report.title)}_${state.report.period.start}_${state.report.period.end}.md`;
+    const blob = new Blob([state.report.markdown], { type: "text/markdown;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
+  });
+}
+
 function showToast(message) {
   const toast = $("#toast");
   toast.textContent = message;
@@ -420,5 +468,6 @@ attachForm("#quotaForm", "/api/quota", "Quota updated");
 attachForm("#moodForm", "/api/mood", "Mood updated");
 attachForm("#exceptionForm", "/api/exception", "Exception added");
 attachPulse();
+attachReportControls();
 refresh();
 setInterval(refresh, 10000);

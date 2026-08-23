@@ -16,6 +16,7 @@ from .core import (
     ensure_state,
     format_money,
     generate_opportunities,
+    generate_report,
     generate_upgrades,
     list_exceptions,
     list_income,
@@ -105,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     roi = sub.add_parser("roi", help="Show strategy ROI and pause recommendations.")
     roi.set_defaults(func=cmd_roi)
+
+    report = sub.add_parser("report", help="Generate a weekly or monthly report.")
+    report.add_argument("--period", choices=["week", "month"], default="week")
+    report.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    report.add_argument("--output", help="Optional file path for the generated report.")
+    report.set_defaults(func=cmd_report)
 
     upgrade = sub.add_parser("upgrade", help="Show upgrade recommendations.")
     upgrade.set_defaults(func=cmd_upgrade)
@@ -247,6 +254,22 @@ def cmd_roi(_args: argparse.Namespace, data_dir: Path) -> int:
             f"{row['roi_per_effort']} per effort unit, {row['trend']}; "
             f"recommendation: {row['recommendation']} - {row['recommendation_reason']}"
         )
+    return 0
+
+
+def cmd_report(args: argparse.Namespace, data_dir: Path) -> int:
+    report = generate_report(data_dir, period_name=args.period)
+    if args.format == "json":
+        content = json.dumps(report, indent=2, sort_keys=True)
+    else:
+        content = report["markdown"]
+
+    if args.output:
+        output = Path(args.output)
+        output.write_text(content, encoding="utf-8")
+        print(f"Report written to {output}")
+    else:
+        print(content)
     return 0
 
 

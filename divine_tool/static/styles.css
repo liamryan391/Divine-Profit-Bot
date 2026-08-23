@@ -260,6 +260,19 @@ h1 {
   margin-bottom: 18px;
 }
 
+.inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.inline-controls select,
+.inline-controls .button {
+  width: auto;
+  min-width: 118px;
+}
+
 h2 {
   margin-bottom: 0;
   font-size: 1.1rem;
@@ -560,6 +573,39 @@ select:focus {
   justify-content: flex-start;
 }
 
+.report-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.report-summary strong {
+  color: var(--gold);
+  font-size: 1.2rem;
+}
+
+.report-summary span {
+  color: var(--muted);
+}
+
+.report-preview {
+  min-height: 320px;
+  max-height: 520px;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #091020;
+  color: #d9e5ff;
+  white-space: pre-wrap;
+  font-family: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
 .toast {
   position: fixed;
   right: 18px;
@@ -634,6 +680,17 @@ select:focus {
   .section-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .inline-controls,
+  .inline-controls select,
+  .inline-controls .button,
+  .report-summary {
+    width: 100%;
+  }
+
+  .report-summary {
+    display: grid;
   }
 
   .log-line {

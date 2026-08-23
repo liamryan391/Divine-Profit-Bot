@@ -17,6 +17,7 @@ from .core import (
     ensure_state,
     format_money,
     generate_opportunities,
+    generate_report,
     generate_upgrades,
     list_events,
     list_exceptions,
@@ -77,6 +78,11 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 if parsed.path == "/api/strategy-roi":
                     self.send_json({"strategy_roi": strategy_roi_summary(data_dir)})
+                    return
+                if parsed.path == "/api/report":
+                    query = parse_qs(parsed.query)
+                    period = query.get("period", ["week"])[0]
+                    self.send_json({"report": generate_report(data_dir, period_name=period)})
                     return
                 self.serve_static(parsed.path)
             except DivineToolError as exc:
@@ -206,6 +212,7 @@ def dashboard_payload(data_dir: Path) -> dict[str, Any]:
     config = load_config(data_dir)
     opportunities = generate_opportunities(data_dir)
     strategy_roi = strategy_roi_summary(data_dir)
+    report = generate_report(data_dir, period_name="week")
     return {
         "version": __version__,
         "status": serialize_status(status_report(data_dir)),
@@ -215,6 +222,7 @@ def dashboard_payload(data_dir: Path) -> dict[str, Any]:
         "opportunities": opportunities,
         "top_opportunity": opportunities[0] if opportunities else None,
         "strategy_roi": strategy_roi,
+        "report": report,
         "upgrades": generate_upgrades(data_dir),
         "worker": worker_status(data_dir),
         "config": {

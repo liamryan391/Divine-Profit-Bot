@@ -453,6 +453,23 @@ def income_total_for_period(data_dir: Path, period: Period) -> int:
     return int(row["total"])
 
 
+def income_rows_for_period(data_dir: Path, period: Period, limit: int = 25) -> list[sqlite3.Row]:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT *
+                FROM income
+                WHERE date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+                ORDER BY date(occurred_at) DESC, id DESC
+                LIMIT ?
+                """,
+                (period.start.isoformat(), period.end.isoformat(), limit),
+            )
+        )
+
+
 def strategy_income_totals(data_dir: Path, period: Period) -> dict[str, dict[str, int]]:
     ensure_state(data_dir)
     totals: dict[str, dict[str, int]] = {}
@@ -533,10 +550,10 @@ def strategy_recent_notes(data_dir: Path, limit_per_strategy: int = 3) -> dict[s
     return notes
 
 
-def strategy_roi_summary(data_dir: Path, today: date | None = None) -> dict[str, Any]:
+def strategy_roi_summary(data_dir: Path, today: date | None = None, period_name: str | None = None) -> dict[str, Any]:
     report = status_report(data_dir, today)
     config = load_config(data_dir)
-    period = report["period"]
+    period = period_for(period_name, today) if period_name else report["period"]
     previous = previous_period(period)
     current_totals = strategy_period_totals(data_dir, period)
     previous_totals = strategy_period_totals(data_dir, previous)
@@ -930,6 +947,172 @@ def generate_upgrades(data_dir: Path, today: date | None = None) -> list[str]:
         "Add better source notes to each income entry so profitable channels are obvious.",
         "Reduce low-return channels until the current quota is safe.",
     ]
+
+
+def generate_report(data_dir: Path, period_name: str = "week", today: date | None = None) -> dict[str, Any]:
+    today = today or date.today()
+    config = load_config(data_dir)
+    period = period_for(period_name, today)
+    quota_minor, quota_source = quota_for_report_period(config, period_name)
+    earned_minor = income_total_for_period(data_dir, period)
+    remaining_minor = max(quota_minor - earned_minor, 0)
+    progress_pct = 100.0 if quota_minor <= 0 else round(min(earned_minor / quota_minor, 1) * 100, 1)
+    days_left = max((period.end - today).days, 0)
+    exception = active_exception(data_dir, today)
+    income_rows = income_rows_for_period(data_dir, period, limit=25)
+    roi = strategy_roi_summary(data_dir, today=today, period_name=period_name)
+    opportunities = generate_opportunities(data_dir, today)[:5]
+    upgrades = generate_upgrades(data_dir, today)
+    missed_review = missed_quota_review(
+        quota_minor=quota_minor,
+        earned_minor=earned_minor,
+        remaining_minor=remaining_minor,
+        days_left=days_left,
+        exception=dict(exception) if exception else None,
+    )
+    period_label = {"week": "Weekly", "month": "Monthly"}.get(period_name, period_name.title())
+
+    report = {
+        "title": f"Divine Profit {period_label} Report",
+        "generated_at": now_iso(),
+        "period": {
+            "name": period.name,
+            "start": period.start.isoformat(),
+            "end": period.end.isoformat(),
+        },
+        "quota_source": quota_source,
+        "quota": format_money(quota_minor),
+        "quota_minor": quota_minor,
+        "earned": format_money(earned_minor),
+        "earned_minor": earned_minor,
+        "remaining": format_money(remaining_minor),
+        "remaining_minor": remaining_minor,
+        "progress_pct": progress_pct,
+        "days_left": days_left,
+        "missed_quota_review": missed_review,
+        "income": serialize_income_rows_for_report(income_rows),
+        "strategy_roi": roi,
+        "opportunities": opportunities,
+        "upgrade_recommendations": upgrades,
+    }
+    report["markdown"] = format_report_markdown(report)
+    return report
+
+
+def quota_for_report_period(config: dict[str, Any], period_name: str) -> tuple[int, str]:
+    active = active_mood(config)
+    if active.get("period") == period_name:
+        return int(active.get("quota_minor", 0)), str(active["name"])
+
+    for mood_name, mood in config.get("moods", {}).items():
+        if mood.get("period") == period_name:
+            return int(mood.get("quota_minor", 0)), str(mood_name)
+
+    return int(active.get("quota_minor", 0)), str(active["name"])
+
+
+def missed_quota_review(
+    quota_minor: int,
+    earned_minor: int,
+    remaining_minor: int,
+    days_left: int,
+    exception: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if earned_minor >= quota_minor:
+        return {
+            "status": "satisfied",
+            "message": "Quota is satisfied. Review what worked and carry the strongest channel into the next period.",
+            "remaining_minor": 0,
+            "remaining": format_money(0),
+        }
+    if exception:
+        return {
+            "status": "exception",
+            "message": f"Quota is short, but exception #{exception['id']} is active until {exception['ends_on']}.",
+            "remaining_minor": remaining_minor,
+            "remaining": format_money(remaining_minor),
+        }
+    if days_left <= 1:
+        return {
+            "status": "urgent",
+            "message": f"Quota is short by {format_money(remaining_minor)} with {days_left} day left. Focus on immediate lawful income actions.",
+            "remaining_minor": remaining_minor,
+            "remaining": format_money(remaining_minor),
+        }
+    return {
+        "status": "open",
+        "message": f"Quota is short by {format_money(remaining_minor)} with {days_left} days left. Keep pushing the highest-ranked strategy.",
+        "remaining_minor": remaining_minor,
+        "remaining": format_money(remaining_minor),
+    }
+
+
+def serialize_income_rows_for_report(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    output = []
+    for row in rows:
+        output.append(
+            {
+                "id": row["id"],
+                "occurred_at": row["occurred_at"],
+                "amount": format_money(int(row["amount_minor"]), str(row["currency"])),
+                "counted": format_money(int(row["gbp_minor"])),
+                "counted_minor": int(row["gbp_minor"]),
+                "currency": row["currency"],
+                "strategy": row["strategy"],
+                "source": row["source"],
+                "note": row["note"],
+            }
+        )
+    return output
+
+
+def format_report_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        f"# {report['title']}",
+        "",
+        f"Generated: {report['generated_at']}",
+        f"Period: {report['period']['start']} to {report['period']['end']}",
+        f"Quota source: {report['quota_source']}",
+        "",
+        "## Quota Result",
+        "",
+        f"- Quota: {report['quota']}",
+        f"- Earned: {report['earned']}",
+        f"- Remaining: {report['remaining']}",
+        f"- Progress: {report['progress_pct']}%",
+        "",
+        "## Missed-Quota Review",
+        "",
+        report["missed_quota_review"]["message"],
+        "",
+        "## Strategy ROI",
+        "",
+    ]
+
+    for row in report["strategy_roi"]["rows"][:5]:
+        lines.append(
+            f"- {row['name']}: {row['current_period']} current, {row['previous_period']} previous, "
+            f"{row['delta']} delta, {row['trend']}; {row['recommendation']}."
+        )
+
+    lines.extend(["", "## Priority Opportunities", ""])
+    for item in report["opportunities"][:5]:
+        lines.append(f"- #{item['rank']} {item['name']} ({item['score']}/100): {item['next_action']}")
+
+    lines.extend(["", "## Upgrade Recommendations", ""])
+    for item in report["upgrade_recommendations"][:5]:
+        lines.append(f"- {item}")
+
+    lines.extend(["", "## Income Entries", ""])
+    if report["income"]:
+        for row in report["income"][:10]:
+            strategy = f" [{row['strategy']}]" if row["strategy"] else ""
+            note = f" - {row['note']}" if row["note"] else ""
+            lines.append(f"- {row['occurred_at']}: {row['counted']}{strategy} from {row['source']}{note}")
+    else:
+        lines.append("- No income entries recorded for this period.")
+
+    return "\n".join(lines) + "\n"
 
 
 def command_file(data_dir: Path) -> Path:

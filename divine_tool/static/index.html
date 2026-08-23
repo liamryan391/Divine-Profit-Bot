@@ -208,6 +208,25 @@
           </div>
           <div id="upgradeList" class="upgrade-grid"></div>
         </article>
+
+        <article class="panel wide report-panel">
+          <div class="section-heading">
+            <h2>Report Forge</h2>
+            <div class="inline-controls">
+              <select id="reportPeriod" aria-label="Report period">
+                <option value="week">Weekly</option>
+                <option value="month">Monthly</option>
+              </select>
+              <button id="reportButton" class="button secondary" type="button">Generate</button>
+              <button id="downloadReportButton" class="button primary" type="button">Download</button>
+            </div>
+          </div>
+          <div class="report-summary">
+            <strong id="reportTitle">Divine Profit Weekly Report</strong>
+            <span id="reportMeta">Awaiting report</span>
+          </div>
+          <pre id="reportPreview" class="report-preview"></pre>
+        </article>
       </section>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>

@@ -14,6 +14,7 @@ from divine_tool.core import (
     add_income,
     enqueue_command,
     generate_opportunities,
+    generate_report,
     load_config,
     parse_money_to_minor,
     process_command_inbox,
@@ -104,6 +105,13 @@ class DivineToolTests(unittest.TestCase):
                 self.assertTrue(payload["ok"])
                 self.assertEqual(payload["state"]["status"]["earned_minor"], 3000)
                 self.assertIn("strategy_roi", payload["state"])
+
+                with urlopen(f"{base_url}/api/report?period=week") as response:
+                    report_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertIn("report", report_payload)
+                self.assertIn("markdown", report_payload["report"])
+                self.assertIn("Missed-Quota Review", report_payload["report"]["markdown"])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -201,6 +209,30 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(rows["freelance_services"]["recommendation"], "push")
             self.assertEqual(rows["freelance_services"]["notes"][0]["note"], "client renewed")
             self.assertTrue(any(row["recommendation"] == "pause" for row in summary["pause_recommendations"]))
+
+    def test_generate_report_includes_roi_and_upgrades(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("100"), "week")
+            set_mood(data_dir, "watchful")
+            add_income(
+                data_dir,
+                amount_minor=parse_money_to_minor("25"),
+                currency="GBP",
+                gbp_minor=None,
+                source="report invoice",
+                note="report note",
+                strategy="freelance_services",
+                occurred_on=date(2026, 8, 19),
+            )
+
+            report = generate_report(data_dir, period_name="week", today=date(2026, 8, 20))
+
+            self.assertEqual(report["title"], "Divine Profit Weekly Report")
+            self.assertEqual(report["earned_minor"], 2500)
+            self.assertIn("## Strategy ROI", report["markdown"])
+            self.assertIn("## Upgrade Recommendations", report["markdown"])
+            self.assertEqual(report["income"][0]["note"], "report note")
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v1.2.0`.
+Current version: `v1.3.0`.
 
 Completed:
 
@@ -32,6 +32,7 @@ Completed:
 - API test for the web income flow.
 - Opportunity scoring with strategy evidence.
 - Strategy ROI with current-vs-previous comparison and pause recommendations.
+- Weekly and monthly report generation.
 
 ## Phase 0: Foundation
 
@@ -227,7 +228,7 @@ Release status: shipped.
 
 ### Stage 2.3: Report Generation
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -239,6 +240,8 @@ Deliverables:
 Release target:
 
 - `v1.3.0`.
+
+Release status: shipped.
 
 ## Phase 3: Integrations
 
@@ -355,10 +358,10 @@ The tool is fully operational for `v1` when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 2, Stage 2.3 next:
+Build Phase 3, Stage 3.1 next:
 
-- Add weekly and monthly reports.
-- Summarize missed-quota reviews.
-- Generate upgrade recommendation summaries.
+- Add CSV import for income.
+- Add payment or affiliate export import.
+- Add duplicate detection.
 
-That starts `v1.3.0` and turns the intelligence layer into a shareable reporting loop.
+That starts the integration phase by letting real-world income exports feed the engine faster.
