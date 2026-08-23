@@ -7,7 +7,47 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
-    <main class="app-shell">
+    <section id="authGate" class="auth-gate" hidden>
+      <div class="auth-panel">
+        <div class="brand-lockup">
+          <img src="/assets/temple-mark.png" width="56" height="56" alt="" />
+          <div>
+            <p class="eyebrow">Protected Temple</p>
+            <h1>Divine Income Engine</h1>
+          </div>
+        </div>
+        <form id="setupForm" class="auth-form" hidden>
+          <h2>Owner Setup</h2>
+          <label>
+            Username
+            <input name="username" autocomplete="username" required />
+          </label>
+          <label>
+            Display Name
+            <input name="display_name" autocomplete="name" placeholder="Creator" />
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" autocomplete="new-password" minlength="10" required />
+          </label>
+          <button class="button primary" type="submit">Create Owner</button>
+        </form>
+        <form id="loginForm" class="auth-form" hidden>
+          <h2>Owner Login</h2>
+          <label>
+            Username
+            <input name="username" autocomplete="username" required />
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="button primary" type="submit">Enter Temple</button>
+        </form>
+      </div>
+    </section>
+
+    <main id="appShell" class="app-shell" hidden>
       <header class="hero">
         <div class="brand-lockup">
           <img src="/assets/temple-mark.png" width="64" height="64" alt="" />
@@ -17,9 +57,15 @@
             <p class="subline">24/7 quota watch, lawful revenue tracking, eternal optimization.</p>
           </div>
         </div>
-        <div class="status-pill" id="workerPill">
-          <span class="status-dot"></span>
-          <span id="workerPillText">Worker: checking</span>
+        <div class="header-actions">
+          <div class="status-pill" id="accountPill">
+            <span id="accountPillText">Account: checking</span>
+          </div>
+          <div class="status-pill" id="workerPill">
+            <span class="status-dot"></span>
+            <span id="workerPillText">Worker: checking</span>
+          </div>
+          <button id="logoutButton" class="button ghost" type="button">Logout</button>
         </div>
       </header>
 
@@ -42,7 +88,7 @@
         <article class="metric-card accent-violet">
           <p class="metric-label">Temple Level</p>
           <strong id="templeLevel">v0.1</strong>
-          <span id="templeNext">Next: v1.0 after Phase 1</span>
+          <span id="templeNext">Next: v2.0 production track</span>
         </article>
       </section>
 

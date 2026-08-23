@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import hmac
 import io
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import urllib.parse
@@ -101,6 +103,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "product_analytics": {
             "enabled": False,
             "summary_file": "",
+        },
+    },
+    "auth": {
+        "enabled": True,
+        "session_ttl_hours": 12,
+        "password_min_length": 10,
+        "secret_management": {
+            "policy": "Keep API keys and payment credentials in environment variables, not config files.",
+            "allowed_env_vars": ["DIVINE_STRIPE_SECRET_KEY", "DIVINE_GITHUB_TOKEN", "GITHUB_TOKEN"],
         },
     },
     "ethical_rules": [
@@ -210,6 +221,36 @@ def ensure_state(data_dir: Path) -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_status ON approval_actions(status)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'owner',
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_login_at TEXT NOT NULL DEFAULT '',
+                disabled INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_hash TEXT PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                user_agent TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(account_id) REFERENCES accounts(id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_account ON auth_sessions(account_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)")
         conn.commit()
 
 
@@ -312,6 +353,22 @@ def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
                     changed = True
             current_integrations[name] = current
     migrated["integrations"] = current_integrations
+
+    default_auth = DEFAULT_CONFIG.get("auth", {})
+    current_auth = dict(migrated.get("auth", {}))
+    for key, value in default_auth.items():
+        if key not in current_auth:
+            current_auth[key] = value
+            changed = True
+            continue
+        if isinstance(value, dict):
+            nested = dict(current_auth.get(key, {}))
+            for nested_key, nested_value in value.items():
+                if nested_key not in nested:
+                    nested[nested_key] = nested_value
+                    changed = True
+            current_auth[key] = nested
+    migrated["auth"] = current_auth
 
     return migrated, changed
 
@@ -776,6 +833,200 @@ def existing_import_id(data_dir: Path, fingerprint: str) -> int | None:
             (fingerprint,),
         ).fetchone()
     return int(row["id"]) if row else None
+
+
+def validate_username(username: str) -> str:
+    cleaned = username.strip().lower()
+    if len(cleaned) < 3:
+        raise DivineToolError("Username must be at least 3 characters.")
+    if len(cleaned) > 40:
+        raise DivineToolError("Username must be 40 characters or fewer.")
+    if any(char for char in cleaned if not (char.isalnum() or char in {"_", "-", "."})):
+        raise DivineToolError("Username can use letters, numbers, dots, hyphens, and underscores.")
+    return cleaned
+
+
+def validate_password(config: dict[str, Any], password: str) -> None:
+    min_length = int(config.get("auth", {}).get("password_min_length", 10))
+    if len(password) < min_length:
+        raise DivineToolError(f"Password must be at least {min_length} characters.")
+    if password.strip() != password or not password:
+        raise DivineToolError("Password cannot start or end with whitespace.")
+
+
+def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 240000)
+    return salt.hex(), digest.hex()
+
+
+def verify_password(password: str, salt_hex: str, expected_hash: str) -> bool:
+    _salt, actual = hash_password(password, salt_hex)
+    return hmac.compare_digest(actual, expected_hash)
+
+
+def account_count(data_dir: Path) -> int:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM accounts").fetchone()
+    return int(row["count"])
+
+
+def create_account(
+    data_dir: Path,
+    username: str,
+    password: str,
+    display_name: str = "",
+    role: str = "owner",
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    username = validate_username(username)
+    validate_password(config, password)
+    role = role.strip().lower() or "owner"
+    if role != "owner":
+        raise DivineToolError("Only owner accounts are supported in this local release.")
+    if account_count(data_dir) > 0:
+        raise DivineToolError("Owner account already exists.")
+
+    salt, password_hash = hash_password(password)
+    created = now_iso()
+    with db(data_dir) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO accounts
+                (username, display_name, role, password_salt, password_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (username, display_name.strip(), role, salt, password_hash, created),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(cur.lastrowid),)).fetchone()
+    log_event(data_dir, f"Owner account created: {username}", "auth")
+    return account_to_dict(row)
+
+
+def list_accounts(data_dir: Path) -> list[dict[str, Any]]:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        rows = list(
+            conn.execute(
+                """
+                SELECT *
+                FROM accounts
+                ORDER BY id ASC
+                """
+            )
+        )
+    return [account_to_dict(row) for row in rows]
+
+
+def create_session(data_dir: Path, username: str, password: str, user_agent: str = "") -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    if not config.get("auth", {}).get("enabled", True):
+        raise DivineToolError("Authentication is disabled.")
+    username = validate_username(username)
+    cleanup_expired_sessions(data_dir)
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE username = ?", (username,)).fetchone()
+        if row is None or int(row["disabled"]):
+            raise DivineToolError("Invalid username or password.")
+        if not verify_password(password, row["password_salt"], row["password_hash"]):
+            raise DivineToolError("Invalid username or password.")
+
+        token = secrets.token_urlsafe(32)
+        token_hash = session_token_hash(token)
+        created = now_iso()
+        ttl_hours = max(int(config.get("auth", {}).get("session_ttl_hours", 12)), 1)
+        expires_at = (datetime.now() + timedelta(hours=ttl_hours)).isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO auth_sessions
+                (token_hash, account_id, created_at, expires_at, last_seen_at, user_agent)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (token_hash, int(row["id"]), created, expires_at, created, user_agent[:200]),
+        )
+        conn.execute("UPDATE accounts SET last_login_at = ? WHERE id = ?", (created, int(row["id"])))
+        conn.commit()
+        account = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(row["id"]),)).fetchone()
+    log_event(data_dir, f"Account signed in: {username}", "auth")
+    return {"token": token, "expires_at": expires_at, "account": account_to_dict(account)}
+
+
+def session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def get_session_account(data_dir: Path, token: str | None) -> dict[str, Any] | None:
+    ensure_state(data_dir)
+    if not token:
+        return None
+    cleanup_expired_sessions(data_dir)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            """
+            SELECT accounts.*
+            FROM auth_sessions
+            JOIN accounts ON accounts.id = auth_sessions.account_id
+            WHERE auth_sessions.token_hash = ?
+              AND datetime(auth_sessions.expires_at) > datetime('now', 'localtime')
+              AND accounts.disabled = 0
+            LIMIT 1
+            """,
+            (session_token_hash(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?", (now_iso(), session_token_hash(token)))
+        conn.commit()
+    return account_to_dict(row)
+
+
+def destroy_session(data_dir: Path, token: str | None) -> None:
+    ensure_state(data_dir)
+    if not token:
+        return
+    with db(data_dir) as conn:
+        conn.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (session_token_hash(token),))
+        conn.commit()
+
+
+def cleanup_expired_sessions(data_dir: Path) -> None:
+    with db(data_dir) as conn:
+        conn.execute("DELETE FROM auth_sessions WHERE datetime(expires_at) <= datetime('now', 'localtime')")
+        conn.commit()
+
+
+def auth_status(data_dir: Path, token: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    enabled = bool(config.get("auth", {}).get("enabled", True))
+    setup_required = account_count(data_dir) == 0
+    account = get_session_account(data_dir, token) if enabled and not setup_required else None
+    return {
+        "enabled": enabled,
+        "setup_required": setup_required,
+        "authenticated": bool(account) or not enabled,
+        "account": account,
+        "accounts": list_accounts(data_dir) if account else [],
+        "secret_management": config.get("auth", {}).get("secret_management", {}),
+    }
+
+
+def account_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+        "last_login_at": row["last_login_at"],
+        "disabled": bool(row["disabled"]),
+    }
 
 
 FetchJson = Callable[[str, dict[str, str] | None], Any]

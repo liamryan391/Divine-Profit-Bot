@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import mimetypes
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -14,7 +16,11 @@ from .core import (
     add_exception,
     add_income,
     approval_queue_summary,
+    auth_status,
+    create_account,
+    create_session,
     create_approval_draft,
+    destroy_session,
     enqueue_command,
     ensure_state,
     external_connections_snapshot,
@@ -43,6 +49,20 @@ from .core import (
 
 
 STATIC_DIR = Path(__file__).with_name("static")
+SESSION_COOKIE = "divine_session"
+
+
+def session_cookie_header(token: str, expires_at: str) -> str:
+    try:
+        expires = datetime.fromisoformat(expires_at)
+        max_age = max(int((expires - datetime.now()).total_seconds()), 60)
+    except ValueError:
+        max_age = 12 * 60 * 60
+    return f"Set-Cookie: {SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+
+
+def clear_session_cookie_header() -> str:
+    return f"Set-Cookie: {SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
 
 
 def run_web(data_dir: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
@@ -62,11 +82,20 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             try:
+                if parsed.path == "/api/auth/status":
+                    self.send_json({"auth": auth_status(data_dir, self.session_token())})
+                    return
+                if parsed.path.startswith("/api/") and parsed.path != "/api/health":
+                    account = self.require_auth()
+                    if account is None:
+                        return
+                else:
+                    account = None
                 if parsed.path == "/api/status":
-                    self.send_json(dashboard_payload(data_dir))
+                    self.send_json(dashboard_payload(data_dir, account))
                     return
                 if parsed.path == "/api/health":
-                    self.send_json({"ok": True, "version": __version__, "worker": worker_status(data_dir)})
+                    self.send_json({"ok": True, "version": __version__, "worker": worker_status(data_dir), "auth": auth_status(data_dir)})
                     return
                 if parsed.path == "/api/logs":
                     query = parse_qs(parsed.query)
@@ -109,6 +138,54 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             parsed = urlparse(self.path)
             try:
                 payload = self.read_json()
+                if parsed.path == "/api/auth/setup":
+                    account = create_account(
+                        data_dir,
+                        username=str(payload["username"]),
+                        password=str(payload["password"]),
+                        display_name=str(payload.get("display_name", "")),
+                    )
+                    session = create_session(
+                        data_dir,
+                        username=account["username"],
+                        password=str(payload["password"]),
+                        user_agent=self.headers.get("User-Agent", ""),
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "auth": auth_status(data_dir, session["token"]),
+                            "state": dashboard_payload(data_dir, session["account"]),
+                        },
+                        extra_headers=[session_cookie_header(session["token"], session["expires_at"])],
+                    )
+                    return
+                if parsed.path == "/api/auth/login":
+                    session = create_session(
+                        data_dir,
+                        username=str(payload["username"]),
+                        password=str(payload["password"]),
+                        user_agent=self.headers.get("User-Agent", ""),
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "auth": auth_status(data_dir, session["token"]),
+                            "state": dashboard_payload(data_dir, session["account"]),
+                        },
+                        extra_headers=[session_cookie_header(session["token"], session["expires_at"])],
+                    )
+                    return
+                if parsed.path == "/api/auth/logout":
+                    destroy_session(data_dir, self.session_token())
+                    self.send_json(
+                        {"ok": True, "auth": auth_status(data_dir)},
+                        extra_headers=[clear_session_cookie_header()],
+                    )
+                    return
+                account = self.require_auth()
+                if account is None:
+                    return
                 if parsed.path == "/api/income":
                     income_id = add_income(
                         data_dir,
@@ -122,7 +199,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         strategy=str(payload.get("strategy", "")),
                         occurred_on=parse_date(payload["date"]) if payload.get("date") else None,
                     )
-                    self.send_json({"ok": True, "id": income_id, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "id": income_id, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/quota":
                     set_quota(
@@ -131,11 +208,11 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         amount_minor=parse_money_to_minor(payload["amount"]),
                         period=str(payload.get("period", "week")),
                     )
-                    self.send_json({"ok": True, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/mood":
                     set_mood(data_dir, str(payload["mood"]))
-                    self.send_json({"ok": True, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/exception":
                     exception_id = add_exception(
@@ -144,7 +221,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         starts_on=parse_date(payload["starts_on"]) if payload.get("starts_on") else None,
                         ends_on=parse_date(payload["until"]),
                     )
-                    self.send_json({"ok": True, "id": exception_id, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "id": exception_id, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/command/income":
                     command = {
@@ -160,7 +237,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     if payload.get("date"):
                         command["date"] = payload["date"]
                     enqueue_command(data_dir, command)
-                    self.send_json({"ok": True, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/import/csv":
                     result = import_income_csv(
@@ -171,7 +248,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         dry_run=bool(payload.get("dry_run", False)),
                         filename=str(payload.get("filename", "")),
                     )
-                    self.send_json({"ok": True, "import_result": result, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "import_result": result, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/approval/draft":
                     action_id = create_approval_draft(
@@ -189,7 +266,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         context=str(payload.get("context", "")),
                         tone=str(payload.get("tone", "polite")),
                     )
-                    self.send_json({"ok": True, "id": action_id, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "id": action_id, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/approval/review":
                     item = review_approval_action(
@@ -198,12 +275,12 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         decision=str(payload["decision"]),
                         note=str(payload.get("note", "")),
                     )
-                    self.send_json({"ok": True, "approval": item, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "approval": item, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/daemon/run-once":
                     outcomes = process_command_inbox(data_dir)
                     record_heartbeat(data_dir, detail=f"processed {len(outcomes)} command(s)")
-                    self.send_json({"ok": True, "outcomes": outcomes, "state": dashboard_payload(data_dir)})
+                    self.send_json({"ok": True, "outcomes": outcomes, "state": dashboard_payload(data_dir, account)})
                     return
                 self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             except KeyError as exc:
@@ -247,11 +324,48 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
-        def send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        def session_token(self) -> str | None:
+            raw = self.headers.get("Cookie", "")
+            if not raw:
+                return None
+            cookie = SimpleCookie()
+            cookie.load(raw)
+            morsel = cookie.get(SESSION_COOKIE)
+            return morsel.value if morsel else None
+
+        def require_auth(self) -> dict[str, Any] | None:
+            status = auth_status(data_dir, self.session_token())
+            if not status["enabled"]:
+                return {
+                    "id": 0,
+                    "username": "local",
+                    "display_name": "Local User",
+                    "role": "owner",
+                    "created_at": "",
+                    "last_login_at": "",
+                    "disabled": False,
+                }
+            if status["setup_required"]:
+                self.send_json({"error": "Owner account setup required.", "auth": status}, HTTPStatus.UNAUTHORIZED)
+                return None
+            if not status["authenticated"]:
+                self.send_json({"error": "Authentication required.", "auth": status}, HTTPStatus.UNAUTHORIZED)
+                return None
+            return status["account"]
+
+        def send_json(
+            self,
+            payload: dict[str, Any],
+            status: HTTPStatus = HTTPStatus.OK,
+            extra_headers: list[str] | None = None,
+        ) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            for header in extra_headers or []:
+                name, value = header.split(":", 1)
+                self.send_header(name.strip(), value.strip())
             self.end_headers()
             self.wfile.write(data)
 
@@ -261,7 +375,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
     return DivineRequestHandler
 
 
-def dashboard_payload(data_dir: Path) -> dict[str, Any]:
+def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> dict[str, Any]:
     config = load_config(data_dir)
     opportunities = generate_opportunities(data_dir)
     strategy_roi = strategy_roi_summary(data_dir)
@@ -278,6 +392,7 @@ def dashboard_payload(data_dir: Path) -> dict[str, Any]:
         "report": report,
         "upgrades": generate_upgrades(data_dir),
         "approvals": approval_queue_summary(data_dir),
+        "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
         "worker": worker_status(data_dir),
         "config": {
             "god_name": config.get("god_name", "Creator"),

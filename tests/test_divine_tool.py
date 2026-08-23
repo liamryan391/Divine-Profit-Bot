@@ -7,19 +7,25 @@ import unittest
 from datetime import date
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from divine_tool.core import (
     DivineToolError,
     add_income,
     approval_queue_summary,
+    auth_status,
+    create_account,
     create_approval_draft,
+    create_session,
+    destroy_session,
     enqueue_command,
     external_connections_snapshot,
     generate_opportunities,
     generate_report,
     import_income_csv,
     list_approval_actions,
+    list_accounts,
     list_income,
     load_config,
     parse_money_to_minor,
@@ -104,12 +110,39 @@ class DivineToolTests(unittest.TestCase):
                 with urlopen(f"{base_url}/") as response:
                     self.assertIn(b"Divine Income Engine", response.read())
 
+                try:
+                    urlopen(f"{base_url}/api/status")
+                    self.fail("Protected status endpoint should require authentication.")
+                except HTTPError as blocked:
+                    self.assertEqual(blocked.code, 401)
+                    blocked.close()
+
+                setup_body = json.dumps(
+                    {"username": "creator", "display_name": "Creator", "password": "strong-pass-123"}
+                ).encode("utf-8")
+                setup_request = Request(
+                    f"{base_url}/api/auth/setup",
+                    data=setup_body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(setup_request) as response:
+                    setup_payload = json.loads(response.read().decode("utf-8"))
+                    cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+
+                self.assertTrue(setup_payload["ok"])
+                self.assertTrue(setup_payload["auth"]["authenticated"])
+                self.assertEqual(setup_payload["auth"]["account"]["role"], "owner")
+
+                json_headers = {"Content-Type": "application/json", "Cookie": cookie}
+                auth_headers = {"Cookie": cookie}
+
                 body = json.dumps({"amount": "30", "source": "web invoice"}).encode("utf-8")
                 request = Request(
                     f"{base_url}/api/income",
                     data=body,
                     method="POST",
-                    headers={"Content-Type": "application/json"},
+                    headers=json_headers,
                 )
                 with urlopen(request) as response:
                     payload = json.loads(response.read().decode("utf-8"))
@@ -118,7 +151,7 @@ class DivineToolTests(unittest.TestCase):
                 self.assertEqual(payload["state"]["status"]["earned_minor"], 3000)
                 self.assertIn("strategy_roi", payload["state"])
 
-                with urlopen(f"{base_url}/api/report?period=week") as response:
+                with urlopen(Request(f"{base_url}/api/report?period=week", headers=auth_headers)) as response:
                     report_payload = json.loads(response.read().decode("utf-8"))
 
                 self.assertIn("report", report_payload)
@@ -137,7 +170,7 @@ class DivineToolTests(unittest.TestCase):
                     f"{base_url}/api/import/csv",
                     data=import_body,
                     method="POST",
-                    headers={"Content-Type": "application/json"},
+                    headers=json_headers,
                 )
                 with urlopen(import_request) as response:
                     import_payload = json.loads(response.read().decode("utf-8"))
@@ -146,7 +179,7 @@ class DivineToolTests(unittest.TestCase):
                 self.assertEqual(import_payload["import_result"]["imported_count"], 1)
                 self.assertEqual(import_payload["state"]["status"]["earned_minor"], 4500)
 
-                with urlopen(f"{base_url}/api/external") as response:
+                with urlopen(Request(f"{base_url}/api/external", headers=auth_headers)) as response:
                     external_payload = json.loads(response.read().decode("utf-8"))
 
                 self.assertIn("external", external_payload)
@@ -165,7 +198,7 @@ class DivineToolTests(unittest.TestCase):
                     f"{base_url}/api/approval/draft",
                     data=draft_body,
                     method="POST",
-                    headers={"Content-Type": "application/json"},
+                    headers=json_headers,
                 )
                 with urlopen(draft_request) as response:
                     draft_payload = json.loads(response.read().decode("utf-8"))
@@ -178,7 +211,7 @@ class DivineToolTests(unittest.TestCase):
                     f"{base_url}/api/approval/review",
                     data=review_body,
                     method="POST",
-                    headers={"Content-Type": "application/json"},
+                    headers=json_headers,
                 )
                 with urlopen(review_request) as response:
                     review_payload = json.loads(response.read().decode("utf-8"))
@@ -247,6 +280,32 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(config["channels"][0]["id"], "freelance_services")
             self.assertEqual(config["channels"][0]["deadline_fit"], "high")
             self.assertEqual(config["channels"][0]["repeatability"], "medium")
+            self.assertTrue(config["auth"]["enabled"])
+
+    def test_owner_account_and_session_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            self.assertTrue(auth_status(data_dir)["setup_required"])
+
+            account = create_account(data_dir, "Creator.One", "strong-pass-123", display_name="Creator")
+
+            self.assertEqual(account["username"], "creator.one")
+            self.assertEqual(account["role"], "owner")
+            self.assertEqual(len(list_accounts(data_dir)), 1)
+            self.assertFalse(auth_status(data_dir)["setup_required"])
+
+            with self.assertRaises(DivineToolError):
+                create_account(data_dir, "second", "strong-pass-123")
+            with self.assertRaises(DivineToolError):
+                create_session(data_dir, "creator.one", "wrong-pass")
+
+            session = create_session(data_dir, "creator.one", "strong-pass-123", user_agent="test")
+
+            self.assertTrue(session["token"])
+            self.assertEqual(auth_status(data_dir, session["token"])["account"]["username"], "creator.one")
+            destroy_session(data_dir, session["token"])
+            self.assertFalse(auth_status(data_dir, session["token"])["authenticated"])
 
     def test_strategy_roi_compares_periods_and_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

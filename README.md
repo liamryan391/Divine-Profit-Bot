@@ -4,12 +4,13 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v1.6.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.0.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
 ```powershell
 python -m divine_tool init
+python -m divine_tool account setup creator
 python -m divine_tool web
 ```
 
@@ -31,6 +32,7 @@ python -m divine_tool report --period week
 python -m divine_tool import .\income-export.csv --type payment --dry-run
 python -m divine_tool external
 python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-08-30 --invoice INV-001
+python -m divine_tool account status
 python -m divine_tool upgrade
 ```
 
@@ -112,6 +114,7 @@ The local web app provides:
 - Manual CSV imports for generic income, payment exports, and affiliate reports, with dry-run review and duplicate detection.
 - Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
 - Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
+- Owner account setup, password login, protected dashboard/API routes, session logout, and role-aware account status.
 
 Run it with:
 
@@ -120,6 +123,20 @@ python -m divine_tool web --port 8765
 ```
 
 The dashboard and API share the same `.divine_tool/` state as the CLI and daemon.
+
+## Accounts And Authentication
+
+The web dashboard is protected once an owner account exists. On a fresh state directory, create the owner from the browser setup screen or from the CLI:
+
+```powershell
+python -m divine_tool account setup creator
+python -m divine_tool account status
+python -m divine_tool account list
+```
+
+Passwords are stored as salted hashes, and browser sessions are stored as hashed local session tokens. The API blocks dashboard data, income writes, imports, approvals, and configuration changes until the owner is signed in.
+
+Secret policy: keep external credentials in environment variables, not config files. Current supported variables are `DIVINE_STRIPE_SECRET_KEY`, `DIVINE_GITHUB_TOKEN`, and `GITHUB_TOKEN`.
 
 ## Strategy Scoring
 

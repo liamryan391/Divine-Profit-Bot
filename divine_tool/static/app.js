@@ -1,5 +1,6 @@
 const state = {
   latest: null,
+  auth: null,
   report: null,
   importResult: null,
   external: null,
@@ -10,28 +11,82 @@ const $ = (selector) => document.querySelector(selector);
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     ...options,
   });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed");
+    const error = new Error(payload.error || "Request failed");
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
 }
 
-async function refresh() {
+async function boot() {
+  await refreshAuth();
+  if (state.auth && state.auth.authenticated && !state.auth.setup_required) {
+    await refresh();
+    await refreshExternalConnections();
+  }
+}
+
+async function refreshAuth() {
   try {
-    const payload = await request("/api/status");
-    state.latest = payload;
-    render(payload);
+    const payload = await request("/api/auth/status");
+    state.auth = payload.auth;
+    renderAuth();
   } catch (error) {
     showToast(error.message);
   }
 }
 
+async function refresh() {
+  if (!state.auth || !state.auth.authenticated || state.auth.setup_required) return;
+  try {
+    const payload = await request("/api/status");
+    state.latest = payload;
+    state.auth = payload.auth || state.auth;
+    render(payload);
+  } catch (error) {
+    if (error.status === 401 && error.payload && error.payload.auth) {
+      state.auth = error.payload.auth;
+      renderAuth();
+      return;
+    }
+    showToast(error.message);
+  }
+}
+
+function renderAuth() {
+  const gate = $("#authGate");
+  const shell = $("#appShell");
+  const setupForm = $("#setupForm");
+  const loginForm = $("#loginForm");
+  const auth = state.auth;
+  if (!auth) {
+    gate.hidden = true;
+    shell.hidden = true;
+    return;
+  }
+  const needsGate = auth.enabled && (!auth.authenticated || auth.setup_required);
+  gate.hidden = !needsGate;
+  shell.hidden = needsGate;
+  setupForm.hidden = !auth.setup_required;
+  loginForm.hidden = auth.setup_required;
+  if (!needsGate) {
+    renderAccountPill(auth);
+  }
+}
+
 function render(payload) {
   const status = payload.status;
+  if (payload.auth) {
+    state.auth = payload.auth;
+    renderAuth();
+  }
   $("#remainingValue").textContent = status.remaining;
   $("#quotaTarget").textContent = `${capitalize(status.period.name)} target: ${status.quota}`;
   $("#incomeValue").textContent = status.earned;
@@ -57,6 +112,16 @@ function render(payload) {
   renderApprovals(payload.approvals);
   hydrateMoodControls(payload.config);
   hydrateStrategyControls(payload.config);
+}
+
+function renderAccountPill(auth) {
+  const account = auth && auth.account;
+  if (!account) {
+    $("#accountPillText").textContent = "Account: local";
+    return;
+  }
+  const label = account.display_name || account.username;
+  $("#accountPillText").textContent = `${label} - ${account.role}`;
 }
 
 function renderWorker(worker) {
@@ -464,6 +529,66 @@ function attachForm(selector, path, successMessage) {
   });
 }
 
+function attachAuthControls() {
+  $("#setupForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      const payload = await request("/api/auth/setup", {
+        method: "POST",
+        body: JSON.stringify(formPayload(form)),
+      });
+      state.auth = payload.auth;
+      state.latest = payload.state;
+      renderAuth();
+      render(payload.state);
+      form.reset();
+      showToast("Owner account created");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("#loginForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      const payload = await request("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify(formPayload(form)),
+      });
+      state.auth = payload.auth;
+      state.latest = payload.state;
+      renderAuth();
+      render(payload.state);
+      form.reset();
+      showToast("Signed in");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("#logoutButton").addEventListener("click", async () => {
+    try {
+      const payload = await request("/api/auth/logout", { method: "POST", body: "{}" });
+      state.auth = payload.auth;
+      state.latest = null;
+      renderAuth();
+      showToast("Signed out");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
 function attachPulse() {
   $("#pulseButton").addEventListener("click", async () => {
     const button = $("#pulseButton");
@@ -553,6 +678,7 @@ function attachExternalControls() {
 }
 
 async function refreshExternalConnections() {
+  if (!state.auth || !state.auth.authenticated || state.auth.setup_required) return;
   const button = $("#externalButton");
   button.disabled = true;
   try {
@@ -699,6 +825,7 @@ function slugify(value) {
     .replace(/^_+|_+$/g, "") || "strategy";
 }
 
+attachAuthControls();
 attachForm("#incomeForm", "/api/income", "Income recorded");
 attachForm("#quotaForm", "/api/quota", "Quota updated");
 attachForm("#moodForm", "/api/mood", "Mood updated");
@@ -708,6 +835,5 @@ attachReportControls();
 attachImportControls();
 attachExternalControls();
 attachApprovalControls();
-refresh();
-refreshExternalConnections();
+boot();
 setInterval(refresh, 10000);

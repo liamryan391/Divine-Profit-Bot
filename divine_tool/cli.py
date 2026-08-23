@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 import time
@@ -12,7 +13,9 @@ from .core import (
     add_exception,
     add_income,
     approval_action_to_dict,
+    auth_status,
     create_approval_draft,
+    create_account,
     default_data_dir,
     enqueue_command,
     ensure_state,
@@ -23,6 +26,7 @@ from .core import (
     generate_upgrades,
     import_income_csv,
     list_approval_actions,
+    list_accounts,
     list_exceptions,
     list_income,
     load_config,
@@ -171,6 +175,18 @@ def build_parser() -> argparse.ArgumentParser:
     config_sub = config.add_subparsers(required=True)
     config_show = config_sub.add_parser("show", help="Print config JSON.")
     config_show.set_defaults(func=cmd_config_show)
+
+    account = sub.add_parser("account", help="Manage local owner account setup.")
+    account_sub = account.add_subparsers(required=True)
+    account_status = account_sub.add_parser("status", help="Show local authentication status.")
+    account_status.set_defaults(func=cmd_account_status)
+    account_setup = account_sub.add_parser("setup", help="Create the first local owner account.")
+    account_setup.add_argument("username")
+    account_setup.add_argument("--display-name", default="")
+    account_setup.add_argument("--password", help="Password. If omitted, a hidden prompt is used.")
+    account_setup.set_defaults(func=cmd_account_setup)
+    account_list = account_sub.add_parser("list", help="List local accounts.")
+    account_list.set_defaults(func=cmd_account_list)
 
     command = sub.add_parser("command", help="Queue commands for the daemon.")
     command_sub = command.add_subparsers(required=True)
@@ -443,6 +459,41 @@ def cmd_upgrade(_args: argparse.Namespace, data_dir: Path) -> int:
 
 def cmd_config_show(_args: argparse.Namespace, data_dir: Path) -> int:
     print(json.dumps(load_config(data_dir), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_account_status(_args: argparse.Namespace, data_dir: Path) -> int:
+    status = auth_status(data_dir)
+    print("Authentication")
+    print(f"Enabled: {status['enabled']}")
+    print(f"Setup required: {status['setup_required']}")
+    print(f"Accounts: {len(list_accounts(data_dir))}")
+    policy = status.get("secret_management", {}).get("policy")
+    if policy:
+        print(f"Secret policy: {policy}")
+    return 0
+
+
+def cmd_account_setup(args: argparse.Namespace, data_dir: Path) -> int:
+    password = args.password
+    if not password:
+        password = getpass.getpass("Owner password: ")
+        confirm = getpass.getpass("Confirm password: ")
+        if password != confirm:
+            raise DivineToolError("Passwords do not match.")
+    account = create_account(data_dir, args.username, password, display_name=args.display_name)
+    print(f"Created owner account: {account['username']}")
+    return 0
+
+
+def cmd_account_list(_args: argparse.Namespace, data_dir: Path) -> int:
+    accounts = list_accounts(data_dir)
+    if not accounts:
+        print("No accounts configured.")
+        return 0
+    for account in accounts:
+        disabled = " disabled" if account["disabled"] else ""
+        print(f"#{account['id']} {account['username']} ({account['role']}){disabled}")
     return 0
 
 

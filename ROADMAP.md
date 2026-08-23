@@ -8,11 +8,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v1.0.0`: first complete operational release with web dashboard, API, daemon worker, persistent state, and safe local operation.
 - `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`, `v1.6.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
 - `v1.1.1`, `v1.1.2`: patch releases for bug fixes, small polish, reliability improvements, or security fixes.
-- `v2.0.0`: major architecture or product expansion, especially multi-user hosting, external integrations, or production deployment.
+- `v2.0.0`: major architecture or product expansion, especially account protection, external integrations, or production deployment.
 
 ## Current Status
 
-Current version: `v1.6.0`.
+Current version: `v2.0.0`.
 
 Completed:
 
@@ -38,6 +38,8 @@ Completed:
 - Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
 - Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
 - Approval queue with approve, reject, and manual-complete states.
+- Owner account setup, password login, hashed sessions, protected dashboard/API routes, and role-aware account status.
+- Secret-management guidance for future hosted integrations.
 
 ## Phase 0: Foundation
 
@@ -309,7 +311,7 @@ Goal: turn the local tool into a production-grade application.
 
 ### Stage 4.1: Authentication And Accounts
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -321,6 +323,8 @@ Deliverables:
 Release target:
 
 - `v2.0.0`.
+
+Release status: shipped.
 
 ### Stage 4.2: Hosted Deployment
 
@@ -355,9 +359,10 @@ Release target:
 
 ## Operational Definition
 
-The tool is fully operational for `v1` when the Creator can:
+The tool is fully operational for protected local use when the Creator can:
 
 - Open the dashboard.
+- Sign in with the local owner account.
 - See the current quota and deadline.
 - Add income.
 - Change mood and quota.
@@ -372,11 +377,11 @@ The tool is fully operational for `v1` when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 4, Stage 4.1 next:
+Build Phase 4, Stage 4.2 next:
 
-- Add authentication-ready account boundaries.
-- Protect dashboard access.
-- Add secret-management guidance for future hosted integrations.
-- Prepare the project for production deployment decisions.
+- Prepare production build/deployment options.
+- Decide hosted database and background job strategy.
+- Add monitoring and backup planning.
+- Keep secrets out of project files.
 
-That starts the production temple track by separating local power-user mode from a future protected, hosted application.
+That turns the protected local temple into a deployable production application plan.
