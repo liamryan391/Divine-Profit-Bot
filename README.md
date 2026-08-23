@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v1.3.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v1.4.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -28,6 +28,7 @@ python -m divine_tool income add 75 --source "paid consultation" --strategy free
 python -m divine_tool opportunities
 python -m divine_tool roi
 python -m divine_tool report --period week
+python -m divine_tool import .\income-export.csv --type payment --dry-run
 python -m divine_tool upgrade
 ```
 
@@ -106,6 +107,7 @@ The local web app provides:
 - Opportunity scoring by value, effort, risk, deadline fit, repeatability, probability, and recorded strategy evidence.
 - Strategy ROI comparing current period, previous period, average conversion size, return per effort, and pause/push recommendations.
 - Weekly and monthly report generation with quota results, missed-quota review, ROI summary, priority opportunities, upgrades, and income entries.
+- Manual CSV imports for generic income, payment exports, and affiliate reports, with dry-run review and duplicate detection.
 
 Run it with:
 
@@ -132,6 +134,20 @@ The dashboard ranks strategies using:
 - repeatability
 - probability
 - income already produced by that strategy
+
+## Manual Imports
+
+Use import mode when a bank, payment processor, or affiliate platform gives you a CSV export:
+
+```powershell
+python -m divine_tool import .\income-export.csv --type payment --dry-run
+python -m divine_tool import .\income-export.csv --type payment
+python -m divine_tool import .\affiliate-report.csv --type affiliate
+```
+
+Supported import types are `generic`, `payment`, and `affiliate`. The importer accepts common column names such as `date`, `paid_at`, `amount`, `net_amount`, `commission`, `currency`, `gbp_equivalent`, `source`, `description`, `program`, `strategy`, `channel`, `transaction_id`, `reference`, and `sale_id`.
+
+Dry runs show rows that are ready, duplicate, or skipped without writing to the ledger. Non-GBP rows need a GBP equivalent column so quota accounting stays explicit.
 
 ## Strategy ROI
 

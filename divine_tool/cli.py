@@ -18,6 +18,7 @@ from .core import (
     generate_opportunities,
     generate_report,
     generate_upgrades,
+    import_income_csv,
     list_exceptions,
     list_income,
     load_config,
@@ -112,6 +113,13 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--format", choices=["markdown", "json"], default="markdown")
     report.add_argument("--output", help="Optional file path for the generated report.")
     report.set_defaults(func=cmd_report)
+
+    importer = sub.add_parser("import", help="Import income from a CSV file.")
+    importer.add_argument("file", help="CSV file path.")
+    importer.add_argument("--type", choices=["generic", "payment", "affiliate"], default="generic")
+    importer.add_argument("--strategy", default="", help="Default strategy id when the CSV has no strategy column.")
+    importer.add_argument("--dry-run", action="store_true", help="Parse and detect duplicates without writing income.")
+    importer.set_defaults(func=cmd_import)
 
     upgrade = sub.add_parser("upgrade", help="Show upgrade recommendations.")
     upgrade.set_defaults(func=cmd_upgrade)
@@ -270,6 +278,34 @@ def cmd_report(args: argparse.Namespace, data_dir: Path) -> int:
         print(f"Report written to {output}")
     else:
         print(content)
+    return 0
+
+
+def cmd_import(args: argparse.Namespace, data_dir: Path) -> int:
+    path = Path(args.file)
+    csv_text = path.read_text(encoding="utf-8-sig")
+    result = import_income_csv(
+        data_dir,
+        csv_text,
+        source_type=args.type,
+        default_strategy=args.strategy,
+        dry_run=args.dry_run,
+        filename=path.name,
+    )
+    if args.dry_run:
+        print(
+            f"CSV import dry run: {result['ready_count']} ready, "
+            f"{result['duplicate_count']} duplicate, {result['skipped_count']} skipped."
+        )
+    else:
+        print(
+            f"CSV import complete: {result['imported_count']} imported, "
+            f"{result['duplicate_count']} duplicate, {result['skipped_count']} skipped."
+        )
+    for row in result["rows"]:
+        if row["status"] in {"skipped", "duplicate"}:
+            detail = row.get("reason") or f"existing income #{row.get('existing_id')}"
+            print(f"- row {row.get('row_number', '?')}: {row['status']} - {detail}")
     return 0
 
 

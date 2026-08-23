@@ -19,6 +19,7 @@ from .core import (
     generate_opportunities,
     generate_report,
     generate_upgrades,
+    import_income_csv,
     list_events,
     list_exceptions,
     list_income,
@@ -146,6 +147,17 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         command["date"] = payload["date"]
                     enqueue_command(data_dir, command)
                     self.send_json({"ok": True, "state": dashboard_payload(data_dir)})
+                    return
+                if parsed.path == "/api/import/csv":
+                    result = import_income_csv(
+                        data_dir,
+                        csv_text=str(payload["csv_text"]),
+                        source_type=str(payload.get("source_type", "generic")),
+                        default_strategy=str(payload.get("default_strategy", "")),
+                        dry_run=bool(payload.get("dry_run", False)),
+                        filename=str(payload.get("filename", "")),
+                    )
+                    self.send_json({"ok": True, "import_result": result, "state": dashboard_payload(data_dir)})
                     return
                 if parsed.path == "/api/daemon/run-once":
                     outcomes = process_command_inbox(data_dir)

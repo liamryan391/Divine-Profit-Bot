@@ -6,13 +6,13 @@ This roadmap defines how the project moves from the current command-line foundat
 
 - `v0.x`: foundation work before the full hybrid product is operational.
 - `v1.0.0`: first complete operational release with web dashboard, API, daemon worker, persistent state, and safe local operation.
-- `v1.1.0`, `v1.2.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
+- `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
 - `v1.1.1`, `v1.1.2`: patch releases for bug fixes, small polish, reliability improvements, or security fixes.
 - `v2.0.0`: major architecture or product expansion, especially multi-user hosting, external integrations, or production deployment.
 
 ## Current Status
 
-Current version: `v1.3.0`.
+Current version: `v1.4.0`.
 
 Completed:
 
@@ -33,6 +33,8 @@ Completed:
 - Opportunity scoring with strategy evidence.
 - Strategy ROI with current-vs-previous comparison and pause recommendations.
 - Weekly and monthly report generation.
+- Manual CSV importers for generic income, payment exports, and affiliate reports.
+- Dry-run import review and duplicate detection.
 
 ## Phase 0: Foundation
 
@@ -249,7 +251,7 @@ Goal: connect real-world sources while keeping human approval for sensitive acti
 
 ### Stage 3.1: Manual Importers
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -260,7 +262,9 @@ Deliverables:
 
 Release target:
 
-- `v1.2.0`.
+- `v1.4.0`.
+
+Release status: shipped.
 
 ### Stage 3.2: External Data Connections
 
@@ -275,7 +279,7 @@ Deliverables:
 
 Release target:
 
-- `v1.3.0` or later.
+- `v1.5.0`.
 
 ### Stage 3.3: Human-Approved Actions
 
@@ -290,7 +294,7 @@ Deliverables:
 
 Release target:
 
-- `v1.3.0` or later.
+- `v1.6.0` or later.
 
 ## Phase 4: V2 Production Temple
 
@@ -351,6 +355,7 @@ The tool is fully operational for `v1` when the Creator can:
 - Add income.
 - Change mood and quota.
 - Add exceptions.
+- Import income from CSV exports.
 - See live daemon health.
 - Review temple logs.
 - Receive practical next-action recommendations.
@@ -358,10 +363,11 @@ The tool is fully operational for `v1` when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 3, Stage 3.1 next:
+Build Phase 3, Stage 3.2 next:
 
-- Add CSV import for income.
-- Add payment or affiliate export import.
-- Add duplicate detection.
+- Add optional currency-rate lookup.
+- Add read-only payment processor summaries.
+- Add GitHub/project telemetry if it helps measure revenue work.
+- Keep all external actions human-approved.
 
-That starts the integration phase by letting real-world income exports feed the engine faster.
+That continues the integration phase by moving from manual imports toward read-only external context while keeping the engine safe and auditable.

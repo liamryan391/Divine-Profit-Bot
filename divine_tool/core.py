@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import hashlib
+import io
 import json
 import shutil
 import sqlite3
@@ -109,6 +112,7 @@ def ensure_state(data_dir: Path) -> None:
                 currency TEXT NOT NULL,
                 gbp_minor INTEGER NOT NULL,
                 strategy TEXT NOT NULL DEFAULT '',
+                import_fingerprint TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
                 occurred_at TEXT NOT NULL,
@@ -117,6 +121,8 @@ def ensure_state(data_dir: Path) -> None:
             """
         )
         ensure_column(conn, "income", "strategy", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "income", "import_fingerprint", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_import_fingerprint ON income(import_fingerprint)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS exceptions (
@@ -344,6 +350,74 @@ def slugify(value: str) -> str:
     return "".join(output).strip("_") or "strategy"
 
 
+def normalize_header(value: str) -> str:
+    return "".join(char for char in value.lower() if char.isalnum())
+
+
+def first_present(row: dict[str, str], candidates: list[str]) -> str:
+    normalized = {normalize_header(key): value for key, value in row.items()}
+    for candidate in candidates:
+        value = normalized.get(normalize_header(candidate), "")
+        if str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def clean_money_value(value: str) -> str:
+    cleaned = str(value).strip()
+    is_parenthesized_negative = cleaned.startswith("(") and cleaned.endswith(")")
+    if is_parenthesized_negative:
+        cleaned = cleaned[1:-1]
+    for char in ["£", "$", "€", ","]:
+        cleaned = cleaned.replace(char, "")
+    for token in ["GBP", "USD", "EUR", "BTC", "LTC", "XMR"]:
+        cleaned = cleaned.replace(token, "").replace(token.lower(), "")
+    cleaned = cleaned.strip()
+    if is_parenthesized_negative:
+        cleaned = f"-{cleaned}"
+    return cleaned
+
+
+def parse_import_date(value: str) -> date:
+    raw = str(value).strip()
+    try:
+        return parse_date(raw)
+    except DivineToolError:
+        pass
+
+    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    raise DivineToolError(f"Invalid import date '{value}'. Use YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, or DD Mon YYYY.")
+
+
+def income_fingerprint(
+    amount_minor: int,
+    currency: str,
+    gbp_minor: int,
+    strategy: str,
+    source: str,
+    note: str,
+    occurred_at: str,
+    external_id: str = "",
+) -> str:
+    payload = "|".join(
+        [
+            str(amount_minor),
+            currency.upper(),
+            str(gbp_minor),
+            strategy.strip().lower(),
+            source.strip().lower(),
+            note.strip().lower(),
+            occurred_at,
+            external_id.strip().lower(),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def format_money(minor: int, currency: str = "GBP") -> str:
     symbol = "£" if currency.upper() == "GBP" else f"{currency.upper()} "
     sign = "-" if minor < 0 else ""
@@ -399,6 +473,7 @@ def add_income(
     source: str,
     note: str = "",
     strategy: str = "",
+    import_fingerprint: str = "",
     occurred_on: date | None = None,
 ) -> int:
     ensure_state(data_dir)
@@ -410,18 +485,225 @@ def add_income(
     occurred = (occurred_on or date.today()).isoformat()
     created = now_iso()
     with db(data_dir) as conn:
+        if import_fingerprint:
+            existing = conn.execute(
+                """
+                SELECT id FROM income
+                WHERE import_fingerprint = ?
+                LIMIT 1
+                """,
+                (import_fingerprint,),
+            ).fetchone()
+            if existing:
+                raise DivineToolError(f"Duplicate imported income row already exists as #{existing['id']}.")
         cur = conn.execute(
             """
-            INSERT INTO income (amount_minor, currency, gbp_minor, strategy, source, note, occurred_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO income (amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (amount_minor, currency, gbp_minor, strategy, source, note, occurred, created),
+            (amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred, created),
         )
         conn.commit()
         income_id = int(cur.lastrowid)
     strategy_suffix = f" [{strategy}]" if strategy else ""
     log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}{strategy_suffix}", "income")
     return income_id
+
+
+def import_income_csv(
+    data_dir: Path,
+    csv_text: str,
+    source_type: str = "generic",
+    default_strategy: str = "",
+    dry_run: bool = False,
+    filename: str = "",
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    source_type = source_type.lower()
+    if source_type not in {"generic", "payment", "affiliate"}:
+        raise DivineToolError("Import type must be generic, payment, or affiliate.")
+
+    reader = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")))
+    if not reader.fieldnames:
+        raise DivineToolError("CSV import needs a header row.")
+
+    result: dict[str, Any] = {
+        "source_type": source_type,
+        "filename": filename,
+        "dry_run": dry_run,
+        "ready_count": 0,
+        "imported_count": 0,
+        "duplicate_count": 0,
+        "skipped_count": 0,
+        "rows": [],
+        "errors": [],
+    }
+    seen_fingerprints: dict[str, int] = {}
+
+    for index, raw_row in enumerate(reader, start=2):
+        row = {str(key or "").strip(): str(value or "").strip() for key, value in raw_row.items()}
+        parsed = parse_import_row(row, source_type, default_strategy)
+        parsed["row_number"] = index
+        if parsed.get("status") == "skipped":
+            result["skipped_count"] += 1
+            result["rows"].append(parsed)
+            continue
+
+        fingerprint = income_fingerprint(
+            amount_minor=parsed["amount_minor"],
+            currency=parsed["currency"],
+            gbp_minor=parsed["gbp_minor"],
+            strategy=parsed["strategy"],
+            source=parsed["source"],
+            note=parsed["note"],
+            occurred_at=parsed["date"],
+            external_id=parsed["external_id"],
+        )
+        parsed["fingerprint"] = fingerprint
+        existing_id = existing_import_id(data_dir, fingerprint)
+        if existing_id is not None:
+            parsed["status"] = "duplicate"
+            parsed["existing_id"] = existing_id
+            result["duplicate_count"] += 1
+            result["rows"].append(parsed)
+            continue
+
+        if fingerprint in seen_fingerprints:
+            parsed["status"] = "duplicate"
+            parsed["reason"] = f"Matches row {seen_fingerprints[fingerprint]} in this CSV."
+            result["duplicate_count"] += 1
+            result["rows"].append(parsed)
+            continue
+        seen_fingerprints[fingerprint] = index
+
+        if dry_run:
+            parsed["status"] = "ready"
+            result["ready_count"] += 1
+            result["rows"].append(parsed)
+            continue
+
+        income_id = add_income(
+            data_dir,
+            amount_minor=parsed["amount_minor"],
+            currency=parsed["currency"],
+            gbp_minor=parsed["gbp_minor"],
+            source=parsed["source"],
+            note=parsed["note"],
+            strategy=parsed["strategy"],
+            import_fingerprint=fingerprint,
+            occurred_on=parse_date(parsed["date"]),
+        )
+        parsed["status"] = "imported"
+        parsed["id"] = income_id
+        result["imported_count"] += 1
+        result["rows"].append(parsed)
+
+    log_event(
+        data_dir,
+        f"CSV import complete: {result['imported_count']} imported, {result['duplicate_count']} duplicate, {result['skipped_count']} skipped",
+        "import",
+    )
+    return result
+
+
+def parse_import_row(row: dict[str, str], source_type: str, default_strategy: str) -> dict[str, Any]:
+    amount_value = first_present(
+        row,
+        [
+            "amount",
+            "gbp_amount",
+            "amount_gbp",
+            "net",
+            "net_amount",
+            "total",
+            "paid",
+            "commission",
+            "commission_amount",
+            "revenue",
+            "payout",
+        ],
+    )
+    date_value = first_present(row, ["date", "occurred_at", "transaction_date", "paid_at", "created", "created_at"])
+    source_value = first_present(
+        row,
+        [
+            "source",
+            "description",
+            "customer",
+            "client",
+            "merchant",
+            "name",
+            "campaign",
+            "product",
+            "program",
+            "advertiser",
+        ],
+    )
+    note_value = first_present(row, ["note", "notes", "memo", "details", "description", "reference"])
+    currency = first_present(row, ["currency", "currency_code", "ccy"]) or "GBP"
+    gbp_equivalent = first_present(row, ["gbp_equivalent", "gbp", "gbp_amount", "amount_gbp", "net_gbp"])
+    strategy = first_present(row, ["strategy", "channel", "module", "category"]) or default_strategy
+    external_id = first_present(row, ["transaction_id", "id", "reference", "ref", "order_id", "payment_id", "sale_id"])
+
+    if not strategy:
+        if source_type == "affiliate":
+            strategy = "affiliate_referral"
+        elif source_type == "payment":
+            strategy = "freelance_services"
+
+    if not amount_value:
+        return import_skip("Missing amount.")
+    if not date_value:
+        return import_skip("Missing date.")
+    if not source_value:
+        source_value = f"{source_type} import"
+
+    try:
+        amount_minor = parse_money_to_minor(clean_money_value(amount_value))
+        occurred = parse_import_date(date_value)
+    except DivineToolError as exc:
+        return import_skip(str(exc))
+
+    if amount_minor <= 0:
+        return import_skip("Amount is not positive income.")
+
+    currency = currency.upper()
+    try:
+        gbp_minor = amount_minor if currency == "GBP" else parse_money_to_minor(clean_money_value(gbp_equivalent))
+    except DivineToolError:
+        return import_skip("Non-GBP row needs a GBP equivalent column.")
+
+    return {
+        "status": "parsed",
+        "date": occurred.isoformat(),
+        "amount": format_money(amount_minor, currency),
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "gbp": format_money(gbp_minor),
+        "gbp_minor": gbp_minor,
+        "source": source_value,
+        "note": note_value,
+        "strategy": strategy,
+        "external_id": external_id,
+    }
+
+
+def import_skip(reason: str) -> dict[str, Any]:
+    return {"status": "skipped", "reason": reason}
+
+
+def existing_import_id(data_dir: Path, fingerprint: str) -> int | None:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            """
+            SELECT id FROM income
+            WHERE import_fingerprint = ?
+            LIMIT 1
+            """,
+            (fingerprint,),
+        ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def list_income(data_dir: Path, limit: int = 20) -> list[sqlite3.Row]:

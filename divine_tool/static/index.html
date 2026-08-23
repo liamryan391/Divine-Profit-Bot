@@ -149,6 +149,38 @@
 
         <article class="panel">
           <div class="section-heading">
+            <h2>Import Altar</h2>
+          </div>
+          <form id="importForm" class="control-form">
+            <label>
+              CSV File
+              <input name="file" type="file" accept=".csv,text/csv" required />
+            </label>
+            <label>
+              Import Type
+              <select name="source_type">
+                <option value="generic">Generic CSV</option>
+                <option value="payment">Payment Export</option>
+                <option value="affiliate">Affiliate Report</option>
+              </select>
+            </label>
+            <label>
+              Default Strategy
+              <select name="default_strategy" id="importStrategy">
+                <option value="">Auto / Unassigned</option>
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <input name="dry_run" type="checkbox" checked />
+              Dry run first
+            </label>
+            <button class="button primary" type="submit">Import CSV</button>
+          </form>
+          <div id="importResult" class="import-result"></div>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
             <h2>Quota Control</h2>
           </div>
           <form id="quotaForm" class="control-form">

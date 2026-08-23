@@ -1,6 +1,7 @@
 const state = {
   latest: null,
   report: null,
+  importResult: null,
   toastTimer: null,
 };
 
@@ -299,20 +300,23 @@ function hydrateMoodControls(config) {
 }
 
 function hydrateStrategyControls(config) {
-  const select = $("#incomeStrategy");
-  const currentValue = select.value;
-  select.replaceChildren();
-  const unassigned = document.createElement("option");
-  unassigned.value = "";
-  unassigned.textContent = "Unassigned";
-  select.appendChild(unassigned);
-  for (const channel of config.channels || []) {
-    const option = document.createElement("option");
-    option.value = channel.id || slugify(channel.name);
-    option.textContent = channel.name;
-    select.appendChild(option);
+  for (const selector of ["#incomeStrategy", "#importStrategy"]) {
+    const select = $(selector);
+    if (!select) continue;
+    const currentValue = select.value;
+    select.replaceChildren();
+    const unassigned = document.createElement("option");
+    unassigned.value = "";
+    unassigned.textContent = selector === "#importStrategy" ? "Auto / Unassigned" : "Unassigned";
+    select.appendChild(unassigned);
+    for (const channel of config.channels || []) {
+      const option = document.createElement("option");
+      option.value = channel.id || slugify(channel.name);
+      option.textContent = channel.name;
+      select.appendChild(option);
+    }
+    select.value = [...select.options].some((option) => option.value === currentValue) ? currentValue : "";
   }
-  select.value = [...select.options].some((option) => option.value === currentValue) ? currentValue : "";
 }
 
 function configRow(label, value) {
@@ -425,6 +429,66 @@ function attachReportControls() {
   });
 }
 
+function attachImportControls() {
+  $("#importForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const file = form.elements.file.files[0];
+    if (!file) {
+      showToast("Choose a CSV file first");
+      return;
+    }
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      const payload = await request("/api/import/csv", {
+        method: "POST",
+        body: JSON.stringify({
+          csv_text: await file.text(),
+          filename: file.name,
+          source_type: form.elements.source_type.value,
+          default_strategy: form.elements.default_strategy.value,
+          dry_run: form.elements.dry_run.checked,
+        }),
+      });
+      state.latest = payload.state;
+      render(payload.state);
+      renderImportResult(payload.import_result);
+      showToast(form.elements.dry_run.checked ? "Import dry run complete" : "CSV import complete");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+function renderImportResult(result) {
+  state.importResult = result;
+  const target = $("#importResult");
+  target.replaceChildren();
+  if (!result) return;
+  const summary = document.createElement("div");
+  summary.className = "import-summary";
+  summary.innerHTML = "<strong></strong><span></span>";
+  summary.querySelector("strong").textContent = result.dry_run ? "Dry Run Complete" : "Import Complete";
+  const primaryCount = result.dry_run ? `${result.ready_count || 0} ready` : `${result.imported_count} imported`;
+  summary.querySelector("span").textContent =
+    `${primaryCount}, ${result.duplicate_count} duplicate, ${result.skipped_count} skipped`;
+  target.appendChild(summary);
+
+  const rows = result.rows.filter((row) => row.status !== "parsed").slice(0, 8);
+  for (const row of rows) {
+    const item = document.createElement("div");
+    item.className = `import-row import-${row.status}`;
+    item.innerHTML = "<strong></strong><span></span>";
+    item.querySelector("strong").textContent = `Row ${row.row_number || "?"}: ${titleCase(row.status)}`;
+    item.querySelector("span").textContent =
+      row.reason || (row.existing_id ? `Existing income #${row.existing_id}` : `${row.gbp || ""} ${row.source || ""}`);
+    target.appendChild(item);
+  }
+}
+
 function showToast(message) {
   const toast = $("#toast");
   toast.textContent = message;
@@ -469,5 +533,6 @@ attachForm("#moodForm", "/api/mood", "Mood updated");
 attachForm("#exceptionForm", "/api/exception", "Exception added");
 attachPulse();
 attachReportControls();
+attachImportControls();
 refresh();
 setInterval(refresh, 10000);

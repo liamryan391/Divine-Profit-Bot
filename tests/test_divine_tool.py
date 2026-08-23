@@ -15,6 +15,8 @@ from divine_tool.core import (
     enqueue_command,
     generate_opportunities,
     generate_report,
+    import_income_csv,
+    list_income,
     load_config,
     parse_money_to_minor,
     process_command_inbox,
@@ -112,6 +114,27 @@ class DivineToolTests(unittest.TestCase):
                 self.assertIn("report", report_payload)
                 self.assertIn("markdown", report_payload["report"])
                 self.assertIn("Missed-Quota Review", report_payload["report"]["markdown"])
+
+                import_body = json.dumps(
+                    {
+                        "csv_text": "Date,Amount,Source,Strategy\n2026-08-21,15.00,web import,freelance_services\n",
+                        "source_type": "payment",
+                        "dry_run": False,
+                        "filename": "web-import.csv",
+                    }
+                ).encode("utf-8")
+                import_request = Request(
+                    f"{base_url}/api/import/csv",
+                    data=import_body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(import_request) as response:
+                    import_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(import_payload["ok"])
+                self.assertEqual(import_payload["import_result"]["imported_count"], 1)
+                self.assertEqual(import_payload["state"]["status"]["earned_minor"], 4500)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -233,6 +256,60 @@ class DivineToolTests(unittest.TestCase):
             self.assertIn("## Strategy ROI", report["markdown"])
             self.assertIn("## Upgrade Recommendations", report["markdown"])
             self.assertEqual(report["income"][0]["note"], "report note")
+
+    def test_import_income_csv_dry_run_and_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            csv_text = (
+                "Date,Amount,Source,Strategy,Reference,Note\n"
+                "21/08/2026,£42.50,client invoice,freelance_services,INV-1,paid\n"
+                "21/08/2026,GBP 42.50,client invoice,freelance_services,INV-1,paid\n"
+                "2026-08-21,-3.00,refund,freelance_services,REF-1,refund\n"
+            )
+
+            dry_run = import_income_csv(data_dir, csv_text, source_type="payment", dry_run=True, filename="payments.csv")
+
+            self.assertEqual(dry_run["ready_count"], 1)
+            self.assertEqual(dry_run["duplicate_count"], 1)
+            self.assertEqual(dry_run["skipped_count"], 1)
+            self.assertEqual(dry_run["rows"][0]["status"], "ready")
+            self.assertEqual(dry_run["rows"][1]["status"], "duplicate")
+            self.assertIn("Matches row 2", dry_run["rows"][1]["reason"])
+
+            imported = import_income_csv(data_dir, csv_text, source_type="payment", dry_run=False, filename="payments.csv")
+            rows = list_income(data_dir)
+
+            self.assertEqual(imported["imported_count"], 1)
+            self.assertEqual(imported["duplicate_count"], 1)
+            self.assertEqual(imported["skipped_count"], 1)
+            self.assertEqual(rows[0]["gbp_minor"], 4250)
+            self.assertEqual(rows[0]["strategy"], "freelance_services")
+
+            duplicate_run = import_income_csv(data_dir, csv_text, source_type="payment", dry_run=False, filename="payments.csv")
+
+            self.assertEqual(duplicate_run["imported_count"], 0)
+            self.assertEqual(duplicate_run["duplicate_count"], 2)
+            self.assertEqual(duplicate_run["skipped_count"], 1)
+            self.assertEqual(status_report(data_dir, today=date(2026, 8, 21))["earned_minor"], 4250)
+
+    def test_import_income_csv_affiliate_and_non_gbp_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            csv_text = (
+                "paid_at,commission,currency,gbp_equivalent,program,sale_id\n"
+                "21 Aug 2026,12.34,USD,9.75,Partner Network,A-1\n"
+                "21 Aug 2026,0.01,BTC,,Crypto Network,A-2\n"
+            )
+
+            result = import_income_csv(data_dir, csv_text, source_type="affiliate", dry_run=False)
+            rows = list_income(data_dir)
+
+            self.assertEqual(result["imported_count"], 1)
+            self.assertEqual(result["skipped_count"], 1)
+            self.assertEqual(rows[0]["gbp_minor"], 975)
+            self.assertEqual(rows[0]["currency"], "USD")
+            self.assertEqual(rows[0]["strategy"], "affiliate_referral")
+            self.assertEqual(result["rows"][1]["reason"], "Non-GBP row needs a GBP equivalent column.")
 
 
 if __name__ == "__main__":

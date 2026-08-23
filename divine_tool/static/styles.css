@@ -312,6 +312,7 @@ h2 {
 .terminal-log,
 .roi-list,
 .recommendation-list,
+.import-result,
 .upgrade-grid {
   display: grid;
   gap: 10px;
@@ -405,6 +406,54 @@ h2 {
   display: grid;
   align-items: start;
   justify-content: stretch;
+}
+
+.checkbox-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  color: var(--text);
+}
+
+.checkbox-row input {
+  width: 18px;
+  min-height: 18px;
+}
+
+.import-result {
+  margin-top: 14px;
+}
+
+.import-summary,
+.import-row {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border-left: 3px solid var(--blue);
+}
+
+.import-summary {
+  border-left-color: var(--green);
+}
+
+.import-row span,
+.import-summary span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.import-skipped {
+  border-left-color: var(--gold);
+}
+
+.import-duplicate {
+  border-left-color: var(--violet);
+}
+
+.import-imported,
+.import-ready {
+  border-left-color: var(--green);
 }
 
 .priority-row.recommendation-push strong {
