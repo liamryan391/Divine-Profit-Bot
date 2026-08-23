@@ -1,0 +1,359 @@
+# Divine Profit Bot Roadmap
+
+This roadmap defines how the project moves from the current command-line foundation into the hybrid web app plus daemon worker: the Digital Temple dashboard and the Divine Income Engine.
+
+## Version Rules
+
+- `v0.x`: foundation work before the full hybrid product is operational.
+- `v1.0.0`: first complete operational release with web dashboard, API, daemon worker, persistent state, and safe local operation.
+- `v1.1.0`, `v1.2.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
+- `v1.1.1`, `v1.1.2`: patch releases for bug fixes, small polish, reliability improvements, or security fixes.
+- `v2.0.0`: major architecture or product expansion, especially multi-user hosting, external integrations, or production deployment.
+
+## Current Status
+
+Current version: `v0.1.0`.
+
+Completed:
+
+- Local quota engine.
+- GBP income ledger.
+- Mood-based weekly/monthly targets.
+- Exceptions for missed quota windows.
+- Background command inbox.
+- Basic daemon loop.
+- Upgrade recommendations.
+- Unit tests for the core flow.
+
+Not `v1` ready yet:
+
+- No web dashboard.
+- No local API server.
+- No frontend controls.
+- No daemon supervisor or status heartbeat.
+- No browser-based temple log.
+- No packaged run command for the full hybrid app.
+
+## Phase 0: Foundation
+
+Goal: establish the lawful money-tracking core and prove the core rules work.
+
+### Stage 0.1: Core Ledger
+
+Status: complete.
+
+Deliverables:
+
+- Income entries with source notes.
+- GBP quota accounting.
+- Non-GBP income support with explicit GBP equivalent.
+- SQLite persistence.
+
+Exit gate:
+
+- Income can be recorded and counted toward the current period.
+
+### Stage 0.2: Mood, Quota, And Exceptions
+
+Status: complete.
+
+Deliverables:
+
+- Configurable moods.
+- Weekly or monthly quota periods.
+- Mercy exceptions for valid missed-quota circumstances.
+- Consequence states without destructive behavior.
+
+Exit gate:
+
+- The tool can report whether the quota is satisfied, at risk, or covered by an exception.
+
+### Stage 0.3: Command Inbox And Daemon Loop
+
+Status: complete.
+
+Deliverables:
+
+- Queueable commands.
+- One-pass daemon mode.
+- Continuous daemon mode.
+- Processed and failed command logs.
+
+Exit gate:
+
+- A queued command can be processed by the daemon and reflected in status.
+
+## Phase 1: Hybrid App V1
+
+Goal: make the project a usable local web application backed by the existing engine.
+
+### Stage 1.1: Local API Service
+
+Status: pending.
+
+Deliverables:
+
+- HTTP API for status, income, quotas, moods, exceptions, opportunities, upgrades, and logs.
+- Shared access to the existing SQLite state.
+- Input validation and clear error responses.
+- Health endpoint for the daemon and frontend.
+
+Exit gate:
+
+- The web app can get and update all core state through the API.
+
+### Stage 1.2: Digital Temple Dashboard
+
+Status: pending.
+
+Deliverables:
+
+- Dark dashboard matching the reference direction.
+- Current quota card.
+- Income this period card.
+- Active module card.
+- Temple level card.
+- Quota progress bar.
+- Time remaining.
+- Active strategies.
+- Divine configuration.
+- Temple log.
+
+Exit gate:
+
+- A user can understand quota health, income progress, and active strategy state from the first screen.
+
+### Stage 1.3: Control Panel
+
+Status: pending.
+
+Deliverables:
+
+- Add income form.
+- Set quota form.
+- Change mood control.
+- Add exception form.
+- Queue command control.
+- Start/stop guidance for background mode.
+
+Exit gate:
+
+- The user can operate the core tool from the web app without using the CLI for normal tasks.
+
+### Stage 1.4: Worker Heartbeat
+
+Status: pending.
+
+Deliverables:
+
+- Daemon heartbeat stored in state.
+- Last-run timestamp.
+- Worker status indicator in the dashboard.
+- Failed command visibility.
+- Basic recovery messages.
+
+Exit gate:
+
+- The dashboard can show whether the background worker is alive and when it last checked in.
+
+### Stage 1.5: V1 Packaging
+
+Status: pending.
+
+Deliverables:
+
+- One command to run the API and frontend locally.
+- One command to run the daemon.
+- Clear environment/config defaults.
+- Updated README.
+- Tests for API and core flows.
+
+Exit gate:
+
+- A fresh clone can run the full local hybrid app with documented commands.
+
+## V1.0.0 Ready Criteria
+
+The project is `v1.0.0` ready when all of these are true:
+
+- Web dashboard runs locally.
+- API service runs locally.
+- Daemon worker runs and reports heartbeat.
+- Income can be added from the web UI.
+- Quota, mood, and exceptions can be managed from the web UI.
+- Temple log is visible in the web UI.
+- State persists after restart.
+- The README explains setup, run, and operation.
+- Tests pass.
+- No module performs unlawful, deceptive, spammy, unauthorized, or autonomous high-risk money movement.
+
+## Phase 2: V1.1 Revenue Intelligence
+
+Goal: improve the engine after the basic temple is operational.
+
+### Stage 2.1: Opportunity Scoring
+
+Status: pending.
+
+Deliverables:
+
+- Score revenue opportunities by expected value, effort, risk, deadline fit, and repeatability.
+- Show the top recommended next action.
+- Track which strategies produce real income.
+
+Release target:
+
+- `v1.1.0`.
+
+### Stage 2.2: Strategy ROI
+
+Status: pending.
+
+Deliverables:
+
+- Track income by strategy.
+- Show conversion notes.
+- Compare revenue channels over time.
+- Recommend low-return channels to pause.
+
+Release target:
+
+- `v1.1.0` or `v1.2.0`, depending on size.
+
+### Stage 2.3: Report Generation
+
+Status: pending.
+
+Deliverables:
+
+- Weekly report.
+- Monthly report.
+- Missed-quota review.
+- Upgrade recommendation summary.
+
+Release target:
+
+- `v1.1.0` if small, `v1.2.0` if it includes export files.
+
+## Phase 3: Integrations
+
+Goal: connect real-world sources while keeping human approval for sensitive actions.
+
+### Stage 3.1: Manual Importers
+
+Status: pending.
+
+Deliverables:
+
+- CSV import for income.
+- Bank/payment export import.
+- Affiliate report import.
+- Duplicate detection.
+
+Release target:
+
+- `v1.2.0`.
+
+### Stage 3.2: External Data Connections
+
+Status: pending.
+
+Deliverables:
+
+- Optional currency-rate lookup.
+- Optional payment processor read-only summaries.
+- Optional GitHub/project telemetry.
+- Optional product analytics import.
+
+Release target:
+
+- `v1.3.0` or later.
+
+### Stage 3.3: Human-Approved Actions
+
+Status: pending.
+
+Deliverables:
+
+- Draft invoice reminders.
+- Draft outreach messages.
+- Draft content prompts.
+- Approval queue before anything external is sent.
+
+Release target:
+
+- `v1.3.0` or later.
+
+## Phase 4: V2 Production Temple
+
+Goal: turn the local tool into a production-grade application.
+
+### Stage 4.1: Authentication And Accounts
+
+Status: future.
+
+Deliverables:
+
+- User login.
+- Protected dashboard.
+- Role-aware settings.
+- Secret management.
+
+Release target:
+
+- `v2.0.0`.
+
+### Stage 4.2: Hosted Deployment
+
+Status: future.
+
+Deliverables:
+
+- Production build.
+- Hosted database.
+- Background job hosting.
+- Monitoring.
+- Backups.
+
+Release target:
+
+- `v2.0.0`.
+
+### Stage 4.3: Multi-Temple Expansion
+
+Status: future.
+
+Deliverables:
+
+- Multiple projects or temples.
+- Separate quota profiles.
+- Strategy templates.
+- Cross-temple reporting.
+
+Release target:
+
+- `v2.1.0` or later.
+
+## Operational Definition
+
+The tool is fully operational for `v1` when the Creator can:
+
+- Open the dashboard.
+- See the current quota and deadline.
+- Add income.
+- Change mood and quota.
+- Add exceptions.
+- See live daemon health.
+- Review temple logs.
+- Receive practical next-action recommendations.
+- Restart the app without losing state.
+
+## Recommended Next Build Step
+
+Build Phase 1, Stage 1.1 and Stage 1.2 together:
+
+- Add the local API service.
+- Add the first Digital Temple dashboard.
+- Connect dashboard cards to real quota state.
+
+That creates the first true hybrid version and gives the project a visible command center.

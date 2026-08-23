@@ -1,0 +1,12 @@
+[project]
+name = "divine-tool"
+version = "0.1.0"
+description = "A lawful revenue quota tracker and background command daemon."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+divine-tool = "divine_tool.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
