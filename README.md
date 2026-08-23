@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v1.5.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v1.6.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -30,6 +30,7 @@ python -m divine_tool roi
 python -m divine_tool report --period week
 python -m divine_tool import .\income-export.csv --type payment --dry-run
 python -m divine_tool external
+python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-08-30 --invoice INV-001
 python -m divine_tool upgrade
 ```
 
@@ -110,6 +111,7 @@ The local web app provides:
 - Weekly and monthly report generation with quota results, missed-quota review, ROI summary, priority opportunities, upgrades, and income entries.
 - Manual CSV imports for generic income, payment exports, and affiliate reports, with dry-run review and duplicate detection.
 - Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
+- Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
 
 Run it with:
 
@@ -168,6 +170,21 @@ The dashboard also has an External Signals panel with a manual refresh button. T
 - Product analytics summaries from a local JSON export when configured.
 
 Payment connectors do not store secrets in the project. To try Stripe later, set `integrations.payments.enabled` to `true` in `.divine_tool/config.json` and provide a restricted key through the `DIVINE_STRIPE_SECRET_KEY` environment variable.
+
+## Human-Approved Actions
+
+Queue drafts locally, review them, and only mark them complete after a human has used them manually:
+
+```powershell
+python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-08-30 --invoice INV-001 --strategy freelance_services
+python -m divine_tool approval draft outreach --target "Acme Lead" --offer "a fast revenue dashboard" --context "manual reporting is slow"
+python -m divine_tool approval draft content_prompt --topic "profitable dashboard habits" --goal "book a paid consultation" --channel blog
+python -m divine_tool approval list --show-body
+python -m divine_tool approval approve 1
+python -m divine_tool approval complete 1 --note "Sent manually"
+```
+
+Approving a draft does not send email, messages, payments, trades, or external requests. It only records that the draft is approved for manual use.
 
 ## Strategy ROI
 

@@ -110,6 +110,67 @@
 
         <article class="panel wide">
           <div class="section-heading">
+            <h2>Approval Queue</h2>
+            <span id="approvalMeta" class="badge">0 pending</span>
+          </div>
+          <form id="approvalForm" class="control-form split-form">
+            <label>
+              Draft Type
+              <select name="kind">
+                <option value="invoice_reminder">Invoice Reminder</option>
+                <option value="outreach">Outreach Message</option>
+                <option value="content_prompt">Content Prompt</option>
+              </select>
+            </label>
+            <label>
+              Target
+              <input name="target" placeholder="Client, lead, or topic" />
+            </label>
+            <label>
+              Amount
+              <input name="amount" inputmode="decimal" placeholder="Invoice only" />
+            </label>
+            <label>
+              Due
+              <input name="due" type="date" />
+            </label>
+            <label>
+              Invoice
+              <input name="invoice" placeholder="INV-001" />
+            </label>
+            <label>
+              Offer
+              <input name="offer" placeholder="Outreach offer" />
+            </label>
+            <label>
+              Topic
+              <input name="topic" placeholder="Content topic" />
+            </label>
+            <label>
+              Goal
+              <input name="goal" placeholder="Booking, reply, purchase" />
+            </label>
+            <label>
+              Channel
+              <input name="channel" placeholder="Email, LinkedIn, blog" />
+            </label>
+            <label>
+              Strategy
+              <select name="strategy" id="approvalStrategy">
+                <option value="">Unassigned</option>
+              </select>
+            </label>
+            <label class="form-wide">
+              Context
+              <input name="context" placeholder="Useful background" />
+            </label>
+            <button class="button primary" type="submit">Queue Draft</button>
+          </form>
+          <div id="approvalList" class="approval-list"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="section-heading">
             <h2>Temple Log</h2>
             <button id="pulseButton" class="button secondary" type="button">Pulse Worker</button>
           </div>

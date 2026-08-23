@@ -122,6 +122,15 @@ class DivineToolError(Exception):
     """Raised for user-correctable Divine Tool errors."""
 
 
+APPROVAL_KINDS = {
+    "invoice_reminder": "Invoice Reminder",
+    "outreach": "Outreach Message",
+    "content_prompt": "Content Prompt",
+}
+
+APPROVAL_STATUSES = {"pending", "approved", "rejected", "completed"}
+
+
 def default_data_dir() -> Path:
     return Path.cwd() / ".divine_tool"
 
@@ -183,6 +192,24 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS approval_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                strategy TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL DEFAULT '',
+                decision_note TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_status ON approval_actions(status)")
         conn.commit()
 
 
@@ -1092,6 +1119,238 @@ def title_case_from_key(value: str) -> str:
     return " ".join(part.capitalize() for part in str(value).replace("_", " ").split())
 
 
+def create_approval_draft(
+    data_dir: Path,
+    kind: str,
+    target: str = "",
+    strategy: str = "",
+    amount_minor: int | None = None,
+    due_on: date | None = None,
+    invoice: str = "",
+    offer: str = "",
+    topic: str = "",
+    goal: str = "",
+    channel: str = "",
+    context: str = "",
+    tone: str = "polite",
+) -> int:
+    ensure_state(data_dir)
+    kind = kind.strip().lower().replace("-", "_")
+    if kind not in APPROVAL_KINDS:
+        raise DivineToolError("Draft kind must be invoice_reminder, outreach, or content_prompt.")
+
+    metadata = {
+        "amount_minor": amount_minor,
+        "amount": format_money(amount_minor) if amount_minor is not None else "",
+        "due_on": due_on.isoformat() if due_on else "",
+        "invoice": invoice.strip(),
+        "offer": offer.strip(),
+        "topic": topic.strip(),
+        "goal": goal.strip(),
+        "channel": channel.strip(),
+        "context": context.strip(),
+        "tone": tone.strip() or "polite",
+    }
+    title, body, normalized_target = build_action_draft(kind, target.strip(), metadata)
+    created = now_iso()
+    with db(data_dir) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO approval_actions
+                (kind, title, target, strategy, body, metadata_json, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            (kind, title, normalized_target, strategy.strip(), body, json.dumps(metadata, sort_keys=True), created),
+        )
+        conn.commit()
+        action_id = int(cur.lastrowid)
+    log_event(data_dir, f"Draft queued for approval: {title}", "approval")
+    return action_id
+
+
+def build_action_draft(kind: str, target: str, metadata: dict[str, Any]) -> tuple[str, str, str]:
+    if kind == "invoice_reminder":
+        if not target:
+            raise DivineToolError("Invoice reminder drafts need a target or client name.")
+        if metadata.get("amount_minor") is None:
+            raise DivineToolError("Invoice reminder drafts need an amount.")
+        invoice = metadata.get("invoice") or "invoice"
+        due_on = metadata.get("due_on") or "soon"
+        amount = metadata.get("amount") or "the outstanding amount"
+        title = f"Invoice reminder for {target}"
+        body = "\n".join(
+            [
+                f"Subject: Quick reminder: {invoice}",
+                "",
+                f"Hi {target},",
+                "",
+                f"I hope you are well. This is a quick reminder that {invoice} for {amount} is due on {due_on}.",
+                "",
+                "When convenient, could you confirm the payment timing? If anything is blocked, let me know and I can help resolve it.",
+                "",
+                "Thanks,",
+                "Creator",
+            ]
+        )
+        return title, body, target
+
+    if kind == "outreach":
+        if not target:
+            raise DivineToolError("Outreach drafts need a target or recipient.")
+        offer = metadata.get("offer") or metadata.get("goal") or ""
+        if not offer:
+            raise DivineToolError("Outreach drafts need an offer.")
+        context = metadata.get("context") or "there may be a useful opening to improve revenue"
+        title = f"Outreach draft for {target}"
+        body = "\n".join(
+            [
+                f"Subject: {offer}",
+                "",
+                f"Hi {target},",
+                "",
+                f"I noticed {context}.",
+                "",
+                f"I can help with {offer}. If useful, I can send a short plan with scope, timeline, and pricing.",
+                "",
+                "Would it be worth a quick reply?",
+                "",
+                "Thanks,",
+                "Creator",
+            ]
+        )
+        return title, body, target
+
+    topic = metadata.get("topic") or target
+    goal = metadata.get("goal") or ""
+    if not topic:
+        raise DivineToolError("Content prompt drafts need a topic.")
+    if not goal:
+        raise DivineToolError("Content prompt drafts need a goal.")
+    channel = metadata.get("channel") or "content"
+    title = f"Content prompt: {topic}"
+    body = "\n".join(
+        [
+            f"Create a {channel} piece about: {topic}",
+            "",
+            f"Goal: {goal}",
+            "",
+            "Include:",
+            "- A clear reader problem.",
+            "- A practical answer or framework.",
+            "- One proof point or example.",
+            "- A calm call to action that invites a reply, booking, or purchase.",
+            "",
+            "Keep claims honest, avoid pressure tactics, and make the offer easy to understand.",
+        ]
+    )
+    return title, body, topic
+
+
+def list_approval_actions(data_dir: Path, status: str = "pending", limit: int = 20) -> list[sqlite3.Row]:
+    ensure_state(data_dir)
+    status = status.strip().lower()
+    limit = max(min(limit, 100), 1)
+    with db(data_dir) as conn:
+        if status == "all":
+            return list(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM approval_actions
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            )
+        if status not in APPROVAL_STATUSES:
+            raise DivineToolError("Approval status must be pending, approved, rejected, completed, or all.")
+        return list(
+            conn.execute(
+                """
+                SELECT *
+                FROM approval_actions
+                WHERE status = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (status, limit),
+            )
+        )
+
+
+def approval_queue_summary(data_dir: Path, limit: int = 8) -> dict[str, Any]:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        counts = {
+            row["status"]: int(row["count"])
+            for row in conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM approval_actions
+                GROUP BY status
+                """
+            )
+        }
+    for status in APPROVAL_STATUSES:
+        counts.setdefault(status, 0)
+    return {
+        "counts": counts,
+        "pending": [approval_action_to_dict(row) for row in list_approval_actions(data_dir, "pending", limit)],
+        "recent": [approval_action_to_dict(row) for row in list_approval_actions(data_dir, "all", limit)],
+    }
+
+
+def review_approval_action(data_dir: Path, action_id: int, decision: str, note: str = "") -> dict[str, Any]:
+    ensure_state(data_dir)
+    decision = decision.strip().lower()
+    status_map = {
+        "approve": "approved",
+        "approved": "approved",
+        "reject": "rejected",
+        "rejected": "rejected",
+        "complete": "completed",
+        "completed": "completed",
+    }
+    if decision not in status_map:
+        raise DivineToolError("Decision must be approve, reject, or complete.")
+    new_status = status_map[decision]
+    reviewed = now_iso()
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT * FROM approval_actions WHERE id = ?", (action_id,)).fetchone()
+        if row is None:
+            raise DivineToolError(f"Approval draft #{action_id} was not found.")
+        current_status = str(row["status"])
+        if new_status == "approved" and current_status != "pending":
+            raise DivineToolError("Only pending drafts can be approved.")
+        if new_status == "completed" and current_status != "approved":
+            raise DivineToolError("Approve a draft before marking it complete.")
+        if new_status == "rejected" and current_status not in {"pending", "approved"}:
+            raise DivineToolError("Only pending or approved drafts can be rejected.")
+        conn.execute(
+            """
+            UPDATE approval_actions
+            SET status = ?, reviewed_at = ?, decision_note = ?
+            WHERE id = ?
+            """,
+            (new_status, reviewed, note.strip(), action_id),
+        )
+        conn.commit()
+        updated = conn.execute("SELECT * FROM approval_actions WHERE id = ?", (action_id,)).fetchone()
+    log_event(data_dir, f"Draft #{action_id} marked {new_status}: {updated['title']}", "approval")
+    return approval_action_to_dict(updated)
+
+
+def approval_action_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = row_to_dict(row)
+    try:
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+    except json.JSONDecodeError:
+        item["metadata"] = {}
+    item["kind_label"] = APPROVAL_KINDS.get(str(item["kind"]), title_case_from_key(str(item["kind"])))
+    return item
+
+
 def disabled_connection(identifier: str, name: str, summary: str, next_action: str) -> dict[str, Any]:
     return {"id": identifier, "name": name, "state": "disabled", "summary": summary, "items": [], "next_action": next_action}
 
@@ -1613,7 +1872,7 @@ def generate_upgrades(data_dir: Path, today: date | None = None) -> list[str]:
         return [
             "Unlock payment reminders for invoices and retainers.",
             "Add lead scoring so the highest-value opportunities are contacted first.",
-            "Add human-approved drafts for invoices, outreach, and content prompts.",
+            "Track which approved drafts lead to replies, bookings, and paid income.",
             "Add a local web dashboard for quota progress, command history, and channel ROI.",
             "Add exportable weekly reports for the Creator.",
         ]

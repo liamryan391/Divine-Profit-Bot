@@ -313,6 +313,7 @@ h2 {
 .roi-list,
 .recommendation-list,
 .external-list,
+.approval-list,
 .import-result,
 .upgrade-grid {
   display: grid;
@@ -381,6 +382,72 @@ h2 {
 
 .external-error {
   border-left-color: var(--red);
+}
+
+.approval-list {
+  margin-top: 14px;
+}
+
+.approval-row {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border-left: 3px solid var(--blue);
+}
+
+.approval-pending {
+  border-left-color: var(--gold);
+}
+
+.approval-approved {
+  border-left-color: var(--green);
+}
+
+.approval-rejected {
+  border-left-color: var(--red);
+}
+
+.approval-completed {
+  border-left-color: var(--violet);
+}
+
+.approval-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.approval-head div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.approval-head span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.approval-row pre {
+  max-height: 190px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #091020;
+  color: #d9e5ff;
+  white-space: pre-wrap;
+  font-family: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .roi-row.recommendation-push {
@@ -598,6 +665,14 @@ h2 {
   gap: 12px;
 }
 
+.split-form {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.form-wide {
+  grid-column: span 2;
+}
+
 .compact-form {
   margin-top: 18px;
   padding-top: 18px;
@@ -646,6 +721,12 @@ select:focus {
 
 .button.secondary {
   background: linear-gradient(135deg, var(--green), var(--blue));
+}
+
+.button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
 }
 
 .button:disabled {
@@ -731,6 +812,10 @@ select:focus {
   .component-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+
+  .split-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 680px) {
@@ -752,11 +837,13 @@ select:focus {
   .dashboard-grid,
   .component-grid,
   .roi-metrics,
+  .split-form,
   .upgrade-grid {
     grid-template-columns: 1fr;
   }
 
-  .wide {
+  .wide,
+  .form-wide {
     grid-column: auto;
   }
 

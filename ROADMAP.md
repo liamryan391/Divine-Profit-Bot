@@ -6,13 +6,13 @@ This roadmap defines how the project moves from the current command-line foundat
 
 - `v0.x`: foundation work before the full hybrid product is operational.
 - `v1.0.0`: first complete operational release with web dashboard, API, daemon worker, persistent state, and safe local operation.
-- `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
+- `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`, `v1.6.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
 - `v1.1.1`, `v1.1.2`: patch releases for bug fixes, small polish, reliability improvements, or security fixes.
 - `v2.0.0`: major architecture or product expansion, especially multi-user hosting, external integrations, or production deployment.
 
 ## Current Status
 
-Current version: `v1.5.0`.
+Current version: `v1.6.0`.
 
 Completed:
 
@@ -36,6 +36,8 @@ Completed:
 - Manual CSV importers for generic income, payment exports, and affiliate reports.
 - Dry-run import review and duplicate detection.
 - Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
+- Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
+- Approval queue with approve, reject, and manual-complete states.
 
 ## Phase 0: Foundation
 
@@ -286,7 +288,7 @@ Release status: shipped.
 
 ### Stage 3.3: Human-Approved Actions
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -297,7 +299,9 @@ Deliverables:
 
 Release target:
 
-- `v1.6.0` or later.
+- `v1.6.0`.
+
+Release status: shipped.
 
 ## Phase 4: V2 Production Temple
 
@@ -360,6 +364,7 @@ The tool is fully operational for `v1` when the Creator can:
 - Add exceptions.
 - Import income from CSV exports.
 - Refresh read-only external data signals.
+- Draft and review human-approved actions before manual use.
 - See live daemon health.
 - Review temple logs.
 - Receive practical next-action recommendations.
@@ -367,11 +372,11 @@ The tool is fully operational for `v1` when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 3, Stage 3.3 next:
+Build Phase 4, Stage 4.1 next:
 
-- Draft invoice reminders.
-- Draft outreach messages.
-- Draft content prompts.
-- Add an approval queue before anything external is sent.
+- Add authentication-ready account boundaries.
+- Protect dashboard access.
+- Add secret-management guidance for future hosted integrations.
+- Prepare the project for production deployment decisions.
 
-That moves from read-only context toward human-approved action drafting while keeping the engine safe and auditable.
+That starts the production temple track by separating local power-user mode from a future protected, hosted application.

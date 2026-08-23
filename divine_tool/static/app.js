@@ -39,7 +39,7 @@ function render(payload) {
   $("#modulesValue").textContent = payload.config.channels.length;
   $("#modulesDetail").textContent = `${runningStrategyCount(payload)} active strategy signals`;
   $("#templeLevel").textContent = payload.version;
-  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v1.6 for action approvals";
+  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.0 production track";
   $("#progressFill").style.width = `${Math.min(status.progress_pct, 100)}%`;
   $("#timeRemaining").textContent = `Time remaining: ${status.days_left} day${status.days_left === 1 ? "" : "s"}`;
   $("#judgementBadge").textContent = titleCase(status.judgement);
@@ -54,6 +54,7 @@ function render(payload) {
   renderIncome(payload.income);
   renderUpgrades(payload.upgrades);
   renderReport(payload.report);
+  renderApprovals(payload.approvals);
   hydrateMoodControls(payload.config);
   hydrateStrategyControls(payload.config);
 }
@@ -319,6 +320,55 @@ function renderExternal(snapshot) {
   }
 }
 
+function renderApprovals(summary) {
+  const list = $("#approvalList");
+  const meta = $("#approvalMeta");
+  list.replaceChildren();
+  if (!summary) {
+    meta.textContent = "0 pending";
+    list.appendChild(emptyRow("No approval drafts yet."));
+    return;
+  }
+
+  const counts = summary.counts || {};
+  meta.textContent = `${counts.pending || 0} pending - ${counts.approved || 0} approved`;
+  const rows = summary.recent || [];
+  if (!rows.length) {
+    list.appendChild(emptyRow("No approval drafts yet."));
+    return;
+  }
+
+  for (const item of rows.slice(0, 8)) {
+    const row = document.createElement("div");
+    row.className = `approval-row approval-${item.status}`;
+    row.innerHTML = `
+      <div class="approval-head">
+        <div>
+          <strong></strong>
+          <span></span>
+        </div>
+        <b class="tag"></b>
+      </div>
+      <pre></pre>
+      <div class="approval-actions"></div>
+    `;
+    row.querySelector("strong").textContent = `#${item.id} ${item.title}`;
+    row.querySelector("span").textContent = `${item.kind_label} - ${item.strategy || "unassigned"}`;
+    row.querySelector(".tag").textContent = item.status;
+    row.querySelector("pre").textContent = item.body;
+    const actions = row.querySelector(".approval-actions");
+    if (item.status === "pending") {
+      actions.appendChild(approvalButton(item.id, "approve", "Approve"));
+      actions.appendChild(approvalButton(item.id, "reject", "Reject"));
+    }
+    if (item.status === "approved") {
+      actions.appendChild(approvalButton(item.id, "complete", "Complete"));
+      actions.appendChild(approvalButton(item.id, "reject", "Reject"));
+    }
+    list.appendChild(row);
+  }
+}
+
 function hydrateMoodControls(config) {
   const moodNames = Object.keys(config.moods || {});
   for (const select of [$("#activeMood"), $("#quotaMood")]) {
@@ -335,7 +385,7 @@ function hydrateMoodControls(config) {
 }
 
 function hydrateStrategyControls(config) {
-  for (const selector of ["#incomeStrategy", "#importStrategy"]) {
+  for (const selector of ["#incomeStrategy", "#importStrategy", "#approvalStrategy"]) {
     const select = $(selector);
     if (!select) continue;
     const currentValue = select.value;
@@ -516,6 +566,61 @@ async function refreshExternalConnections() {
   }
 }
 
+function attachApprovalControls() {
+  $("#approvalForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    try {
+      const payload = await request("/api/approval/draft", {
+        method: "POST",
+        body: JSON.stringify(formPayload(form)),
+      });
+      state.latest = payload.state;
+      render(payload.state);
+      form.reset();
+      showToast("Draft queued for approval");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("#approvalList").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-decision]");
+    if (!button) return;
+    button.disabled = true;
+    try {
+      const payload = await request("/api/approval/review", {
+        method: "POST",
+        body: JSON.stringify({
+          id: Number(button.dataset.id),
+          decision: button.dataset.decision,
+        }),
+      });
+      state.latest = payload.state;
+      render(payload.state);
+      showToast(actionPastTense(button.dataset.decision));
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+function approvalButton(id, decision, label) {
+  const button = document.createElement("button");
+  button.className = decision === "reject" ? "button ghost" : "button secondary";
+  button.type = "button";
+  button.dataset.id = String(id);
+  button.dataset.decision = decision;
+  button.textContent = label;
+  return button;
+}
+
 function renderImportResult(result) {
   state.importResult = result;
   const target = $("#importResult");
@@ -580,6 +685,13 @@ function externalItemText(item) {
   return JSON.stringify(item);
 }
 
+function actionPastTense(decision) {
+  if (decision === "approve") return "Draft approved";
+  if (decision === "reject") return "Draft rejected";
+  if (decision === "complete") return "Draft completed";
+  return "Draft updated";
+}
+
 function slugify(value) {
   return String(value)
     .toLowerCase()
@@ -595,6 +707,7 @@ attachPulse();
 attachReportControls();
 attachImportControls();
 attachExternalControls();
+attachApprovalControls();
 refresh();
 refreshExternalConnections();
 setInterval(refresh, 10000);

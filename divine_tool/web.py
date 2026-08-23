@@ -13,6 +13,8 @@ from .core import (
     DivineToolError,
     add_exception,
     add_income,
+    approval_queue_summary,
+    create_approval_draft,
     enqueue_command,
     ensure_state,
     external_connections_snapshot,
@@ -21,6 +23,7 @@ from .core import (
     generate_report,
     generate_upgrades,
     import_income_csv,
+    list_approval_actions,
     list_events,
     list_exceptions,
     list_income,
@@ -29,6 +32,7 @@ from .core import (
     parse_money_to_minor,
     process_command_inbox,
     record_heartbeat,
+    review_approval_action,
     row_to_dict,
     set_mood,
     set_quota,
@@ -88,6 +92,12 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 if parsed.path == "/api/external":
                     self.send_json({"external": external_connections_snapshot(data_dir)})
+                    return
+                if parsed.path == "/api/approvals":
+                    query = parse_qs(parsed.query)
+                    status = query.get("status", ["pending"])[0]
+                    limit = int(query.get("limit", ["20"])[0])
+                    self.send_json({"approvals": serialize_approval_actions(list_approval_actions(data_dir, status=status, limit=limit))})
                     return
                 self.serve_static(parsed.path)
             except DivineToolError as exc:
@@ -162,6 +172,33 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         filename=str(payload.get("filename", "")),
                     )
                     self.send_json({"ok": True, "import_result": result, "state": dashboard_payload(data_dir)})
+                    return
+                if parsed.path == "/api/approval/draft":
+                    action_id = create_approval_draft(
+                        data_dir,
+                        kind=str(payload["kind"]),
+                        target=str(payload.get("target", "")),
+                        strategy=str(payload.get("strategy", "")),
+                        amount_minor=parse_money_to_minor(payload["amount"]) if payload.get("amount") else None,
+                        due_on=parse_date(payload["due"]) if payload.get("due") else None,
+                        invoice=str(payload.get("invoice", "")),
+                        offer=str(payload.get("offer", "")),
+                        topic=str(payload.get("topic", "")),
+                        goal=str(payload.get("goal", "")),
+                        channel=str(payload.get("channel", "")),
+                        context=str(payload.get("context", "")),
+                        tone=str(payload.get("tone", "polite")),
+                    )
+                    self.send_json({"ok": True, "id": action_id, "state": dashboard_payload(data_dir)})
+                    return
+                if parsed.path == "/api/approval/review":
+                    item = review_approval_action(
+                        data_dir,
+                        action_id=int(payload["id"]),
+                        decision=str(payload["decision"]),
+                        note=str(payload.get("note", "")),
+                    )
+                    self.send_json({"ok": True, "approval": item, "state": dashboard_payload(data_dir)})
                     return
                 if parsed.path == "/api/daemon/run-once":
                     outcomes = process_command_inbox(data_dir)
@@ -240,6 +277,7 @@ def dashboard_payload(data_dir: Path) -> dict[str, Any]:
         "strategy_roi": strategy_roi,
         "report": report,
         "upgrades": generate_upgrades(data_dir),
+        "approvals": approval_queue_summary(data_dir),
         "worker": worker_status(data_dir),
         "config": {
             "god_name": config.get("god_name", "Creator"),
@@ -289,3 +327,16 @@ def serialize_income(rows: list[Any]) -> list[dict[str, Any]]:
 
 def serialize_rows(rows: list[Any]) -> list[dict[str, Any]]:
     return [row_to_dict(row) for row in rows]
+
+
+def serialize_approval_actions(rows: list[Any]) -> list[dict[str, Any]]:
+    output = []
+    for row in rows:
+        item = row_to_dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            item["metadata"] = {}
+        item["kind_label"] = item["kind"].replace("_", " ").title()
+        output.append(item)
+    return output

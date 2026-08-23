@@ -12,16 +12,20 @@ from urllib.request import Request, urlopen
 from divine_tool.core import (
     DivineToolError,
     add_income,
+    approval_queue_summary,
+    create_approval_draft,
     enqueue_command,
     external_connections_snapshot,
     generate_opportunities,
     generate_report,
     import_income_csv,
+    list_approval_actions,
     list_income,
     load_config,
     parse_money_to_minor,
     process_command_inbox,
     save_config,
+    review_approval_action,
     set_mood,
     set_quota,
     status_report,
@@ -147,6 +151,40 @@ class DivineToolTests(unittest.TestCase):
 
                 self.assertIn("external", external_payload)
                 self.assertEqual(external_payload["external"]["disabled_count"], 3)
+
+                draft_body = json.dumps(
+                    {
+                        "kind": "outreach",
+                        "target": "Acme Lead",
+                        "offer": "a fast revenue dashboard",
+                        "context": "their manual reporting is slow",
+                        "strategy": "freelance_services",
+                    }
+                ).encode("utf-8")
+                draft_request = Request(
+                    f"{base_url}/api/approval/draft",
+                    data=draft_body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(draft_request) as response:
+                    draft_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(draft_payload["ok"])
+                self.assertEqual(draft_payload["state"]["approvals"]["counts"]["pending"], 1)
+
+                review_body = json.dumps({"id": draft_payload["id"], "decision": "approve"}).encode("utf-8")
+                review_request = Request(
+                    f"{base_url}/api/approval/review",
+                    data=review_body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(review_request) as response:
+                    review_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(review_payload["approval"]["status"], "approved")
+                self.assertEqual(review_payload["state"]["approvals"]["counts"]["approved"], 1)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -322,6 +360,36 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(rows[0]["currency"], "USD")
             self.assertEqual(rows[0]["strategy"], "affiliate_referral")
             self.assertEqual(result["rows"][1]["reason"], "Non-GBP row needs a GBP equivalent column.")
+
+    def test_approval_queue_requires_human_review_before_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            action_id = create_approval_draft(
+                data_dir,
+                kind="invoice_reminder",
+                target="Client One",
+                amount_minor=parse_money_to_minor("250"),
+                due_on=date(2026, 8, 30),
+                invoice="INV-100",
+                strategy="freelance_services",
+            )
+
+            pending = list_approval_actions(data_dir, status="pending")
+
+            self.assertEqual(len(pending), 1)
+            self.assertIn("INV-100", pending[0]["body"])
+            self.assertIn("£250.00", pending[0]["body"])
+            self.assertEqual(approval_queue_summary(data_dir)["counts"]["pending"], 1)
+
+            with self.assertRaises(DivineToolError):
+                review_approval_action(data_dir, action_id, "complete")
+
+            approved = review_approval_action(data_dir, action_id, "approve", "Looks good")
+            completed = review_approval_action(data_dir, action_id, "complete", "Sent manually")
+
+            self.assertEqual(approved["status"], "approved")
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(approval_queue_summary(data_dir)["counts"]["completed"], 1)
 
     def test_external_connections_snapshot_uses_read_only_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

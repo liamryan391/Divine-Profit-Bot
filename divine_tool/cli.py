@@ -11,6 +11,8 @@ from .core import (
     DivineToolError,
     add_exception,
     add_income,
+    approval_action_to_dict,
+    create_approval_draft,
     default_data_dir,
     enqueue_command,
     ensure_state,
@@ -20,6 +22,7 @@ from .core import (
     generate_report,
     generate_upgrades,
     import_income_csv,
+    list_approval_actions,
     list_exceptions,
     list_income,
     load_config,
@@ -27,6 +30,7 @@ from .core import (
     parse_money_to_minor,
     process_command_inbox,
     record_heartbeat,
+    review_approval_action,
     set_mood,
     set_quota,
     status_report,
@@ -125,6 +129,40 @@ def build_parser() -> argparse.ArgumentParser:
     external = sub.add_parser("external", help="Show read-only external connection signals.")
     external.add_argument("--format", choices=["text", "json"], default="text")
     external.set_defaults(func=cmd_external)
+
+    approval = sub.add_parser("approval", help="Create and review human-approved action drafts.")
+    approval_sub = approval.add_subparsers(required=True)
+    approval_list = approval_sub.add_parser("list", help="List approval queue drafts.")
+    approval_list.add_argument("--status", choices=["pending", "approved", "rejected", "completed", "all"], default="pending")
+    approval_list.add_argument("--limit", type=int, default=20)
+    approval_list.add_argument("--show-body", action="store_true", help="Print each draft body.")
+    approval_list.set_defaults(func=cmd_approval_list)
+    approval_draft = approval_sub.add_parser("draft", help="Queue a draft for human approval.")
+    approval_draft.add_argument("kind", choices=["invoice_reminder", "outreach", "content_prompt"])
+    approval_draft.add_argument("--target", default="", help="Client, recipient, or topic target.")
+    approval_draft.add_argument("--amount", help="Invoice amount for invoice reminders.")
+    approval_draft.add_argument("--due", help="Invoice due date in YYYY-MM-DD format.")
+    approval_draft.add_argument("--invoice", default="", help="Invoice reference.")
+    approval_draft.add_argument("--offer", default="", help="Offer for outreach.")
+    approval_draft.add_argument("--topic", default="", help="Topic for content prompts.")
+    approval_draft.add_argument("--goal", default="", help="Goal for outreach or content.")
+    approval_draft.add_argument("--channel", default="", help="Content channel.")
+    approval_draft.add_argument("--context", default="", help="Background context.")
+    approval_draft.add_argument("--strategy", default="", help="Strategy id associated with the draft.")
+    approval_draft.add_argument("--tone", default="polite", help="Draft tone.")
+    approval_draft.set_defaults(func=cmd_approval_draft)
+    approval_approve = approval_sub.add_parser("approve", help="Approve a pending draft for manual use.")
+    approval_approve.add_argument("id", type=int)
+    approval_approve.add_argument("--note", default="")
+    approval_approve.set_defaults(func=cmd_approval_approve)
+    approval_reject = approval_sub.add_parser("reject", help="Reject a pending or approved draft.")
+    approval_reject.add_argument("id", type=int)
+    approval_reject.add_argument("--note", default="")
+    approval_reject.set_defaults(func=cmd_approval_reject)
+    approval_complete = approval_sub.add_parser("complete", help="Mark an approved draft as manually completed.")
+    approval_complete.add_argument("id", type=int)
+    approval_complete.add_argument("--note", default="")
+    approval_complete.set_defaults(func=cmd_approval_complete)
 
     upgrade = sub.add_parser("upgrade", help="Show upgrade recommendations.")
     upgrade.set_defaults(func=cmd_upgrade)
@@ -338,6 +376,62 @@ def format_external_item(item: dict[str, object]) -> str:
     if "label" in item:
         return f"{item['label']}: {item['value']}"
     return json.dumps(item, sort_keys=True)
+
+
+def cmd_approval_list(args: argparse.Namespace, data_dir: Path) -> int:
+    rows = list_approval_actions(data_dir, status=args.status, limit=args.limit)
+    if not rows:
+        print("No approval drafts found.")
+        return 0
+    for row in rows:
+        item = approval_action_to_dict(row)
+        print(
+            f"#{item['id']} {item['status']} {item['kind_label']}: "
+            f"{item['title']} [{item.get('strategy') or 'unassigned'}]"
+        )
+        if args.show_body:
+            print(item["body"])
+    return 0
+
+
+def cmd_approval_draft(args: argparse.Namespace, data_dir: Path) -> int:
+    amount_minor = parse_money_to_minor(args.amount) if args.amount else None
+    due_on = parse_date(args.due) if args.due else None
+    action_id = create_approval_draft(
+        data_dir,
+        kind=args.kind,
+        target=args.target,
+        strategy=args.strategy,
+        amount_minor=amount_minor,
+        due_on=due_on,
+        invoice=args.invoice,
+        offer=args.offer,
+        topic=args.topic,
+        goal=args.goal,
+        channel=args.channel,
+        context=args.context,
+        tone=args.tone,
+    )
+    print(f"Queued approval draft #{action_id}.")
+    return 0
+
+
+def cmd_approval_approve(args: argparse.Namespace, data_dir: Path) -> int:
+    item = review_approval_action(data_dir, args.id, "approve", args.note)
+    print(f"Approved draft #{item['id']} for manual use.")
+    return 0
+
+
+def cmd_approval_reject(args: argparse.Namespace, data_dir: Path) -> int:
+    item = review_approval_action(data_dir, args.id, "reject", args.note)
+    print(f"Rejected draft #{item['id']}.")
+    return 0
+
+
+def cmd_approval_complete(args: argparse.Namespace, data_dir: Path) -> int:
+    item = review_approval_action(data_dir, args.id, "complete", args.note)
+    print(f"Completed draft #{item['id']} manually.")
+    return 0
 
 
 def cmd_upgrade(_args: argparse.Namespace, data_dir: Path) -> int:
