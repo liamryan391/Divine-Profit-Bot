@@ -17,6 +17,7 @@ from .core import (
     auth_status,
     create_approval_draft,
     create_account,
+    create_temple,
     default_data_dir,
     enqueue_command,
     ensure_state,
@@ -30,6 +31,7 @@ from .core import (
     list_accounts,
     list_exceptions,
     list_income,
+    list_temples,
     load_config,
     parse_date,
     parse_money_to_minor,
@@ -39,7 +41,9 @@ from .core import (
     set_mood,
     set_quota,
     status_report,
+    switch_temple,
     strategy_roi_summary,
+    temple_summary,
 )
 from .deployment import create_backup, deployment_environment, deployment_preflight, format_preflight, healthcheck_url
 from .web import run_web
@@ -183,6 +187,22 @@ def build_parser() -> argparse.ArgumentParser:
     config_show = config_sub.add_parser("show", help="Print config JSON.")
     config_show.set_defaults(func=cmd_config_show)
 
+    temple = sub.add_parser("temple", help="Manage multiple revenue temples.")
+    temple_sub = temple.add_subparsers(required=True)
+    temple_list = temple_sub.add_parser("list", help="List configured temples.")
+    temple_list.set_defaults(func=cmd_temple_list)
+    temple_create = temple_sub.add_parser("create", help="Create a new temple profile.")
+    temple_create.add_argument("name")
+    temple_create.add_argument("--id", dest="temple_id", default="", help="Optional stable temple id.")
+    temple_create.add_argument("--description", default="")
+    temple_create.add_argument("--template", choices=["balanced", "services", "products"], default="balanced")
+    temple_create.set_defaults(func=cmd_temple_create)
+    temple_switch = temple_sub.add_parser("switch", help="Switch the active temple.")
+    temple_switch.add_argument("temple_id")
+    temple_switch.set_defaults(func=cmd_temple_switch)
+    temple_summary_cmd = temple_sub.add_parser("summary", help="Show cross-temple quota status.")
+    temple_summary_cmd.set_defaults(func=cmd_temple_summary)
+
     account = sub.add_parser("account", help="Manage local owner account setup.")
     account_sub = account.add_subparsers(required=True)
     account_status = account_sub.add_parser("status", help="Show local authentication status.")
@@ -220,14 +240,17 @@ def build_parser() -> argparse.ArgumentParser:
     command_income.add_argument("--note", default="")
     command_income.add_argument("--strategy", default="")
     command_income.add_argument("--date")
+    command_income.add_argument("--temple", dest="temple_id", help="Optional temple id for the daemon command.")
     command_income.set_defaults(func=cmd_command_income)
     command_mood = command_sub.add_parser("set-mood", help="Queue a mood change.")
     command_mood.add_argument("mood")
+    command_mood.add_argument("--temple", dest="temple_id", help="Optional temple id for the daemon command.")
     command_mood.set_defaults(func=cmd_command_mood)
     command_quota = command_sub.add_parser("set-quota", help="Queue a quota change.")
     command_quota.add_argument("mood")
     command_quota.add_argument("amount")
     command_quota.add_argument("--period", choices=["week", "month"], default="week")
+    command_quota.add_argument("--temple", dest="temple_id", help="Optional temple id for the daemon command.")
     command_quota.set_defaults(func=cmd_command_quota)
 
     daemon = sub.add_parser("daemon", help="Process commands and watch quota state.")
@@ -484,6 +507,54 @@ def cmd_config_show(_args: argparse.Namespace, data_dir: Path) -> int:
     return 0
 
 
+def cmd_temple_list(_args: argparse.Namespace, data_dir: Path) -> int:
+    temples = list_temples(data_dir)
+    if not temples:
+        print("No temples configured.")
+        return 0
+    for temple in temples:
+        marker = "*" if temple["active"] else " "
+        description = f" - {temple['description']}" if temple["description"] else ""
+        print(
+            f"{marker} {temple['id']}: {temple['name']} "
+            f"({temple['active_mood']}, {temple['channel_count']} strategies){description}"
+        )
+    return 0
+
+
+def cmd_temple_create(args: argparse.Namespace, data_dir: Path) -> int:
+    temple = create_temple(
+        data_dir,
+        name=args.name,
+        temple_id=args.temple_id,
+        description=args.description,
+        template=args.template,
+    )
+    print(f"Created temple {temple['id']}: {temple['name']}")
+    return 0
+
+
+def cmd_temple_switch(args: argparse.Namespace, data_dir: Path) -> int:
+    temple = switch_temple(data_dir, args.temple_id)
+    print(f"Active temple: {temple['id']} - {temple['name']}")
+    return 0
+
+
+def cmd_temple_summary(_args: argparse.Namespace, data_dir: Path) -> int:
+    summary = temple_summary(data_dir)
+    print(
+        f"Temple summary: {summary['total_earned']} earned of {summary['total_quota']} "
+        f"({summary['overall_progress_pct']}%) across {summary['temple_count']} temple(s)."
+    )
+    for row in summary["rows"]:
+        marker = "*" if row["active"] else " "
+        print(
+            f"{marker} {row['id']}: {row['earned']}/{row['quota']} "
+            f"({row['progress_pct']}%) - {row['judgement']}; top: {row['top_strategy']}"
+        )
+    return 0
+
+
 def cmd_account_status(_args: argparse.Namespace, data_dir: Path) -> int:
     status = auth_status(data_dir)
     print("Authentication")
@@ -566,19 +637,27 @@ def cmd_command_income(args: argparse.Namespace, data_dir: Path) -> int:
         command["gbp_equivalent"] = args.gbp_equivalent
     if args.date:
         command["date"] = args.date
+    if args.temple_id:
+        command["temple_id"] = args.temple_id
     enqueue_command(data_dir, command)
     print("Queued income command.")
     return 0
 
 
 def cmd_command_mood(args: argparse.Namespace, data_dir: Path) -> int:
-    enqueue_command(data_dir, {"action": "set_mood", "mood": args.mood})
+    command = {"action": "set_mood", "mood": args.mood}
+    if args.temple_id:
+        command["temple_id"] = args.temple_id
+    enqueue_command(data_dir, command)
     print("Queued mood command.")
     return 0
 
 
 def cmd_command_quota(args: argparse.Namespace, data_dir: Path) -> int:
-    enqueue_command(data_dir, {"action": "set_quota", "mood": args.mood, "amount": args.amount, "period": args.period})
+    command = {"action": "set_quota", "mood": args.mood, "amount": args.amount, "period": args.period}
+    if args.temple_id:
+        command["temple_id"] = args.temple_id
+    enqueue_command(data_dir, command)
     print("Queued quota command.")
     return 0
 
@@ -613,7 +692,7 @@ def print_status(report: dict[str, object], compact: bool = False) -> None:
     exception = report["exception"]
     if compact:
         print(
-            f"[{date.today().isoformat()}] {report['judgement']}: "
+            f"[{date.today().isoformat()}] {report['temple']['id']} {report['judgement']}: "
             f"{format_money(int(report['earned_minor']))}/{format_money(int(report['quota_minor']))} "
             f"({progress_pct:.1f}%)",
             flush=True,
@@ -622,6 +701,7 @@ def print_status(report: dict[str, object], compact: bool = False) -> None:
 
     print("Divine Tool status")
     print(f"Creator: {report['god_name']}")
+    print(f"Temple: {report['temple']['name']} ({report['temple']['id']})")
     print(f"Mood: {report['mood']}")
     print(f"Period: {period.name} ({period.start.isoformat()} to {period.end.isoformat()})")
     print(f"Quota: {format_money(int(report['quota_minor']))}")

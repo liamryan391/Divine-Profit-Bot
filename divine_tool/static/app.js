@@ -94,12 +94,13 @@ function render(payload) {
   $("#modulesValue").textContent = payload.config.channels.length;
   $("#modulesDetail").textContent = `${runningStrategyCount(payload)} active strategy signals`;
   $("#templeLevel").textContent = payload.version;
-  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.2 multi-temple track";
+  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.3 growth track";
   $("#progressFill").style.width = `${Math.min(status.progress_pct, 100)}%`;
   $("#timeRemaining").textContent = `Time remaining: ${status.days_left} day${status.days_left === 1 ? "" : "s"}`;
   $("#judgementBadge").textContent = titleCase(status.judgement);
 
   renderWorker(payload.worker);
+  renderTemples(payload.temples);
   renderTopOpportunity(payload.top_opportunity);
   renderStrategies(payload.opportunities);
   renderStrategyRoi(payload.strategy_roi);
@@ -110,6 +111,7 @@ function render(payload) {
   renderUpgrades(payload.upgrades);
   renderReport(payload.report);
   renderApprovals(payload.approvals);
+  hydrateTempleControls(payload.config);
   hydrateMoodControls(payload.config);
   hydrateStrategyControls(payload.config);
 }
@@ -277,12 +279,45 @@ function renderConfig(payload) {
   const list = $("#configList");
   const status = payload.status;
   const worker = payload.worker;
+  const temple = status.temple || payload.config.active_temple || {};
   list.replaceChildren(
+    configRow("Active Temple", temple.name || temple.id || "main"),
     configRow("Primary Currency", payload.config.base_currency),
     configRow("Active Mood", status.mood),
     configRow("Risk Level", riskLabel(status.judgement)),
     configRow("Worker State", worker.state),
   );
+}
+
+function renderTemples(summary) {
+  const list = $("#templeSummaryList");
+  const meta = $("#templeMeta");
+  list.replaceChildren();
+  if (!summary || !summary.rows || !summary.rows.length) {
+    meta.textContent = "0 temples";
+    list.appendChild(emptyRow("No temples configured yet."));
+    return;
+  }
+  meta.textContent = `${summary.temple_count} temples - ${summary.overall_progress_pct}% overall`;
+  for (const item of summary.rows) {
+    const row = document.createElement("div");
+    row.className = `temple-row${item.active ? " active" : ""}`;
+    row.innerHTML = `
+      <div>
+        <strong></strong>
+        <span></span>
+      </div>
+      <div class="temple-metrics">
+        <b></b>
+        <small></small>
+      </div>
+    `;
+    row.querySelector("strong").textContent = `${item.active ? "Active: " : ""}${item.name}`;
+    row.querySelector("span").textContent = `${titleCase(item.judgement)} - top: ${item.top_strategy}`;
+    row.querySelector("b").textContent = `${item.earned} / ${item.quota}`;
+    row.querySelector("small").textContent = `${item.progress_pct}% - ${item.mood}`;
+    list.appendChild(row);
+  }
 }
 
 function renderLogs(events) {
@@ -447,6 +482,21 @@ function hydrateMoodControls(config) {
     }
     select.value = moodNames.includes(currentValue) ? currentValue : config.active_mood;
   }
+}
+
+function hydrateTempleControls(config) {
+  const select = $("#templeSelect");
+  if (!select) return;
+  const currentValue = select.value || (config.active_temple && config.active_temple.id);
+  select.replaceChildren();
+  for (const temple of config.temples || []) {
+    const option = document.createElement("option");
+    option.value = temple.id;
+    option.textContent = temple.active ? `${temple.name} (active)` : temple.name;
+    select.appendChild(option);
+  }
+  const activeId = config.active_temple ? config.active_temple.id : "";
+  select.value = [...select.options].some((option) => option.value === currentValue) ? currentValue : activeId;
 }
 
 function hydrateStrategyControls(config) {
@@ -677,6 +727,25 @@ function attachExternalControls() {
   $("#externalButton").addEventListener("click", refreshExternalConnections);
 }
 
+function attachTempleControls() {
+  $("#templeSelect").addEventListener("change", async (event) => {
+    const templeId = event.currentTarget.value;
+    if (!templeId) return;
+    try {
+      const payload = await request("/api/temple/switch", {
+        method: "POST",
+        body: JSON.stringify({ temple_id: templeId }),
+      });
+      state.latest = payload.state;
+      render(payload.state);
+      await refreshExternalConnections();
+      showToast(`Temple switched to ${payload.temple.name}`);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
 async function refreshExternalConnections() {
   if (!state.auth || !state.auth.authenticated || state.auth.setup_required) return;
   const button = $("#externalButton");
@@ -830,10 +899,12 @@ attachForm("#incomeForm", "/api/income", "Income recorded");
 attachForm("#quotaForm", "/api/quota", "Quota updated");
 attachForm("#moodForm", "/api/mood", "Mood updated");
 attachForm("#exceptionForm", "/api/exception", "Exception added");
+attachForm("#templeForm", "/api/temple/create", "Temple created");
 attachPulse();
 attachReportControls();
 attachImportControls();
 attachExternalControls();
+attachTempleControls();
 attachApprovalControls();
 boot();
 setInterval(refresh, 10000);

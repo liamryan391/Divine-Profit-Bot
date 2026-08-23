@@ -20,6 +20,7 @@ from .core import (
     create_account,
     create_session,
     create_approval_draft,
+    create_temple,
     destroy_session,
     enqueue_command,
     ensure_state,
@@ -33,6 +34,7 @@ from .core import (
     list_events,
     list_exceptions,
     list_income,
+    list_temples,
     load_config,
     parse_date,
     parse_money_to_minor,
@@ -44,6 +46,8 @@ from .core import (
     set_quota,
     status_report,
     strategy_roi_summary,
+    switch_temple,
+    temple_summary,
     worker_status,
 )
 from .deployment import deployment_environment
@@ -151,6 +155,9 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     limit = int(query.get("limit", ["20"])[0])
                     self.send_json({"approvals": serialize_approval_actions(list_approval_actions(data_dir, status=status, limit=limit))})
                     return
+                if parsed.path == "/api/temples":
+                    self.send_json({"temples": temple_summary(data_dir), "items": list_temples(data_dir)})
+                    return
                 self.serve_static(parsed.path)
             except DivineToolError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -236,6 +243,20 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                 if parsed.path == "/api/mood":
                     set_mood(data_dir, str(payload["mood"]))
                     self.send_json({"ok": True, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/temple/create":
+                    temple = create_temple(
+                        data_dir,
+                        name=str(payload["name"]),
+                        temple_id=str(payload.get("temple_id", "")),
+                        description=str(payload.get("description", "")),
+                        template=str(payload.get("template", "balanced")),
+                    )
+                    self.send_json({"ok": True, "temple": temple, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/temple/switch":
+                    temple = switch_temple(data_dir, str(payload["temple_id"]))
+                    self.send_json({"ok": True, "temple": temple, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/exception":
                     exception_id = add_exception(
@@ -405,6 +426,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
 
 def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> dict[str, Any]:
     config = load_config(data_dir)
+    temple = config.get("temples", [{}])[0]
+    active_temple = next((item for item in config.get("temples", []) if item.get("id") == config.get("active_temple")), temple)
     opportunities = generate_opportunities(data_dir)
     strategy_roi = strategy_roi_summary(data_dir)
     report = generate_report(data_dir, period_name="week")
@@ -420,12 +443,16 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "report": report,
         "upgrades": generate_upgrades(data_dir),
         "approvals": approval_queue_summary(data_dir),
+        "temples": temple_summary(data_dir),
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
         "worker": worker_status(data_dir),
         "config": {
             "god_name": config.get("god_name", "Creator"),
             "active_mood": config.get("active_mood", "watchful"),
             "base_currency": config.get("base_currency", "GBP"),
+            "active_temple": active_temple,
+            "temples": list_temples(data_dir),
+            "strategy_templates": config.get("strategy_templates", {}),
             "moods": config.get("moods", {}),
             "channels": config.get("channels", []),
         },
@@ -436,6 +463,7 @@ def serialize_status(report: dict[str, Any]) -> dict[str, Any]:
     period = report["period"]
     return {
         "god_name": report["god_name"],
+        "temple": report["temple"],
         "mood": report["mood"],
         "period": {
             "name": period.name,

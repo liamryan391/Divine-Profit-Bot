@@ -58,6 +58,7 @@
           </div>
         </div>
         <div class="header-actions">
+          <select id="templeSelect" class="temple-select" aria-label="Active temple"></select>
           <div class="status-pill" id="accountPill">
             <span id="accountPillText">Account: checking</span>
           </div>
@@ -88,7 +89,7 @@
         <article class="metric-card accent-violet">
           <p class="metric-label">Temple Level</p>
           <strong id="templeLevel">v0.1</strong>
-          <span id="templeNext">Next: v2.2 multi-temple track</span>
+          <span id="templeNext">Next: v2.3 growth track</span>
         </article>
       </section>
 
@@ -114,6 +115,37 @@
       </section>
 
       <section class="dashboard-grid">
+        <article class="panel wide">
+          <div class="section-heading">
+            <h2>Temple Switchboard</h2>
+            <span id="templeMeta" class="badge">1 temple</span>
+          </div>
+          <div id="templeSummaryList" class="temple-list"></div>
+          <form id="templeForm" class="control-form split-form compact-form">
+            <label>
+              Temple Name
+              <input name="name" placeholder="New Revenue Temple" required />
+            </label>
+            <label>
+              Temple ID
+              <input name="temple_id" placeholder="optional-stable-id" />
+            </label>
+            <label>
+              Template
+              <select name="template">
+                <option value="balanced">Balanced</option>
+                <option value="services">Services</option>
+                <option value="products">Products</option>
+              </select>
+            </label>
+            <label class="form-wide">
+              Description
+              <input name="description" placeholder="What this temple is trying to earn from" />
+            </label>
+            <button class="button primary" type="submit">Create Temple</button>
+          </form>
+        </article>
+
         <article class="panel">
           <div class="section-heading">
             <h2>Active Strategies</h2>

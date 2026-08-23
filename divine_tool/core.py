@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import hashlib
 import hmac
@@ -22,6 +23,7 @@ from typing import Any, Callable
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "god_name": "Creator",
+    "active_temple": "main",
     "active_mood": "watchful",
     "base_currency": "GBP",
     "moods": {
@@ -76,6 +78,81 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "next_action": "Publish one honest comparison or recommendation.",
         },
     ],
+    "temples": [
+        {
+            "id": "main",
+            "name": "Main Temple",
+            "description": "Primary revenue temple for the Creator.",
+            "active_mood": "watchful",
+            "base_currency": "GBP",
+            "moods": {
+                "merciful": {
+                    "period": "week",
+                    "quota_minor": 10000,
+                    "punishment": "review the lowest-return channel and cut wasted effort",
+                },
+                "watchful": {
+                    "period": "week",
+                    "quota_minor": 25000,
+                    "punishment": "trigger a daily revenue review until the quota recovers",
+                },
+                "hungry": {
+                    "period": "month",
+                    "quota_minor": 150000,
+                    "punishment": "freeze new features and focus only on revenue actions",
+                },
+            },
+            "channels": [
+                {
+                    "id": "freelance_services",
+                    "name": "Freelance services",
+                    "expected_gbp_minor": 25000,
+                    "effort": "medium",
+                    "risk": "low",
+                    "deadline_fit": "high",
+                    "repeatability": "medium",
+                    "success_probability": 0.65,
+                    "next_action": "Send three tailored proposals or follow-ups.",
+                },
+                {
+                    "id": "digital_product",
+                    "name": "Digital product",
+                    "expected_gbp_minor": 10000,
+                    "effort": "medium",
+                    "risk": "low",
+                    "deadline_fit": "medium",
+                    "repeatability": "high",
+                    "success_probability": 0.35,
+                    "next_action": "Ship one paid mini-offer and test a simple landing page.",
+                },
+                {
+                    "id": "affiliate_referral",
+                    "name": "Affiliate or referral income",
+                    "expected_gbp_minor": 5000,
+                    "effort": "low",
+                    "risk": "low",
+                    "deadline_fit": "low",
+                    "repeatability": "medium",
+                    "success_probability": 0.25,
+                    "next_action": "Publish one honest comparison or recommendation.",
+                },
+            ],
+        }
+    ],
+    "strategy_templates": {
+        "balanced": {
+            "label": "Balanced revenue mix",
+            "channels": ["freelance_services", "digital_product", "affiliate_referral"],
+        },
+        "services": {
+            "label": "Service-led temple",
+            "channels": ["freelance_services"],
+        },
+        "products": {
+            "label": "Product-led temple",
+            "channels": ["digital_product", "affiliate_referral"],
+        },
+    },
     "automation": {
         "check_interval_seconds": 300,
         "command_file": "commands.jsonl",
@@ -154,6 +231,7 @@ APPROVAL_KINDS = {
 }
 
 APPROVAL_STATUSES = {"pending", "approved", "rejected", "completed"}
+DEFAULT_TEMPLE_ID = "main"
 
 
 def default_data_dir() -> Path:
@@ -171,6 +249,7 @@ def ensure_state(data_dir: Path) -> None:
             """
             CREATE TABLE IF NOT EXISTS income (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
                 amount_minor INTEGER NOT NULL,
                 currency TEXT NOT NULL,
                 gbp_minor INTEGER NOT NULL,
@@ -183,13 +262,16 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        ensure_column(conn, "income", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
         ensure_column(conn, "income", "strategy", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "income", "import_fingerprint", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_period ON income(temple_id, occurred_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_income_import_fingerprint ON income(import_fingerprint)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS exceptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
                 reason TEXT NOT NULL,
                 starts_on TEXT NOT NULL,
                 ends_on TEXT NOT NULL,
@@ -197,10 +279,13 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        ensure_column(conn, "exceptions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_exceptions_temple_dates ON exceptions(temple_id, starts_on, ends_on)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
                 level TEXT NOT NULL,
                 category TEXT NOT NULL,
                 message TEXT NOT NULL,
@@ -208,6 +293,8 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        ensure_column(conn, "events", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_temple_created ON events(temple_id, created_at)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS worker_heartbeat (
@@ -221,6 +308,7 @@ def ensure_state(data_dir: Path) -> None:
             """
             CREATE TABLE IF NOT EXISTS approval_actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
                 kind TEXT NOT NULL,
                 title TEXT NOT NULL,
                 target TEXT NOT NULL DEFAULT '',
@@ -234,7 +322,9 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        ensure_column(conn, "approval_actions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_status ON approval_actions(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_temple_status ON approval_actions(temple_id, status)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS accounts (
@@ -319,24 +409,25 @@ def ensure_config_only(data_dir: Path) -> None:
         save_config(data_dir, DEFAULT_CONFIG)
 
 
-def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    changed = False
-    migrated = dict(config)
-    for key, value in DEFAULT_CONFIG.items():
-        if key not in migrated:
-            migrated[key] = value
-            changed = True
+def normalize_temple_id(value: str) -> str:
+    cleaned = slugify(value.strip())
+    if len(cleaned) < 2:
+        raise DivineToolError("Temple id must be at least 2 characters.")
+    return cleaned
 
+
+def migrate_channels(channels: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    changed = False
     default_channels_by_name = {
         str(channel.get("name", "")).lower(): channel for channel in DEFAULT_CONFIG.get("channels", [])
     }
-    channels = []
-    for channel in migrated.get("channels", []):
+    output = []
+    for channel in channels:
         current = dict(channel)
         default = default_channels_by_name.get(str(current.get("name", "")).lower(), {})
         for key, value in default.items():
             if key not in current:
-                current[key] = value
+                current[key] = copy.deepcopy(value)
                 changed = True
         if "id" not in current:
             current["id"] = slugify(str(current.get("name", "strategy")))
@@ -349,7 +440,92 @@ def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
             if key not in current:
                 current[key] = value
                 changed = True
-        channels.append(current)
+        output.append(current)
+    return output, changed
+
+
+def legacy_temple_from_config(config: dict[str, Any], temple_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": normalize_temple_id(temple_id or str(config.get("active_temple") or DEFAULT_TEMPLE_ID)),
+        "name": "Main Temple",
+        "description": "Primary revenue temple for the Creator.",
+        "active_mood": config.get("active_mood", "watchful"),
+        "base_currency": config.get("base_currency", "GBP"),
+        "moods": copy.deepcopy(config.get("moods", DEFAULT_CONFIG["moods"])),
+        "channels": copy.deepcopy(config.get("channels", DEFAULT_CONFIG["channels"])),
+    }
+
+
+def normalize_temple_config(temple: dict[str, Any], fallback: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    changed = False
+    current = dict(temple)
+    if not current.get("id"):
+        current["id"] = normalize_temple_id(str(current.get("name") or DEFAULT_TEMPLE_ID))
+        changed = True
+    else:
+        normalized = normalize_temple_id(str(current["id"]))
+        if current["id"] != normalized:
+            current["id"] = normalized
+            changed = True
+    if not current.get("name"):
+        current["name"] = str(current["id"]).replace("_", " ").title()
+        changed = True
+    current.setdefault("description", "")
+    if "active_mood" not in current:
+        current["active_mood"] = fallback.get("active_mood", "watchful")
+        changed = True
+    if "base_currency" not in current:
+        current["base_currency"] = fallback.get("base_currency", "GBP")
+        changed = True
+    if "moods" not in current:
+        current["moods"] = copy.deepcopy(fallback.get("moods", DEFAULT_CONFIG["moods"]))
+        changed = True
+    if "channels" not in current:
+        current["channels"] = copy.deepcopy(fallback.get("channels", DEFAULT_CONFIG["channels"]))
+        changed = True
+    channels, channel_changed = migrate_channels(list(current.get("channels", [])))
+    current["channels"] = channels
+    changed = changed or channel_changed
+    if current["active_mood"] not in current.get("moods", {}):
+        current["active_mood"] = next(iter(current.get("moods", {}) or {"watchful": {}}))
+        changed = True
+    return current, changed
+
+
+def sync_active_temple_legacy_fields(config: dict[str, Any]) -> None:
+    temple = active_temple_config(config)
+    config["active_temple"] = temple["id"]
+    config["active_mood"] = temple.get("active_mood", "watchful")
+    config["base_currency"] = temple.get("base_currency", "GBP")
+    config["moods"] = copy.deepcopy(temple.get("moods", DEFAULT_CONFIG["moods"]))
+    config["channels"] = copy.deepcopy(temple.get("channels", DEFAULT_CONFIG["channels"]))
+
+
+def active_temple_config(config: dict[str, Any], temple_id: str | None = None) -> dict[str, Any]:
+    requested = normalize_temple_id(temple_id or str(config.get("active_temple") or DEFAULT_TEMPLE_ID))
+    for temple in config.get("temples", []):
+        if str(temple.get("id")) == requested:
+            return dict(temple)
+    raise DivineToolError(f"Unknown temple '{requested}'.")
+
+
+def active_temple_id_for_data_dir(data_dir: Path, temple_id: str | None = None) -> str:
+    if temple_id:
+        return normalize_temple_id(temple_id)
+    config = load_config(data_dir)
+    return str(active_temple_config(config)["id"])
+
+
+def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    changed = False
+    migrated = dict(config)
+    for key, value in DEFAULT_CONFIG.items():
+        if key not in migrated:
+            migrated[key] = value
+            changed = True
+
+    channels, channels_changed = migrate_channels(list(migrated.get("channels", [])))
+    changed = changed or channels_changed
     migrated["channels"] = channels
 
     default_integrations = DEFAULT_CONFIG.get("integrations", {})
@@ -400,6 +576,34 @@ def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
             current_deployment[key] = nested
     migrated["deployment"] = current_deployment
 
+    active_temple = normalize_temple_id(str(migrated.get("active_temple") or DEFAULT_TEMPLE_ID))
+    migrated["active_temple"] = active_temple
+    temples_input = migrated.get("temples") or []
+    if not temples_input:
+        temples_input = [legacy_temple_from_config(migrated, active_temple)]
+        changed = True
+
+    temples = []
+    seen_temples: set[str] = set()
+    for temple in temples_input:
+        if not isinstance(temple, dict):
+            changed = True
+            continue
+        normalized, temple_changed = normalize_temple_config(temple, migrated)
+        changed = changed or temple_changed
+        if normalized["id"] in seen_temples:
+            changed = True
+            continue
+        seen_temples.add(normalized["id"])
+        temples.append(normalized)
+
+    if active_temple not in seen_temples:
+        temples.insert(0, legacy_temple_from_config(migrated, active_temple))
+        changed = True
+
+    migrated["temples"] = temples
+    sync_active_temple_legacy_fields(migrated)
+
     return migrated, changed
 
 
@@ -407,31 +611,192 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 
 
-def log_event(data_dir: Path, message: str, category: str = "system", level: str = "info") -> int:
+def list_temples(data_dir: Path) -> list[dict[str, Any]]:
+    config = load_config(data_dir)
+    active_id = str(active_temple_config(config)["id"])
+    temples = []
+    for temple in config.get("temples", []):
+        temples.append(
+            {
+                "id": temple["id"],
+                "name": temple.get("name", temple["id"]),
+                "description": temple.get("description", ""),
+                "active": temple["id"] == active_id,
+                "active_mood": temple.get("active_mood", "watchful"),
+                "base_currency": temple.get("base_currency", "GBP"),
+                "channel_count": len(temple.get("channels", [])),
+            }
+        )
+    return temples
+
+
+def strategy_template_channels(config: dict[str, Any], template: str) -> list[dict[str, Any]]:
+    template_id = str(template or "balanced").strip().lower()
+    templates = config.get("strategy_templates", {})
+    if template_id not in templates:
+        known = ", ".join(sorted(templates.keys()))
+        raise DivineToolError(f"Unknown strategy template '{template_id}'. Known templates: {known}")
+    channel_ids = list(templates[template_id].get("channels", []))
+    channels_by_id = {
+        str(channel.get("id") or slugify(str(channel.get("name", "strategy")))): channel
+        for channel in DEFAULT_CONFIG.get("channels", [])
+    }
+    for channel in config.get("channels", []):
+        channel_id = str(channel.get("id") or slugify(str(channel.get("name", "strategy"))))
+        channels_by_id.setdefault(channel_id, channel)
+    return [copy.deepcopy(channels_by_id[channel_id]) for channel_id in channel_ids if channel_id in channels_by_id]
+
+
+def create_temple(
+    data_dir: Path,
+    name: str,
+    temple_id: str = "",
+    description: str = "",
+    template: str = "balanced",
+) -> dict[str, Any]:
+    config = load_config(data_dir)
+    cleaned_name = name.strip()
+    if len(cleaned_name) < 2:
+        raise DivineToolError("Temple name must be at least 2 characters.")
+    new_id = normalize_temple_id(temple_id or cleaned_name)
+    if any(temple["id"] == new_id for temple in config.get("temples", [])):
+        raise DivineToolError(f"Temple '{new_id}' already exists.")
+
+    temple = {
+        "id": new_id,
+        "name": cleaned_name,
+        "description": description.strip(),
+        "active_mood": "watchful",
+        "base_currency": config.get("base_currency", "GBP"),
+        "moods": copy.deepcopy(DEFAULT_CONFIG["moods"]),
+        "channels": strategy_template_channels(config, template),
+    }
+    normalized, _changed = normalize_temple_config(temple, config)
+    config.setdefault("temples", []).append(normalized)
+    save_config(data_dir, config)
+    log_event(data_dir, f"Temple created: {normalized['name']}", "temple", temple_id=new_id)
+    return temple_to_dict(normalized, active=False)
+
+
+def switch_temple(data_dir: Path, temple_id: str) -> dict[str, Any]:
+    config = load_config(data_dir)
+    requested = normalize_temple_id(temple_id)
+    temple = active_temple_config(config, requested)
+    config["active_temple"] = requested
+    sync_active_temple_legacy_fields(config)
+    save_config(data_dir, config)
+    log_event(data_dir, f"Active temple switched to {temple['name']}", "temple", temple_id=requested)
+    return temple_to_dict(temple, active=True)
+
+
+def temple_to_dict(temple: dict[str, Any], active: bool) -> dict[str, Any]:
+    return {
+        "id": temple["id"],
+        "name": temple.get("name", temple["id"]),
+        "description": temple.get("description", ""),
+        "active": active,
+        "active_mood": temple.get("active_mood", "watchful"),
+        "base_currency": temple.get("base_currency", "GBP"),
+        "channel_count": len(temple.get("channels", [])),
+    }
+
+
+def temple_summary(data_dir: Path, today: date | None = None) -> dict[str, Any]:
+    config = load_config(data_dir)
+    active_id = str(active_temple_config(config)["id"])
+    rows = []
+    total_quota_minor = 0
+    total_earned_minor = 0
+    satisfied_count = 0
+    risk_count = 0
+
+    for temple in config.get("temples", []):
+        report = status_report(data_dir, today=today, temple_id=str(temple["id"]))
+        top = generate_opportunities(data_dir, today=today, temple_id=str(temple["id"]))
+        quota_minor = int(report["quota_minor"])
+        earned_minor = int(report["earned_minor"])
+        total_quota_minor += quota_minor
+        total_earned_minor += earned_minor
+        if report["judgement"] == "quota satisfied":
+            satisfied_count += 1
+        if report["judgement"] in {"wrath risk", "needs offerings"}:
+            risk_count += 1
+        rows.append(
+            {
+                "id": temple["id"],
+                "name": temple.get("name", temple["id"]),
+                "description": temple.get("description", ""),
+                "active": temple["id"] == active_id,
+                "mood": report["mood"],
+                "period": {
+                    "name": report["period"].name,
+                    "start": report["period"].start.isoformat(),
+                    "end": report["period"].end.isoformat(),
+                },
+                "quota": format_money(quota_minor),
+                "quota_minor": quota_minor,
+                "earned": format_money(earned_minor),
+                "earned_minor": earned_minor,
+                "remaining": format_money(int(report["remaining_minor"])),
+                "remaining_minor": int(report["remaining_minor"]),
+                "progress_pct": round(float(report["progress"]) * 100, 1),
+                "judgement": report["judgement"],
+                "top_strategy": top[0]["name"] if top else "No strategy",
+            }
+        )
+
+    return {
+        "active_temple_id": active_id,
+        "temple_count": len(rows),
+        "satisfied_count": satisfied_count,
+        "risk_count": risk_count,
+        "total_quota": format_money(total_quota_minor),
+        "total_quota_minor": total_quota_minor,
+        "total_earned": format_money(total_earned_minor),
+        "total_earned_minor": total_earned_minor,
+        "total_remaining": format_money(max(total_quota_minor - total_earned_minor, 0)),
+        "total_remaining_minor": max(total_quota_minor - total_earned_minor, 0),
+        "overall_progress_pct": 100.0
+        if total_quota_minor <= 0
+        else round(min(total_earned_minor / total_quota_minor, 1) * 100, 1),
+        "rows": rows,
+    }
+
+
+def log_event(
+    data_dir: Path,
+    message: str,
+    category: str = "system",
+    level: str = "info",
+    temple_id: str | None = None,
+) -> int:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         cur = conn.execute(
             """
-            INSERT INTO events (level, category, message, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO events (temple_id, level, category, message, created_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (level, category, message, now_iso()),
+            (scoped_temple_id, level, category, message, now_iso()),
         )
         conn.commit()
         return int(cur.lastrowid)
 
 
-def list_events(data_dir: Path, limit: int = 50) -> list[sqlite3.Row]:
+def list_events(data_dir: Path, limit: int = 50, temple_id: str | None = None) -> list[sqlite3.Row]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         return list(
             conn.execute(
                 """
                 SELECT * FROM events
+                WHERE temple_id = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (scoped_temple_id, limit),
             )
         )
 
@@ -614,9 +979,10 @@ def previous_period(period: Period) -> Period:
     raise DivineToolError("Period must be 'week' or 'month'.")
 
 
-def active_mood(config: dict[str, Any]) -> dict[str, Any]:
-    mood_name = config.get("active_mood", "watchful")
-    moods = config.get("moods", {})
+def active_mood(config: dict[str, Any], temple_id: str | None = None) -> dict[str, Any]:
+    temple = active_temple_config(config, temple_id)
+    mood_name = temple.get("active_mood", "watchful")
+    moods = temple.get("moods", {})
     if mood_name not in moods:
         raise DivineToolError(f"Active mood '{mood_name}' is not configured.")
     mood = dict(moods[mood_name])
@@ -634,8 +1000,10 @@ def add_income(
     strategy: str = "",
     import_fingerprint: str = "",
     occurred_on: date | None = None,
+    temple_id: str | None = None,
 ) -> int:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     currency = currency.upper()
     if currency != "GBP" and gbp_minor is None:
         raise DivineToolError("Non-GBP income needs a GBP equivalent, for example --gbp-equivalent 42.50.")
@@ -648,24 +1016,24 @@ def add_income(
             existing = conn.execute(
                 """
                 SELECT id FROM income
-                WHERE import_fingerprint = ?
+                WHERE import_fingerprint = ? AND temple_id = ?
                 LIMIT 1
                 """,
-                (import_fingerprint,),
+                (import_fingerprint, scoped_temple_id),
             ).fetchone()
             if existing:
                 raise DivineToolError(f"Duplicate imported income row already exists as #{existing['id']}.")
         cur = conn.execute(
             """
-            INSERT INTO income (amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO income (temple_id, amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred, created),
+            (scoped_temple_id, amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred, created),
         )
         conn.commit()
         income_id = int(cur.lastrowid)
     strategy_suffix = f" [{strategy}]" if strategy else ""
-    log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}{strategy_suffix}", "income")
+    log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}{strategy_suffix}", "income", temple_id=scoped_temple_id)
     return income_id
 
 
@@ -676,8 +1044,10 @@ def import_income_csv(
     default_strategy: str = "",
     dry_run: bool = False,
     filename: str = "",
+    temple_id: str | None = None,
 ) -> dict[str, Any]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     source_type = source_type.lower()
     if source_type not in {"generic", "payment", "affiliate"}:
         raise DivineToolError("Import type must be generic, payment, or affiliate.")
@@ -719,7 +1089,7 @@ def import_income_csv(
             external_id=parsed["external_id"],
         )
         parsed["fingerprint"] = fingerprint
-        existing_id = existing_import_id(data_dir, fingerprint)
+        existing_id = existing_import_id(data_dir, fingerprint, temple_id=scoped_temple_id)
         if existing_id is not None:
             parsed["status"] = "duplicate"
             parsed["existing_id"] = existing_id
@@ -751,6 +1121,7 @@ def import_income_csv(
             strategy=parsed["strategy"],
             import_fingerprint=fingerprint,
             occurred_on=parse_date(parsed["date"]),
+            temple_id=scoped_temple_id,
         )
         parsed["status"] = "imported"
         parsed["id"] = income_id
@@ -761,6 +1132,7 @@ def import_income_csv(
         data_dir,
         f"CSV import complete: {result['imported_count']} imported, {result['duplicate_count']} duplicate, {result['skipped_count']} skipped",
         "import",
+        temple_id=scoped_temple_id,
     )
     return result
 
@@ -851,16 +1223,17 @@ def import_skip(reason: str) -> dict[str, Any]:
     return {"status": "skipped", "reason": reason}
 
 
-def existing_import_id(data_dir: Path, fingerprint: str) -> int | None:
+def existing_import_id(data_dir: Path, fingerprint: str, temple_id: str | None = None) -> int | None:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         row = conn.execute(
             """
             SELECT id FROM income
-            WHERE import_fingerprint = ?
+            WHERE import_fingerprint = ? AND temple_id = ?
             LIMIT 1
             """,
-            (fingerprint,),
+            (fingerprint, scoped_temple_id),
         ).fetchone()
     return int(row["id"]) if row else None
 
@@ -1414,8 +1787,10 @@ def create_approval_draft(
     channel: str = "",
     context: str = "",
     tone: str = "polite",
+    temple_id: str | None = None,
 ) -> int:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     kind = kind.strip().lower().replace("-", "_")
     if kind not in APPROVAL_KINDS:
         raise DivineToolError("Draft kind must be invoice_reminder, outreach, or content_prompt.")
@@ -1438,14 +1813,14 @@ def create_approval_draft(
         cur = conn.execute(
             """
             INSERT INTO approval_actions
-                (kind, title, target, strategy, body, metadata_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+                (temple_id, kind, title, target, strategy, body, metadata_json, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
-            (kind, title, normalized_target, strategy.strip(), body, json.dumps(metadata, sort_keys=True), created),
+            (scoped_temple_id, kind, title, normalized_target, strategy.strip(), body, json.dumps(metadata, sort_keys=True), created),
         )
         conn.commit()
         action_id = int(cur.lastrowid)
-    log_event(data_dir, f"Draft queued for approval: {title}", "approval")
+    log_event(data_dir, f"Draft queued for approval: {title}", "approval", temple_id=scoped_temple_id)
     return action_id
 
 
@@ -1527,8 +1902,14 @@ def build_action_draft(kind: str, target: str, metadata: dict[str, Any]) -> tupl
     return title, body, topic
 
 
-def list_approval_actions(data_dir: Path, status: str = "pending", limit: int = 20) -> list[sqlite3.Row]:
+def list_approval_actions(
+    data_dir: Path,
+    status: str = "pending",
+    limit: int = 20,
+    temple_id: str | None = None,
+) -> list[sqlite3.Row]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     status = status.strip().lower()
     limit = max(min(limit, 100), 1)
     with db(data_dir) as conn:
@@ -1538,10 +1919,11 @@ def list_approval_actions(data_dir: Path, status: str = "pending", limit: int = 
                     """
                     SELECT *
                     FROM approval_actions
+                    WHERE temple_id = ?
                     ORDER BY id DESC
                     LIMIT ?
                     """,
-                    (limit,),
+                    (scoped_temple_id, limit),
                 )
             )
         if status not in APPROVAL_STATUSES:
@@ -1551,17 +1933,18 @@ def list_approval_actions(data_dir: Path, status: str = "pending", limit: int = 
                 """
                 SELECT *
                 FROM approval_actions
-                WHERE status = ?
+                WHERE temple_id = ? AND status = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (status, limit),
+                (scoped_temple_id, status, limit),
             )
         )
 
 
-def approval_queue_summary(data_dir: Path, limit: int = 8) -> dict[str, Any]:
+def approval_queue_summary(data_dir: Path, limit: int = 8, temple_id: str | None = None) -> dict[str, Any]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         counts = {
             row["status"]: int(row["count"])
@@ -1569,21 +1952,30 @@ def approval_queue_summary(data_dir: Path, limit: int = 8) -> dict[str, Any]:
                 """
                 SELECT status, COUNT(*) AS count
                 FROM approval_actions
+                WHERE temple_id = ?
                 GROUP BY status
-                """
+                """,
+                (scoped_temple_id,),
             )
         }
     for status in APPROVAL_STATUSES:
         counts.setdefault(status, 0)
     return {
         "counts": counts,
-        "pending": [approval_action_to_dict(row) for row in list_approval_actions(data_dir, "pending", limit)],
-        "recent": [approval_action_to_dict(row) for row in list_approval_actions(data_dir, "all", limit)],
+        "pending": [approval_action_to_dict(row) for row in list_approval_actions(data_dir, "pending", limit, temple_id=scoped_temple_id)],
+        "recent": [approval_action_to_dict(row) for row in list_approval_actions(data_dir, "all", limit, temple_id=scoped_temple_id)],
     }
 
 
-def review_approval_action(data_dir: Path, action_id: int, decision: str, note: str = "") -> dict[str, Any]:
+def review_approval_action(
+    data_dir: Path,
+    action_id: int,
+    decision: str,
+    note: str = "",
+    temple_id: str | None = None,
+) -> dict[str, Any]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     decision = decision.strip().lower()
     status_map = {
         "approve": "approved",
@@ -1598,7 +1990,10 @@ def review_approval_action(data_dir: Path, action_id: int, decision: str, note: 
     new_status = status_map[decision]
     reviewed = now_iso()
     with db(data_dir) as conn:
-        row = conn.execute("SELECT * FROM approval_actions WHERE id = ?", (action_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM approval_actions WHERE id = ? AND temple_id = ?",
+            (action_id, scoped_temple_id),
+        ).fetchone()
         if row is None:
             raise DivineToolError(f"Approval draft #{action_id} was not found.")
         current_status = str(row["status"])
@@ -1617,8 +2012,11 @@ def review_approval_action(data_dir: Path, action_id: int, decision: str, note: 
             (new_status, reviewed, note.strip(), action_id),
         )
         conn.commit()
-        updated = conn.execute("SELECT * FROM approval_actions WHERE id = ?", (action_id,)).fetchone()
-    log_event(data_dir, f"Draft #{action_id} marked {new_status}: {updated['title']}", "approval")
+        updated = conn.execute(
+            "SELECT * FROM approval_actions WHERE id = ? AND temple_id = ?",
+            (action_id, scoped_temple_id),
+        ).fetchone()
+    log_event(data_dir, f"Draft #{action_id} marked {new_status}: {updated['title']}", "approval", temple_id=scoped_temple_id)
     return approval_action_to_dict(updated)
 
 
@@ -1640,72 +2038,78 @@ def ready_connection(identifier: str, name: str, summary: str, next_action: str)
     return {"id": identifier, "name": name, "state": "ready", "summary": summary, "items": [], "next_action": next_action}
 
 
-def list_income(data_dir: Path, limit: int = 20) -> list[sqlite3.Row]:
+def list_income(data_dir: Path, limit: int = 20, temple_id: str | None = None) -> list[sqlite3.Row]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         return list(
             conn.execute(
                 """
                 SELECT * FROM income
+                WHERE temple_id = ?
                 ORDER BY occurred_at DESC, id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (scoped_temple_id, limit),
             )
         )
 
 
-def income_total_for_period(data_dir: Path, period: Period) -> int:
+def income_total_for_period(data_dir: Path, period: Period, temple_id: str | None = None) -> int:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         row = conn.execute(
             """
             SELECT COALESCE(SUM(gbp_minor), 0) AS total
             FROM income
-            WHERE date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+            WHERE temple_id = ? AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
             """,
-            (period.start.isoformat(), period.end.isoformat()),
+            (scoped_temple_id, period.start.isoformat(), period.end.isoformat()),
         ).fetchone()
     return int(row["total"])
 
 
-def income_rows_for_period(data_dir: Path, period: Period, limit: int = 25) -> list[sqlite3.Row]:
+def income_rows_for_period(data_dir: Path, period: Period, limit: int = 25, temple_id: str | None = None) -> list[sqlite3.Row]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         return list(
             conn.execute(
                 """
                 SELECT *
                 FROM income
-                WHERE date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+                WHERE temple_id = ? AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
                 ORDER BY date(occurred_at) DESC, id DESC
                 LIMIT ?
                 """,
-                (period.start.isoformat(), period.end.isoformat(), limit),
+                (scoped_temple_id, period.start.isoformat(), period.end.isoformat(), limit),
             )
         )
 
 
-def strategy_income_totals(data_dir: Path, period: Period) -> dict[str, dict[str, int]]:
+def strategy_income_totals(data_dir: Path, period: Period, temple_id: str | None = None) -> dict[str, dict[str, int]]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     totals: dict[str, dict[str, int]] = {}
     with db(data_dir) as conn:
         period_rows = conn.execute(
             """
             SELECT strategy, COALESCE(SUM(gbp_minor), 0) AS total, COUNT(*) AS count
             FROM income
-            WHERE strategy <> '' AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+            WHERE temple_id = ? AND strategy <> '' AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
             GROUP BY strategy
             """,
-            (period.start.isoformat(), period.end.isoformat()),
+            (scoped_temple_id, period.start.isoformat(), period.end.isoformat()),
         ).fetchall()
         all_rows = conn.execute(
             """
             SELECT strategy, COALESCE(SUM(gbp_minor), 0) AS total, COUNT(*) AS count
             FROM income
-            WHERE strategy <> ''
+            WHERE temple_id = ? AND strategy <> ''
             GROUP BY strategy
-            """
+            """,
+            (scoped_temple_id,),
         ).fetchall()
 
     for row in period_rows:
@@ -1721,32 +2125,39 @@ def strategy_income_totals(data_dir: Path, period: Period) -> dict[str, dict[str
     return totals
 
 
-def strategy_period_totals(data_dir: Path, period: Period) -> dict[str, dict[str, int]]:
+def strategy_period_totals(data_dir: Path, period: Period, temple_id: str | None = None) -> dict[str, dict[str, int]]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         rows = conn.execute(
             """
             SELECT strategy, COALESCE(SUM(gbp_minor), 0) AS total, COUNT(*) AS count
             FROM income
-            WHERE strategy <> '' AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+            WHERE temple_id = ? AND strategy <> '' AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
             GROUP BY strategy
             """,
-            (period.start.isoformat(), period.end.isoformat()),
+            (scoped_temple_id, period.start.isoformat(), period.end.isoformat()),
         ).fetchall()
     return {row["strategy"]: {"minor": int(row["total"]), "count": int(row["count"])} for row in rows}
 
 
-def strategy_recent_notes(data_dir: Path, limit_per_strategy: int = 3) -> dict[str, list[dict[str, Any]]]:
+def strategy_recent_notes(
+    data_dir: Path,
+    limit_per_strategy: int = 3,
+    temple_id: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     notes: dict[str, list[dict[str, Any]]] = {}
     with db(data_dir) as conn:
         rows = conn.execute(
             """
             SELECT strategy, source, note, gbp_minor, occurred_at
             FROM income
-            WHERE strategy <> ''
+            WHERE temple_id = ? AND strategy <> ''
             ORDER BY date(occurred_at) DESC, id DESC
-            """
+            """,
+            (scoped_temple_id,),
         ).fetchall()
     for row in rows:
         strategy = row["strategy"]
@@ -1766,19 +2177,26 @@ def strategy_recent_notes(data_dir: Path, limit_per_strategy: int = 3) -> dict[s
     return notes
 
 
-def strategy_roi_summary(data_dir: Path, today: date | None = None, period_name: str | None = None) -> dict[str, Any]:
-    report = status_report(data_dir, today)
+def strategy_roi_summary(
+    data_dir: Path,
+    today: date | None = None,
+    period_name: str | None = None,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    report = status_report(data_dir, today, temple_id=temple_id)
     config = load_config(data_dir)
+    temple = active_temple_config(config, temple_id)
+    scoped_temple_id = str(temple["id"])
     period = period_for(period_name, today) if period_name else report["period"]
     previous = previous_period(period)
-    current_totals = strategy_period_totals(data_dir, period)
-    previous_totals = strategy_period_totals(data_dir, previous)
-    all_totals = strategy_income_totals(data_dir, period)
-    notes = strategy_recent_notes(data_dir)
-    opportunities_by_id = {item["id"]: item for item in generate_opportunities(data_dir, today)}
+    current_totals = strategy_period_totals(data_dir, period, temple_id=scoped_temple_id)
+    previous_totals = strategy_period_totals(data_dir, previous, temple_id=scoped_temple_id)
+    all_totals = strategy_income_totals(data_dir, period, temple_id=scoped_temple_id)
+    notes = strategy_recent_notes(data_dir, temple_id=scoped_temple_id)
+    opportunities_by_id = {item["id"]: item for item in generate_opportunities(data_dir, today, temple_id=scoped_temple_id)}
     rows: list[dict[str, Any]] = []
 
-    for channel in config.get("channels", []):
+    for channel in temple.get("channels", []):
         strategy_id = str(channel.get("id") or slugify(channel.get("name", "Revenue channel")))
         expected = int(channel.get("expected_gbp_minor", 0))
         effort = str(channel.get("effort", "medium"))
@@ -1844,6 +2262,7 @@ def strategy_roi_summary(data_dir: Path, today: date | None = None, period_name:
     pause_recommendations = [row for row in rows if row["recommendation"] == "pause"]
     push_recommendations = [row for row in rows if row["recommendation"] == "push"]
     return {
+        "temple": temple_to_dict(temple, active=scoped_temple_id == str(active_temple_config(config)["id"])),
         "period": {
             "name": period.name,
             "start": period.start.isoformat(),
@@ -1898,27 +2317,42 @@ def roi_recommendation(
     return "watch", "Keep collecting evidence before changing priority."
 
 
-def set_mood(data_dir: Path, mood_name: str) -> None:
+def set_mood(data_dir: Path, mood_name: str, temple_id: str | None = None) -> None:
     config = load_config(data_dir)
-    if mood_name not in config.get("moods", {}):
-        known = ", ".join(sorted(config.get("moods", {}).keys()))
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    temple = active_temple_config(config, scoped_temple_id)
+    if mood_name not in temple.get("moods", {}):
+        known = ", ".join(sorted(temple.get("moods", {}).keys()))
         raise DivineToolError(f"Unknown mood '{mood_name}'. Known moods: {known}")
-    config["active_mood"] = mood_name
+    for item in config.get("temples", []):
+        if item["id"] == scoped_temple_id:
+            item["active_mood"] = mood_name
+            break
+    if scoped_temple_id == str(config.get("active_temple")):
+        sync_active_temple_legacy_fields(config)
     save_config(data_dir, config)
-    log_event(data_dir, f"Mood changed to {mood_name}", "config")
+    log_event(data_dir, f"Mood changed to {mood_name}", "config", temple_id=scoped_temple_id)
 
 
-def set_quota(data_dir: Path, mood_name: str, amount_minor: int, period: str) -> None:
+def set_quota(data_dir: Path, mood_name: str, amount_minor: int, period: str, temple_id: str | None = None) -> None:
     config = load_config(data_dir)
-    config.setdefault("moods", {})
-    existing = config["moods"].get(mood_name, {})
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    temple = active_temple_config(config, scoped_temple_id)
+    temple.setdefault("moods", {})
+    existing = dict(temple["moods"].get(mood_name, {}))
     existing["period"] = period_for(period).name
     existing["quota_minor"] = amount_minor
     existing.setdefault("punishment", "review revenue actions until the quota recovers")
-    config["moods"][mood_name] = existing
-    config.setdefault("active_mood", mood_name)
+    temple["moods"][mood_name] = existing
+    temple.setdefault("active_mood", mood_name)
+    for index, item in enumerate(config.get("temples", [])):
+        if item["id"] == scoped_temple_id:
+            config["temples"][index] = temple
+            break
+    if scoped_temple_id == str(config.get("active_temple")):
+        sync_active_temple_legacy_fields(config)
     save_config(data_dir, config)
-    log_event(data_dir, f"{mood_name} quota set to {format_money(amount_minor)} per {period}", "config")
+    log_event(data_dir, f"{mood_name} quota set to {format_money(amount_minor)} per {period}", "config", temple_id=scoped_temple_id)
 
 
 def add_exception(
@@ -1926,66 +2360,73 @@ def add_exception(
     reason: str,
     starts_on: date | None,
     ends_on: date,
+    temple_id: str | None = None,
 ) -> int:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     start = starts_on or date.today()
     if ends_on < start:
         raise DivineToolError("Exception end date must be on or after the start date.")
     with db(data_dir) as conn:
         cur = conn.execute(
             """
-            INSERT INTO exceptions (reason, starts_on, ends_on, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO exceptions (temple_id, reason, starts_on, ends_on, created_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (reason, start.isoformat(), ends_on.isoformat(), now_iso()),
+            (scoped_temple_id, reason, start.isoformat(), ends_on.isoformat(), now_iso()),
         )
         conn.commit()
         exception_id = int(cur.lastrowid)
-    log_event(data_dir, f"Exception added until {ends_on.isoformat()}: {reason}", "exception")
+    log_event(data_dir, f"Exception added until {ends_on.isoformat()}: {reason}", "exception", temple_id=scoped_temple_id)
     return exception_id
 
 
-def list_exceptions(data_dir: Path, limit: int = 20) -> list[sqlite3.Row]:
+def list_exceptions(data_dir: Path, limit: int = 20, temple_id: str | None = None) -> list[sqlite3.Row]:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
         return list(
             conn.execute(
                 """
                 SELECT * FROM exceptions
+                WHERE temple_id = ?
                 ORDER BY ends_on DESC, id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (scoped_temple_id, limit),
             )
         )
 
 
-def active_exception(data_dir: Path, today: date | None = None) -> sqlite3.Row | None:
+def active_exception(data_dir: Path, today: date | None = None, temple_id: str | None = None) -> sqlite3.Row | None:
     ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     today = (today or date.today()).isoformat()
     with db(data_dir) as conn:
         return conn.execute(
             """
             SELECT * FROM exceptions
-            WHERE date(starts_on) <= date(?) AND date(ends_on) >= date(?)
+            WHERE temple_id = ? AND date(starts_on) <= date(?) AND date(ends_on) >= date(?)
             ORDER BY ends_on DESC
             LIMIT 1
             """,
-            (today, today),
+            (scoped_temple_id, today, today),
         ).fetchone()
 
 
-def status_report(data_dir: Path, today: date | None = None) -> dict[str, Any]:
+def status_report(data_dir: Path, today: date | None = None, temple_id: str | None = None) -> dict[str, Any]:
     ensure_state(data_dir)
     config = load_config(data_dir)
-    mood = active_mood(config)
+    temple = active_temple_config(config, temple_id)
+    scoped_temple_id = str(temple["id"])
+    mood = active_mood(config, scoped_temple_id)
     period = period_for(mood["period"], today)
-    earned = income_total_for_period(data_dir, period)
+    earned = income_total_for_period(data_dir, period, temple_id=scoped_temple_id)
     quota = int(mood["quota_minor"])
     remaining = max(quota - earned, 0)
     progress = 1.0 if quota <= 0 else min(earned / quota, 1.0)
     days_left = max((period.end - (today or date.today())).days, 0)
-    exception = active_exception(data_dir, today)
+    exception = active_exception(data_dir, today, temple_id=scoped_temple_id)
     if earned >= quota:
         judgement = "quota satisfied"
     elif exception:
@@ -1999,6 +2440,7 @@ def status_report(data_dir: Path, today: date | None = None) -> dict[str, Any]:
 
     return {
         "god_name": config.get("god_name", "Creator"),
+        "temple": temple_to_dict(temple, active=scoped_temple_id == str(active_temple_config(config)["id"])),
         "mood": mood["name"],
         "period": period,
         "quota_minor": quota,
@@ -2013,16 +2455,22 @@ def status_report(data_dir: Path, today: date | None = None) -> dict[str, Any]:
     }
 
 
-def generate_opportunities(data_dir: Path, today: date | None = None) -> list[dict[str, Any]]:
-    report = status_report(data_dir, today)
+def generate_opportunities(
+    data_dir: Path,
+    today: date | None = None,
+    temple_id: str | None = None,
+) -> list[dict[str, Any]]:
+    report = status_report(data_dir, today, temple_id=temple_id)
     config = load_config(data_dir)
+    temple = active_temple_config(config, temple_id)
+    scoped_temple_id = str(temple["id"])
     period = report["period"]
     gap = int(report["remaining_minor"])
     days_left = int(report["days_left"])
-    totals = strategy_income_totals(data_dir, period)
+    totals = strategy_income_totals(data_dir, period, temple_id=scoped_temple_id)
     opportunities: list[dict[str, Any]] = []
 
-    for channel in config.get("channels", []):
+    for channel in temple.get("channels", []):
         expected = int(channel.get("expected_gbp_minor", 0))
         if expected <= 0:
             continue
@@ -2147,8 +2595,8 @@ def opportunity_rationale(
     return f"{channel.get('name', 'This strategy')} ranks here because it {', '.join(reasons)}; {urgency}."
 
 
-def generate_upgrades(data_dir: Path, today: date | None = None) -> list[str]:
-    report = status_report(data_dir, today)
+def generate_upgrades(data_dir: Path, today: date | None = None, temple_id: str | None = None) -> list[str]:
+    report = status_report(data_dir, today, temple_id=temple_id)
     if report["remaining_minor"] == 0:
         return [
             "Unlock payment reminders for invoices and retainers.",
@@ -2165,20 +2613,27 @@ def generate_upgrades(data_dir: Path, today: date | None = None) -> list[str]:
     ]
 
 
-def generate_report(data_dir: Path, period_name: str = "week", today: date | None = None) -> dict[str, Any]:
+def generate_report(
+    data_dir: Path,
+    period_name: str = "week",
+    today: date | None = None,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
     today = today or date.today()
     config = load_config(data_dir)
+    temple = active_temple_config(config, temple_id)
+    scoped_temple_id = str(temple["id"])
     period = period_for(period_name, today)
-    quota_minor, quota_source = quota_for_report_period(config, period_name)
-    earned_minor = income_total_for_period(data_dir, period)
+    quota_minor, quota_source = quota_for_report_period(config, period_name, temple_id=scoped_temple_id)
+    earned_minor = income_total_for_period(data_dir, period, temple_id=scoped_temple_id)
     remaining_minor = max(quota_minor - earned_minor, 0)
     progress_pct = 100.0 if quota_minor <= 0 else round(min(earned_minor / quota_minor, 1) * 100, 1)
     days_left = max((period.end - today).days, 0)
-    exception = active_exception(data_dir, today)
-    income_rows = income_rows_for_period(data_dir, period, limit=25)
-    roi = strategy_roi_summary(data_dir, today=today, period_name=period_name)
-    opportunities = generate_opportunities(data_dir, today)[:5]
-    upgrades = generate_upgrades(data_dir, today)
+    exception = active_exception(data_dir, today, temple_id=scoped_temple_id)
+    income_rows = income_rows_for_period(data_dir, period, limit=25, temple_id=scoped_temple_id)
+    roi = strategy_roi_summary(data_dir, today=today, period_name=period_name, temple_id=scoped_temple_id)
+    opportunities = generate_opportunities(data_dir, today, temple_id=scoped_temple_id)[:5]
+    upgrades = generate_upgrades(data_dir, today, temple_id=scoped_temple_id)
     missed_review = missed_quota_review(
         quota_minor=quota_minor,
         earned_minor=earned_minor,
@@ -2190,6 +2645,7 @@ def generate_report(data_dir: Path, period_name: str = "week", today: date | Non
 
     report = {
         "title": f"Divine Profit {period_label} Report",
+        "temple": temple_to_dict(temple, active=scoped_temple_id == str(active_temple_config(config)["id"])),
         "generated_at": now_iso(),
         "period": {
             "name": period.name,
@@ -2215,12 +2671,13 @@ def generate_report(data_dir: Path, period_name: str = "week", today: date | Non
     return report
 
 
-def quota_for_report_period(config: dict[str, Any], period_name: str) -> tuple[int, str]:
-    active = active_mood(config)
+def quota_for_report_period(config: dict[str, Any], period_name: str, temple_id: str | None = None) -> tuple[int, str]:
+    temple = active_temple_config(config, temple_id)
+    active = active_mood(config, temple_id)
     if active.get("period") == period_name:
         return int(active.get("quota_minor", 0)), str(active["name"])
 
-    for mood_name, mood in config.get("moods", {}).items():
+    for mood_name, mood in temple.get("moods", {}).items():
         if mood.get("period") == period_name:
             return int(mood.get("quota_minor", 0)), str(mood_name)
 
@@ -2286,6 +2743,7 @@ def format_report_markdown(report: dict[str, Any]) -> str:
     lines = [
         f"# {report['title']}",
         "",
+        f"Temple: {report['temple']['name']} ({report['temple']['id']})",
         f"Generated: {report['generated_at']}",
         f"Period: {report['period']['start']} to {report['period']['end']}",
         f"Quota source: {report['quota_source']}",
@@ -2348,6 +2806,7 @@ def enqueue_command(data_dir: Path, command: dict[str, Any]) -> None:
 
 def process_command(data_dir: Path, command: dict[str, Any]) -> str:
     action = command.get("action")
+    temple_id = str(command["temple_id"]) if command.get("temple_id") else None
     if action == "add_income":
         amount_minor = parse_money_to_minor(command["amount"])
         gbp_equivalent = command.get("gbp_equivalent")
@@ -2361,10 +2820,11 @@ def process_command(data_dir: Path, command: dict[str, Any]) -> str:
             note=command.get("note", ""),
             strategy=command.get("strategy", ""),
             occurred_on=parse_date(command.get("date")) if command.get("date") else None,
+            temple_id=temple_id,
         )
         return f"added income #{income_id}"
     if action == "set_mood":
-        set_mood(data_dir, command["mood"])
+        set_mood(data_dir, command["mood"], temple_id=temple_id)
         return f"set mood to {command['mood']}"
     if action == "set_quota":
         set_quota(
@@ -2372,6 +2832,7 @@ def process_command(data_dir: Path, command: dict[str, Any]) -> str:
             mood_name=command["mood"],
             amount_minor=parse_money_to_minor(command["amount"]),
             period=command.get("period", "week"),
+            temple_id=temple_id,
         )
         return f"set {command['mood']} quota"
     if action == "add_exception":
@@ -2380,6 +2841,7 @@ def process_command(data_dir: Path, command: dict[str, Any]) -> str:
             reason=command["reason"],
             starts_on=parse_date(command["from"]) if command.get("from") else None,
             ends_on=parse_date(command["until"]),
+            temple_id=temple_id,
         )
         return "added exception"
     raise DivineToolError(f"Unknown command action: {action}")

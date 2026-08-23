@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.1.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.2.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -29,6 +29,9 @@ python -m divine_tool income add 75 --source "paid consultation" --strategy free
 python -m divine_tool opportunities
 python -m divine_tool roi
 python -m divine_tool report --period week
+python -m divine_tool temple summary
+python -m divine_tool temple create "Product Temple" --template products
+python -m divine_tool temple switch product_temple
 python -m divine_tool import .\income-export.csv --type payment --dry-run
 python -m divine_tool external
 python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-08-30 --invoice INV-001
@@ -117,6 +120,7 @@ The local web app provides:
 - Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
 - Owner account setup, password login, protected dashboard/API routes, session logout, and role-aware account status.
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
+- Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 
 Run it with:
 
@@ -193,6 +197,22 @@ The dashboard ranks strategies using:
 - repeatability
 - probability
 - income already produced by that strategy
+
+## Multi-Temple Expansion
+
+Use temples when you want separate revenue projects with their own quotas, moods, and strategy lists:
+
+```powershell
+python -m divine_tool temple list
+python -m divine_tool temple create "Product Temple" --template products
+python -m divine_tool temple create "Client Services" --template services
+python -m divine_tool temple switch product_temple
+python -m divine_tool temple summary
+```
+
+Available templates are `balanced`, `services`, and `products`. Existing state migrates into the default `main` temple. Normal commands such as `income add`, `quota set`, `mood set`, imports, reports, and approvals operate on the active temple.
+
+The dashboard includes a Temple Switchboard, an active-temple selector, per-temple progress rows, and an overall cross-temple earned/quota summary.
 
 ## Manual Imports
 

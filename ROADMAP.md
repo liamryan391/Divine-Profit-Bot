@@ -10,11 +10,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v1.1.1`, `v1.1.2`: patch releases for bug fixes, small polish, reliability improvements, or security fixes.
 - `v2.0.0`: account protection and authenticated local operation.
 - `v2.1.0`: hosted deployment packaging, preflight, monitoring, and backups.
-- `v2.2.0` or later: multi-temple expansion and deeper production scaling.
+- `v2.2.0`: multi-temple expansion with separate profiles and cross-temple reporting.
+- `v2.3.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
 
 ## Current Status
 
-Current version: `v2.1.0`.
+Current version: `v2.2.0`.
 
 Completed:
 
@@ -47,6 +48,11 @@ Completed:
 - Environment-based production configuration.
 - Healthcheck command for hosted monitoring.
 - Portable state backups for config, SQLite data, and command logs.
+- Multi-temple profiles with the existing state migrated into `main`.
+- Separate temple quota, mood, strategy template, income, exception, event, and approval contexts.
+- CLI temple list/create/switch/summary commands.
+- Dashboard Temple Switchboard and active temple selector.
+- Cross-temple quota rollups.
 
 ## Phase 0: Foundation
 
@@ -354,7 +360,7 @@ Release status: shipped.
 
 ### Stage 4.3: Multi-Temple Expansion
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -362,10 +368,64 @@ Deliverables:
 - Separate quota profiles.
 - Strategy templates.
 - Cross-temple reporting.
+- Scoped ledgers, exceptions, logs, and approval queues.
+- Dashboard switching.
 
 Release target:
 
-- `v2.2.0` or later.
+- `v2.2.0`.
+
+Release status: shipped.
+
+## Phase 5: Growth Operations
+
+Goal: help each temple convert legitimate opportunities into tracked revenue.
+
+### Stage 5.1: Lead Pipeline
+
+Status: future.
+
+Deliverables:
+
+- Lead records per temple.
+- Offer, value, source, and next-step fields.
+- Follow-up dates.
+- Pipeline stages.
+- Priority scoring tied to quota gaps.
+
+Release target:
+
+- `v2.3.0`.
+
+### Stage 5.2: Conversion Tracking
+
+Status: future.
+
+Deliverables:
+
+- Link income entries back to leads, drafts, imports, or strategies.
+- Conversion rate summaries.
+- Average deal size by temple and strategy.
+- Lost-opportunity notes.
+
+Release target:
+
+- `v2.4.0` or later.
+
+### Stage 5.3: Revenue Rules
+
+Status: future.
+
+Deliverables:
+
+- Configurable safe automation rules.
+- Human approval gates for any external action.
+- Rule run logs.
+- Disable switches per temple.
+
+Release target:
+
+- `v2.5.0` or later.
 
 ## Operational Definition
 
@@ -387,14 +447,17 @@ The tool is fully operational for protected local use when the Creator can:
 - Run the web and daemon services on a host with persistent state.
 - Check production readiness before public exposure.
 - Take a portable backup of the state directory.
+- Create and switch between multiple temples.
+- Keep separate ledgers and approval queues per temple.
+- Review aggregate quota progress across all temples.
 
 ## Recommended Next Build Step
 
-Build Phase 4, Stage 4.3 next:
+Build Phase 5, Stage 5.1 next:
 
-- Add multiple projects or temples.
-- Keep separate quota profiles per temple.
-- Add reusable strategy templates.
-- Build cross-temple reporting.
+- Add a lead pipeline per temple.
+- Track offer, value, source, stage, next step, and follow-up date.
+- Score leads against the active quota gap.
+- Connect completed leads to income entries.
 
-That turns the single protected production temple into a multi-temple revenue operating system.
+That turns the multi-temple operating system into a real growth pipeline.
