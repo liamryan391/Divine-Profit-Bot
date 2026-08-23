@@ -34,24 +34,36 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "channels": [
         {
+            "id": "freelance_services",
             "name": "Freelance services",
             "expected_gbp_minor": 25000,
             "effort": "medium",
             "risk": "low",
+            "deadline_fit": "high",
+            "repeatability": "medium",
+            "success_probability": 0.65,
             "next_action": "Send three tailored proposals or follow-ups.",
         },
         {
+            "id": "digital_product",
             "name": "Digital product",
             "expected_gbp_minor": 10000,
             "effort": "medium",
             "risk": "low",
+            "deadline_fit": "medium",
+            "repeatability": "high",
+            "success_probability": 0.35,
             "next_action": "Ship one paid mini-offer and test a simple landing page.",
         },
         {
+            "id": "affiliate_referral",
             "name": "Affiliate or referral income",
             "expected_gbp_minor": 5000,
             "effort": "low",
             "risk": "low",
+            "deadline_fit": "low",
+            "repeatability": "medium",
+            "success_probability": 0.25,
             "next_action": "Publish one honest comparison or recommendation.",
         },
     ],
@@ -96,6 +108,7 @@ def ensure_state(data_dir: Path) -> None:
                 amount_minor INTEGER NOT NULL,
                 currency TEXT NOT NULL,
                 gbp_minor INTEGER NOT NULL,
+                strategy TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
                 occurred_at TEXT NOT NULL,
@@ -103,6 +116,7 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        ensure_column(conn, "income", "strategy", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS exceptions (
@@ -143,6 +157,12 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     return conn
 
 
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 @contextmanager
 def db(data_dir: Path):
     conn = connect(data_dir)
@@ -159,7 +179,11 @@ def now_iso() -> str:
 def load_config(data_dir: Path) -> dict[str, Any]:
     ensure_config_only(data_dir)
     with (data_dir / "config.json").open("r", encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+    migrated, changed = migrate_config(config)
+    if changed:
+        save_config(data_dir, migrated)
+    return migrated
 
 
 def save_config(data_dir: Path, config: dict[str, Any]) -> None:
@@ -176,6 +200,42 @@ def ensure_config_only(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     if not (data_dir / "config.json").exists():
         save_config(data_dir, DEFAULT_CONFIG)
+
+
+def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    changed = False
+    migrated = dict(config)
+    for key, value in DEFAULT_CONFIG.items():
+        if key not in migrated:
+            migrated[key] = value
+            changed = True
+
+    default_channels_by_name = {
+        str(channel.get("name", "")).lower(): channel for channel in DEFAULT_CONFIG.get("channels", [])
+    }
+    channels = []
+    for channel in migrated.get("channels", []):
+        current = dict(channel)
+        default = default_channels_by_name.get(str(current.get("name", "")).lower(), {})
+        for key, value in default.items():
+            if key not in current:
+                current[key] = value
+                changed = True
+        if "id" not in current:
+            current["id"] = slugify(str(current.get("name", "strategy")))
+            changed = True
+        for key, value in {
+            "deadline_fit": "medium",
+            "repeatability": "medium",
+            "success_probability": 0.5,
+        }.items():
+            if key not in current:
+                current[key] = value
+                changed = True
+        channels.append(current)
+    migrated["channels"] = channels
+
+    return migrated, changed
 
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -271,6 +331,19 @@ def parse_money_to_minor(value: str | int | float | Decimal) -> int:
     return int(amount * 100)
 
 
+def slugify(value: str) -> str:
+    output = []
+    previous_was_sep = False
+    for char in value.lower():
+        if char.isalnum():
+            output.append(char)
+            previous_was_sep = False
+        elif not previous_was_sep:
+            output.append("_")
+            previous_was_sep = True
+    return "".join(output).strip("_") or "strategy"
+
+
 def format_money(minor: int, currency: str = "GBP") -> str:
     symbol = "£" if currency.upper() == "GBP" else f"{currency.upper()} "
     sign = "-" if minor < 0 else ""
@@ -311,6 +384,7 @@ def add_income(
     gbp_minor: int | None,
     source: str,
     note: str = "",
+    strategy: str = "",
     occurred_on: date | None = None,
 ) -> int:
     ensure_state(data_dir)
@@ -324,14 +398,15 @@ def add_income(
     with db(data_dir) as conn:
         cur = conn.execute(
             """
-            INSERT INTO income (amount_minor, currency, gbp_minor, source, note, occurred_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO income (amount_minor, currency, gbp_minor, strategy, source, note, occurred_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (amount_minor, currency, gbp_minor, source, note, occurred, created),
+            (amount_minor, currency, gbp_minor, strategy, source, note, occurred, created),
         )
         conn.commit()
         income_id = int(cur.lastrowid)
-    log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}", "income")
+    strategy_suffix = f" [{strategy}]" if strategy else ""
+    log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}{strategy_suffix}", "income")
     return income_id
 
 
@@ -362,6 +437,41 @@ def income_total_for_period(data_dir: Path, period: Period) -> int:
             (period.start.isoformat(), period.end.isoformat()),
         ).fetchone()
     return int(row["total"])
+
+
+def strategy_income_totals(data_dir: Path, period: Period) -> dict[str, dict[str, int]]:
+    ensure_state(data_dir)
+    totals: dict[str, dict[str, int]] = {}
+    with db(data_dir) as conn:
+        period_rows = conn.execute(
+            """
+            SELECT strategy, COALESCE(SUM(gbp_minor), 0) AS total, COUNT(*) AS count
+            FROM income
+            WHERE strategy <> '' AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+            GROUP BY strategy
+            """,
+            (period.start.isoformat(), period.end.isoformat()),
+        ).fetchall()
+        all_rows = conn.execute(
+            """
+            SELECT strategy, COALESCE(SUM(gbp_minor), 0) AS total, COUNT(*) AS count
+            FROM income
+            WHERE strategy <> ''
+            GROUP BY strategy
+            """
+        ).fetchall()
+
+    for row in period_rows:
+        totals.setdefault(row["strategy"], {"period_minor": 0, "period_count": 0, "total_minor": 0, "total_count": 0})
+        totals[row["strategy"]]["period_minor"] = int(row["total"])
+        totals[row["strategy"]]["period_count"] = int(row["count"])
+
+    for row in all_rows:
+        totals.setdefault(row["strategy"], {"period_minor": 0, "period_count": 0, "total_minor": 0, "total_count": 0})
+        totals[row["strategy"]]["total_minor"] = int(row["total"])
+        totals[row["strategy"]]["total_count"] = int(row["count"])
+
+    return totals
 
 
 def set_mood(data_dir: Path, mood_name: str) -> None:
@@ -479,67 +589,138 @@ def status_report(data_dir: Path, today: date | None = None) -> dict[str, Any]:
     }
 
 
-def generate_opportunities(data_dir: Path, today: date | None = None) -> list[dict[str, str]]:
+def generate_opportunities(data_dir: Path, today: date | None = None) -> list[dict[str, Any]]:
     report = status_report(data_dir, today)
     config = load_config(data_dir)
-    gap = report["remaining_minor"]
-    days_left = report["days_left"]
-    opportunities: list[dict[str, str]] = []
+    period = report["period"]
+    gap = int(report["remaining_minor"])
+    days_left = int(report["days_left"])
+    totals = strategy_income_totals(data_dir, period)
+    opportunities: list[dict[str, Any]] = []
 
     for channel in config.get("channels", []):
         expected = int(channel.get("expected_gbp_minor", 0))
         if expected <= 0:
             continue
+        strategy_id = str(channel.get("id") or slugify(channel.get("name", "Revenue channel")))
+        income = totals.get(strategy_id, {"period_minor": 0, "period_count": 0, "total_minor": 0, "total_count": 0})
+        components = opportunity_score_components(channel, expected, gap, days_left, income)
+        score = min(sum(components.values()), 100)
         fit = "strong" if expected >= gap else "partial"
+        if gap == 0:
+            fit = "upgrade"
+        elif days_left <= 2 and channel.get("deadline_fit", "medium") == "high":
+            fit = "deadline"
         opportunities.append(
             {
+                "id": strategy_id,
                 "name": channel.get("name", "Revenue channel"),
                 "expected": format_money(expected),
+                "expected_minor": expected,
                 "fit": fit,
                 "risk": channel.get("risk", "unknown"),
                 "effort": channel.get("effort", "unknown"),
+                "deadline_fit": channel.get("deadline_fit", "medium"),
+                "repeatability": channel.get("repeatability", "medium"),
+                "success_probability": float(channel.get("success_probability", 0.5)),
+                "score": score,
+                "score_label": score_label(score),
+                "period_income": format_money(income["period_minor"]),
+                "period_income_minor": income["period_minor"],
+                "period_count": income["period_count"],
+                "total_income": format_money(income["total_minor"]),
+                "total_income_minor": income["total_minor"],
+                "total_count": income["total_count"],
+                "components": components,
+                "rationale": opportunity_rationale(channel, components, income, gap, days_left),
                 "next_action": channel.get("next_action", "Define the next concrete revenue action."),
             }
         )
 
-    if gap == 0:
-        opportunities.insert(
-            0,
-            {
-                "name": "Quota reached",
-                "expected": format_money(0),
-                "fit": "upgrade",
-                "risk": "low",
-                "effort": "low",
-                "next_action": "Bank the win, review what worked, then upgrade the highest-return workflow.",
-            },
-        )
-    elif days_left <= 2:
-        opportunities.insert(
-            0,
-            {
-                "name": "Urgent cash sprint",
-                "expected": format_money(gap),
-                "fit": "deadline",
-                "risk": "low",
-                "effort": "high",
-                "next_action": "Prioritize invoices, overdue follow-ups, paid consultations, and fast lawful services.",
-            },
-        )
-    else:
-        opportunities.insert(
-            0,
-            {
-                "name": "Revenue compounding",
-                "expected": format_money(max(gap // max(days_left, 1), 0)),
-                "fit": "daily target",
-                "risk": "low",
-                "effort": "medium",
-                "next_action": "Work the best channel daily and record every conversion in the ledger.",
-            },
-        )
-
+    opportunities.sort(key=lambda item: (item["score"], item["expected_minor"]), reverse=True)
+    for index, item in enumerate(opportunities, start=1):
+        item["rank"] = index
     return opportunities
+
+
+def opportunity_score_components(
+    channel: dict[str, Any],
+    expected_minor: int,
+    gap_minor: int,
+    days_left: int,
+    income: dict[str, int],
+) -> dict[str, int]:
+    target = max(gap_minor, 1)
+    if gap_minor == 0:
+        value_score = min(round(expected_minor / 10000 * 8), 30)
+    else:
+        value_score = min(round(expected_minor / target * 30), 30)
+
+    effort_score = {"low": 16, "medium": 11, "high": 6}.get(str(channel.get("effort", "medium")), 8)
+    risk_score = {"low": 16, "moderate": 10, "high": 4}.get(str(channel.get("risk", "moderate")), 8)
+    repeatability_score = {"high": 12, "medium": 8, "low": 4}.get(str(channel.get("repeatability", "medium")), 6)
+    deadline_score = deadline_component(str(channel.get("deadline_fit", "medium")), days_left)
+    probability_score = min(round(float(channel.get("success_probability", 0.5)) * 10), 10)
+    evidence_score = min(round(income["period_minor"] / max(expected_minor, 1) * 8), 8)
+    if income["period_minor"] == 0 and income["total_minor"] > 0:
+        evidence_score = min(round(income["total_minor"] / max(expected_minor * 4, 1) * 4), 4)
+
+    return {
+        "value": value_score,
+        "deadline": deadline_score,
+        "effort": effort_score,
+        "risk": risk_score,
+        "repeatability": repeatability_score,
+        "probability": probability_score,
+        "evidence": evidence_score,
+    }
+
+
+def deadline_component(deadline_fit: str, days_left: int) -> int:
+    if days_left <= 2:
+        return {"high": 18, "medium": 12, "low": 5}.get(deadline_fit, 9)
+    if days_left <= 5:
+        return {"high": 16, "medium": 13, "low": 8}.get(deadline_fit, 10)
+    return {"high": 13, "medium": 12, "low": 10}.get(deadline_fit, 10)
+
+
+def score_label(score: int) -> str:
+    if score >= 80:
+        return "prime offering"
+    if score >= 65:
+        return "strong offering"
+    if score >= 50:
+        return "viable offering"
+    return "watchlist"
+
+
+def opportunity_rationale(
+    channel: dict[str, Any],
+    components: dict[str, int],
+    income: dict[str, int],
+    gap_minor: int,
+    days_left: int,
+) -> str:
+    reasons = []
+    if components["value"] >= 24:
+        reasons.append("can cover a large share of the remaining quota")
+    if components["deadline"] >= 16:
+        reasons.append("fits the current deadline pressure")
+    if components["effort"] >= 16:
+        reasons.append("has low activation effort")
+    if components["risk"] >= 16:
+        reasons.append("has low operational risk")
+    if components["repeatability"] >= 12:
+        reasons.append("is repeatable after this period")
+    if income["period_minor"] > 0:
+        reasons.append(f"already produced {format_money(income['period_minor'])} this period")
+    elif income["total_minor"] > 0:
+        reasons.append(f"has produced {format_money(income['total_minor'])} historically")
+    if not reasons:
+        reasons.append("needs evidence before promotion")
+
+    urgency = "quota is satisfied" if gap_minor == 0 else f"{days_left} day{'s' if days_left != 1 else ''} left"
+    return f"{channel.get('name', 'This strategy')} ranks here because it {', '.join(reasons)}; {urgency}."
 
 
 def generate_upgrades(data_dir: Path, today: date | None = None) -> list[str]:
@@ -588,6 +769,7 @@ def process_command(data_dir: Path, command: dict[str, Any]) -> str:
             gbp_minor=gbp_minor,
             source=command.get("source", "command inbox"),
             note=command.get("note", ""),
+            strategy=command.get("strategy", ""),
             occurred_on=parse_date(command.get("date")) if command.get("date") else None,
         )
         return f"added income #{income_id}"

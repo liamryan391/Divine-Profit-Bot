@@ -13,6 +13,8 @@ from divine_tool.core import (
     DivineToolError,
     add_income,
     enqueue_command,
+    generate_opportunities,
+    load_config,
     parse_money_to_minor,
     process_command_inbox,
     set_mood,
@@ -104,6 +106,64 @@ class DivineToolTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+    def test_opportunity_scoring_uses_strategy_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("100"), "week")
+            set_mood(data_dir, "watchful")
+            add_income(
+                data_dir,
+                amount_minor=parse_money_to_minor("90"),
+                currency="GBP",
+                gbp_minor=None,
+                source="mini product sale",
+                note="evidence for product channel",
+                strategy="digital_product",
+                occurred_on=date(2026, 8, 19),
+            )
+
+            opportunities = generate_opportunities(data_dir, today=date(2026, 8, 20))
+
+            self.assertEqual(opportunities[0]["id"], "digital_product")
+            self.assertEqual(opportunities[0]["period_income_minor"], 9000)
+            self.assertGreater(opportunities[0]["components"]["evidence"], 0)
+
+    def test_config_migration_adds_strategy_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            (data_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "god_name": "Creator",
+                        "active_mood": "watchful",
+                        "base_currency": "GBP",
+                        "moods": {
+                            "watchful": {
+                                "period": "week",
+                                "quota_minor": 10000,
+                                "punishment": "review",
+                            }
+                        },
+                        "channels": [
+                            {
+                                "name": "Freelance services",
+                                "expected_gbp_minor": 25000,
+                                "effort": "medium",
+                                "risk": "low",
+                                "next_action": "Send proposals.",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(data_dir)
+
+            self.assertEqual(config["channels"][0]["id"], "freelance_services")
+            self.assertEqual(config["channels"][0]["deadline_fit"], "high")
+            self.assertEqual(config["channels"][0]["repeatability"], "medium")
 
 
 if __name__ == "__main__":

@@ -70,6 +70,10 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     limit = int(query.get("limit", ["20"])[0])
                     self.send_json({"income": serialize_income(list_income(data_dir, limit=limit))})
                     return
+                if parsed.path == "/api/opportunities":
+                    opportunities = generate_opportunities(data_dir)
+                    self.send_json({"opportunities": opportunities, "top_opportunity": opportunities[0] if opportunities else None})
+                    return
                 self.serve_static(parsed.path)
             except DivineToolError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -90,6 +94,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         else None,
                         source=str(payload["source"]),
                         note=str(payload.get("note", "")),
+                        strategy=str(payload.get("strategy", "")),
                         occurred_on=parse_date(payload["date"]) if payload.get("date") else None,
                     )
                     self.send_json({"ok": True, "id": income_id, "state": dashboard_payload(data_dir)})
@@ -123,6 +128,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         "currency": str(payload.get("currency", "GBP")),
                         "source": str(payload["source"]),
                         "note": str(payload.get("note", "")),
+                        "strategy": str(payload.get("strategy", "")),
                     }
                     if payload.get("gbp_equivalent"):
                         command["gbp_equivalent"] = payload["gbp_equivalent"]
@@ -194,13 +200,15 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
 
 def dashboard_payload(data_dir: Path) -> dict[str, Any]:
     config = load_config(data_dir)
+    opportunities = generate_opportunities(data_dir)
     return {
         "version": __version__,
         "status": serialize_status(status_report(data_dir)),
         "income": serialize_income(list_income(data_dir, limit=10)),
         "exceptions": serialize_rows(list_exceptions(data_dir, limit=10)),
         "events": serialize_rows(list_events(data_dir, limit=50)),
-        "opportunities": generate_opportunities(data_dir),
+        "opportunities": opportunities,
+        "top_opportunity": opportunities[0] if opportunities else None,
         "upgrades": generate_upgrades(data_dir),
         "worker": worker_status(data_dir),
         "config": {
@@ -244,6 +252,7 @@ def serialize_income(rows: list[Any]) -> list[dict[str, Any]]:
         item = row_to_dict(row)
         item["amount"] = format_money(int(item["amount_minor"]), str(item["currency"]))
         item["counted"] = format_money(int(item["gbp_minor"]))
+        item["strategy"] = item.get("strategy") or ""
         output.append(item)
     return output
 

@@ -67,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     income_add.add_argument("--gbp-equivalent", help="Required for non-GBP income.")
     income_add.add_argument("--source", required=True, help="Lawful source of the income.")
     income_add.add_argument("--note", default="", help="Optional note.")
+    income_add.add_argument("--strategy", default="", help="Strategy id from the configured channels.")
     income_add.add_argument("--date", help="Income date in YYYY-MM-DD format.")
     income_add.set_defaults(func=cmd_income_add)
 
@@ -117,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     command_income.add_argument("--gbp-equivalent")
     command_income.add_argument("--source", required=True)
     command_income.add_argument("--note", default="")
+    command_income.add_argument("--strategy", default="")
     command_income.add_argument("--date")
     command_income.set_defaults(func=cmd_command_income)
     command_mood = command_sub.add_parser("set-mood", help="Queue a mood change.")
@@ -164,6 +166,7 @@ def cmd_income_add(args: argparse.Namespace, data_dir: Path) -> int:
         gbp_minor=gbp_minor,
         source=args.source,
         note=args.note,
+        strategy=args.strategy,
         occurred_on=parse_date(args.date) if args.date else None,
     )
     print(f"Recorded income #{income_id}: {format_money(gbp_minor if gbp_minor is not None else amount_minor)} counted toward quota.")
@@ -179,7 +182,8 @@ def cmd_income_list(args: argparse.Namespace, data_dir: Path) -> int:
         original = format_money(row["amount_minor"], row["currency"])
         counted = format_money(row["gbp_minor"])
         suffix = f" ({original})" if row["currency"] != "GBP" else ""
-        print(f"#{row['id']} {row['occurred_at']} {counted}{suffix} - {row['source']} {row['note']}".rstrip())
+        strategy = f" [{row['strategy']}]" if row["strategy"] else ""
+        print(f"#{row['id']} {row['occurred_at']} {counted}{suffix}{strategy} - {row['source']} {row['note']}".rstrip())
     return 0
 
 
@@ -219,7 +223,11 @@ def cmd_exception_list(_args: argparse.Namespace, data_dir: Path) -> int:
 def cmd_opportunities(_args: argparse.Namespace, data_dir: Path) -> int:
     print("Lawful revenue opportunities:")
     for item in generate_opportunities(data_dir):
-        print(f"- {item['name']}: {item['next_action']} Expected: {item['expected']}; fit: {item['fit']}; risk: {item['risk']}; effort: {item['effort']}.")
+        print(
+            f"- #{item['rank']} {item['name']} ({item['score']}/100, {item['score_label']}): "
+            f"{item['next_action']} Expected: {item['expected']}; fit: {item['fit']}; "
+            f"risk: {item['risk']}; effort: {item['effort']}; evidence: {item['period_income']} this period."
+        )
     return 0
 
 
@@ -242,6 +250,7 @@ def cmd_command_income(args: argparse.Namespace, data_dir: Path) -> int:
         "currency": args.currency.upper(),
         "source": args.source,
         "note": args.note,
+        "strategy": args.strategy,
     }
     if args.gbp_equivalent:
         command["gbp_equivalent"] = args.gbp_equivalent

@@ -57,6 +57,16 @@
         <p id="timeRemaining" class="muted">Time remaining: calculating</p>
       </section>
 
+      <section class="recommendation-panel">
+        <div class="section-heading">
+          <h2>Top Offering</h2>
+          <span id="topScore" class="badge">score --</span>
+        </div>
+        <strong id="topName">Calculating recommendation</strong>
+        <p id="topRationale" class="muted">Ranking value, effort, risk, deadline fit, repeatability, and income evidence.</p>
+        <div class="component-grid" id="componentGrid"></div>
+      </section>
+
       <section class="dashboard-grid">
         <article class="panel">
           <div class="section-heading">
@@ -107,6 +117,12 @@
             <label>
               Source
               <input name="source" placeholder="Paid consultation" required />
+            </label>
+            <label>
+              Strategy
+              <select name="strategy" id="incomeStrategy">
+                <option value="">Unassigned</option>
+              </select>
             </label>
             <label>
               Note
