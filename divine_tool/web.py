@@ -30,6 +30,7 @@ from .core import (
     set_mood,
     set_quota,
     status_report,
+    strategy_roi_summary,
     worker_status,
 )
 
@@ -73,6 +74,9 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                 if parsed.path == "/api/opportunities":
                     opportunities = generate_opportunities(data_dir)
                     self.send_json({"opportunities": opportunities, "top_opportunity": opportunities[0] if opportunities else None})
+                    return
+                if parsed.path == "/api/strategy-roi":
+                    self.send_json({"strategy_roi": strategy_roi_summary(data_dir)})
                     return
                 self.serve_static(parsed.path)
             except DivineToolError as exc:
@@ -201,6 +205,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
 def dashboard_payload(data_dir: Path) -> dict[str, Any]:
     config = load_config(data_dir)
     opportunities = generate_opportunities(data_dir)
+    strategy_roi = strategy_roi_summary(data_dir)
     return {
         "version": __version__,
         "status": serialize_status(status_report(data_dir)),
@@ -209,6 +214,7 @@ def dashboard_payload(data_dir: Path) -> dict[str, Any]:
         "events": serialize_rows(list_events(data_dir, limit=50)),
         "opportunities": opportunities,
         "top_opportunity": opportunities[0] if opportunities else None,
+        "strategy_roi": strategy_roi,
         "upgrades": generate_upgrades(data_dir),
         "worker": worker_status(data_dir),
         "config": {

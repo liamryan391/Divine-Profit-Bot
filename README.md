@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v1.1.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v1.2.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -26,6 +26,7 @@ python -m divine_tool status
 python -m divine_tool quota set watchful 250 --period week
 python -m divine_tool income add 75 --source "paid consultation" --strategy freelance_services
 python -m divine_tool opportunities
+python -m divine_tool roi
 python -m divine_tool upgrade
 ```
 
@@ -102,6 +103,7 @@ The local web app provides:
 - Income, quota, mood, and exception controls.
 - Worker heartbeat indicator.
 - Opportunity scoring by value, effort, risk, deadline fit, repeatability, probability, and recorded strategy evidence.
+- Strategy ROI comparing current period, previous period, average conversion size, return per effort, and pause/push recommendations.
 
 Run it with:
 
@@ -128,3 +130,13 @@ The dashboard ranks strategies using:
 - repeatability
 - probability
 - income already produced by that strategy
+
+## Strategy ROI
+
+Use ROI mode to review which channels deserve more attention:
+
+```powershell
+python -m divine_tool roi
+```
+
+The ROI view compares the current period against the previous period, shows recent conversion notes, estimates return per effort unit, and recommends whether each strategy should be pushed, watched, or paused.

@@ -12,7 +12,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v1.1.0`.
+Current version: `v1.2.0`.
 
 Completed:
 
@@ -31,6 +31,7 @@ Completed:
 - Browser-based temple log.
 - API test for the web income flow.
 - Opportunity scoring with strategy evidence.
+- Strategy ROI with current-vs-previous comparison and pause recommendations.
 
 ## Phase 0: Foundation
 
@@ -209,7 +210,7 @@ Release status: shipped.
 
 ### Stage 2.2: Strategy ROI
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -221,6 +222,8 @@ Deliverables:
 Release target:
 
 - `v1.2.0`.
+
+Release status: shipped.
 
 ### Stage 2.3: Report Generation
 
@@ -235,7 +238,7 @@ Deliverables:
 
 Release target:
 
-- `v1.2.0` if small, `v1.3.0` if it includes export files.
+- `v1.3.0`.
 
 ## Phase 3: Integrations
 
@@ -352,10 +355,10 @@ The tool is fully operational for `v1` when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 2, Stage 2.2 next:
+Build Phase 2, Stage 2.3 next:
 
-- Add strategy ROI views.
-- Compare revenue channels over time.
-- Recommend low-return channels to pause.
+- Add weekly and monthly reports.
+- Summarize missed-quota reviews.
+- Generate upgrade recommendation summaries.
 
-That starts `v1.2.0` and turns the scoring engine into a stronger strategy review loop.
+That starts `v1.3.0` and turns the intelligence layer into a shareable reporting loop.

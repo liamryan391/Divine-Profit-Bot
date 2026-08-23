@@ -367,6 +367,20 @@ def period_for(period_name: str, today: date | None = None) -> Period:
     raise DivineToolError("Period must be 'week' or 'month'.")
 
 
+def previous_period(period: Period) -> Period:
+    if period.name == "week":
+        start = period.start - timedelta(days=7)
+        return Period("week", start, period.start)
+    if period.name == "month":
+        end = period.start
+        if end.month == 1:
+            start = end.replace(year=end.year - 1, month=12)
+        else:
+            start = end.replace(month=end.month - 1)
+        return Period("month", start, end)
+    raise DivineToolError("Period must be 'week' or 'month'.")
+
+
 def active_mood(config: dict[str, Any]) -> dict[str, Any]:
     mood_name = config.get("active_mood", "watchful")
     moods = config.get("moods", {})
@@ -472,6 +486,183 @@ def strategy_income_totals(data_dir: Path, period: Period) -> dict[str, dict[str
         totals[row["strategy"]]["total_count"] = int(row["count"])
 
     return totals
+
+
+def strategy_period_totals(data_dir: Path, period: Period) -> dict[str, dict[str, int]]:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        rows = conn.execute(
+            """
+            SELECT strategy, COALESCE(SUM(gbp_minor), 0) AS total, COUNT(*) AS count
+            FROM income
+            WHERE strategy <> '' AND date(occurred_at) >= date(?) AND date(occurred_at) < date(?)
+            GROUP BY strategy
+            """,
+            (period.start.isoformat(), period.end.isoformat()),
+        ).fetchall()
+    return {row["strategy"]: {"minor": int(row["total"]), "count": int(row["count"])} for row in rows}
+
+
+def strategy_recent_notes(data_dir: Path, limit_per_strategy: int = 3) -> dict[str, list[dict[str, Any]]]:
+    ensure_state(data_dir)
+    notes: dict[str, list[dict[str, Any]]] = {}
+    with db(data_dir) as conn:
+        rows = conn.execute(
+            """
+            SELECT strategy, source, note, gbp_minor, occurred_at
+            FROM income
+            WHERE strategy <> ''
+            ORDER BY date(occurred_at) DESC, id DESC
+            """
+        ).fetchall()
+    for row in rows:
+        strategy = row["strategy"]
+        bucket = notes.setdefault(strategy, [])
+        if len(bucket) >= limit_per_strategy:
+            continue
+        note = row["note"] or row["source"]
+        bucket.append(
+            {
+                "source": row["source"],
+                "note": note,
+                "amount": format_money(int(row["gbp_minor"])),
+                "amount_minor": int(row["gbp_minor"]),
+                "occurred_at": row["occurred_at"],
+            }
+        )
+    return notes
+
+
+def strategy_roi_summary(data_dir: Path, today: date | None = None) -> dict[str, Any]:
+    report = status_report(data_dir, today)
+    config = load_config(data_dir)
+    period = report["period"]
+    previous = previous_period(period)
+    current_totals = strategy_period_totals(data_dir, period)
+    previous_totals = strategy_period_totals(data_dir, previous)
+    all_totals = strategy_income_totals(data_dir, period)
+    notes = strategy_recent_notes(data_dir)
+    opportunities_by_id = {item["id"]: item for item in generate_opportunities(data_dir, today)}
+    rows: list[dict[str, Any]] = []
+
+    for channel in config.get("channels", []):
+        strategy_id = str(channel.get("id") or slugify(channel.get("name", "Revenue channel")))
+        expected = int(channel.get("expected_gbp_minor", 0))
+        effort = str(channel.get("effort", "medium"))
+        effort_units = {"low": 1, "medium": 2, "high": 3}.get(effort, 2)
+        current = current_totals.get(strategy_id, {"minor": 0, "count": 0})
+        previous_total = previous_totals.get(strategy_id, {"minor": 0, "count": 0})
+        lifetime = all_totals.get(strategy_id, {"period_minor": 0, "period_count": 0, "total_minor": 0, "total_count": 0})
+        current_minor = current["minor"]
+        previous_minor = previous_total["minor"]
+        delta_minor = current_minor - previous_minor
+        avg_entry_minor = round(current_minor / current["count"]) if current["count"] else 0
+        roi_per_effort_minor = round(current_minor / effort_units)
+        target_capture = 0 if expected <= 0 else min(current_minor / expected, 1)
+        opportunity = opportunities_by_id.get(strategy_id, {})
+        trend = roi_trend(current_minor, previous_minor)
+        action, reason = roi_recommendation(
+            expected_minor=expected,
+            current_minor=current_minor,
+            previous_minor=previous_minor,
+            current_count=current["count"],
+            total_count=lifetime["total_count"],
+            score=int(opportunity.get("score", 0)),
+            effort=effort,
+            risk=str(channel.get("risk", "moderate")),
+        )
+
+        rows.append(
+            {
+                "id": strategy_id,
+                "name": channel.get("name", "Revenue channel"),
+                "effort": effort,
+                "risk": channel.get("risk", "unknown"),
+                "expected": format_money(expected),
+                "expected_minor": expected,
+                "current_period": format_money(current_minor),
+                "current_period_minor": current_minor,
+                "current_count": current["count"],
+                "previous_period": format_money(previous_minor),
+                "previous_period_minor": previous_minor,
+                "previous_count": previous_total["count"],
+                "delta": format_money(delta_minor),
+                "delta_minor": delta_minor,
+                "total_income": format_money(lifetime["total_minor"]),
+                "total_income_minor": lifetime["total_minor"],
+                "total_count": lifetime["total_count"],
+                "average_entry": format_money(avg_entry_minor),
+                "average_entry_minor": avg_entry_minor,
+                "roi_per_effort": format_money(roi_per_effort_minor),
+                "roi_per_effort_minor": roi_per_effort_minor,
+                "target_capture_pct": round(target_capture * 100, 1),
+                "trend": trend,
+                "score": int(opportunity.get("score", 0)),
+                "recommendation": action,
+                "recommendation_reason": reason,
+                "notes": notes.get(strategy_id, []),
+            }
+        )
+
+    rows.sort(key=lambda row: (row["roi_per_effort_minor"], row["current_period_minor"], row["score"]), reverse=True)
+    for index, row in enumerate(rows, start=1):
+        row["roi_rank"] = index
+
+    pause_recommendations = [row for row in rows if row["recommendation"] == "pause"]
+    push_recommendations = [row for row in rows if row["recommendation"] == "push"]
+    return {
+        "period": {
+            "name": period.name,
+            "start": period.start.isoformat(),
+            "end": period.end.isoformat(),
+        },
+        "previous_period": {
+            "name": previous.name,
+            "start": previous.start.isoformat(),
+            "end": previous.end.isoformat(),
+        },
+        "rows": rows,
+        "pause_recommendations": pause_recommendations,
+        "push_recommendations": push_recommendations,
+    }
+
+
+def roi_trend(current_minor: int, previous_minor: int) -> str:
+    if current_minor == 0 and previous_minor == 0:
+        return "no evidence"
+    if previous_minor == 0:
+        return "new revenue"
+    change = (current_minor - previous_minor) / previous_minor
+    if change >= 0.2:
+        return "growing"
+    if change <= -0.2:
+        return "falling"
+    return "steady"
+
+
+def roi_recommendation(
+    expected_minor: int,
+    current_minor: int,
+    previous_minor: int,
+    current_count: int,
+    total_count: int,
+    score: int,
+    effort: str,
+    risk: str,
+) -> tuple[str, str]:
+    if current_minor >= expected_minor and expected_minor > 0:
+        return "push", "It is meeting or beating the expected period value."
+    if current_minor > previous_minor and current_count > 0:
+        return "push", "It is improving against the previous period."
+    if current_count == 0 and previous_minor == 0 and total_count == 0 and score < 65:
+        return "pause", "No recorded income yet and the opportunity score is below the push threshold."
+    if effort == "high" and current_minor == 0 and total_count == 0:
+        return "pause", "High effort with no recorded return."
+    if risk != "low" and current_minor == 0:
+        return "pause", "Risk is not low and no return has been recorded."
+    if current_minor == 0 and previous_minor > 0:
+        return "watch", "It produced income before but has not converted this period."
+    return "watch", "Keep collecting evidence before changing priority."
 
 
 def set_mood(data_dir: Path, mood_name: str) -> None:

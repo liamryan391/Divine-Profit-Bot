@@ -297,6 +297,8 @@ h2 {
 .stacked-list,
 .config-list,
 .terminal-log,
+.roi-list,
+.recommendation-list,
 .upgrade-grid {
   display: grid;
   gap: 10px;
@@ -305,6 +307,7 @@ h2 {
 .strategy-row,
 .config-row,
 .income-row,
+.priority-row,
 .upgrade-item {
   display: flex;
   align-items: center;
@@ -315,6 +318,88 @@ h2 {
   border-radius: 8px;
   background: var(--surface-3);
   color: var(--text);
+}
+
+.roi-row {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  border-left: 3px solid var(--blue);
+}
+
+.roi-row.recommendation-push {
+  border-left-color: var(--green);
+}
+
+.roi-row.recommendation-pause {
+  border-left-color: var(--gold);
+}
+
+.roi-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.roi-head div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.roi-head span,
+.note-list span,
+.priority-row span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.roi-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.roi-metrics div {
+  min-height: 62px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.roi-metrics span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.roi-metrics strong {
+  color: var(--text);
+}
+
+.note-list {
+  display: grid;
+  gap: 5px;
+}
+
+.priority-row {
+  display: grid;
+  align-items: start;
+  justify-content: stretch;
+}
+
+.priority-row.recommendation-push strong {
+  color: var(--green);
+}
+
+.priority-row.recommendation-pause strong {
+  color: var(--gold);
 }
 
 .strategy-row {
@@ -531,6 +616,7 @@ select:focus {
   .metric-grid,
   .dashboard-grid,
   .component-grid,
+  .roi-metrics,
   .upgrade-grid {
     grid-template-columns: 1fr;
   }

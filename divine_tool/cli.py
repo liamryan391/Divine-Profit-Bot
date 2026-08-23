@@ -27,6 +27,7 @@ from .core import (
     set_mood,
     set_quota,
     status_report,
+    strategy_roi_summary,
 )
 from .web import run_web
 
@@ -101,6 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     opportunities = sub.add_parser("opportunities", help="Suggest lawful revenue actions.")
     opportunities.set_defaults(func=cmd_opportunities)
+
+    roi = sub.add_parser("roi", help="Show strategy ROI and pause recommendations.")
+    roi.set_defaults(func=cmd_roi)
 
     upgrade = sub.add_parser("upgrade", help="Show upgrade recommendations.")
     upgrade.set_defaults(func=cmd_upgrade)
@@ -227,6 +231,21 @@ def cmd_opportunities(_args: argparse.Namespace, data_dir: Path) -> int:
             f"- #{item['rank']} {item['name']} ({item['score']}/100, {item['score_label']}): "
             f"{item['next_action']} Expected: {item['expected']}; fit: {item['fit']}; "
             f"risk: {item['risk']}; effort: {item['effort']}; evidence: {item['period_income']} this period."
+        )
+    return 0
+
+
+def cmd_roi(_args: argparse.Namespace, data_dir: Path) -> int:
+    summary = strategy_roi_summary(data_dir)
+    period = summary["period"]
+    previous = summary["previous_period"]
+    print(f"Strategy ROI: {period['start']} to {period['end']} (previous: {previous['start']} to {previous['end']})")
+    for row in summary["rows"]:
+        print(
+            f"- #{row['roi_rank']} {row['name']}: {row['current_period']} now, "
+            f"{row['previous_period']} previous, {row['delta']} delta, "
+            f"{row['roi_per_effort']} per effort unit, {row['trend']}; "
+            f"recommendation: {row['recommendation']} - {row['recommendation_reason']}"
         )
     return 0
 

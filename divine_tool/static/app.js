@@ -44,6 +44,8 @@ function render(payload) {
   renderWorker(payload.worker);
   renderTopOpportunity(payload.top_opportunity);
   renderStrategies(payload.opportunities);
+  renderStrategyRoi(payload.strategy_roi);
+  renderPriorityCalls(payload.strategy_roi);
   renderConfig(payload);
   renderLogs(payload.events);
   renderIncome(payload.income);
@@ -123,6 +125,84 @@ function renderTopOpportunity(item) {
   }
 }
 
+function renderStrategyRoi(roi) {
+  const list = $("#roiList");
+  list.replaceChildren();
+  if (!roi || !roi.rows || !roi.rows.length) {
+    $("#roiPeriod").textContent = "no data";
+    list.appendChild(emptyRow("No strategy ROI data yet."));
+    return;
+  }
+
+  $("#roiPeriod").textContent = `${shortDate(roi.period.start)} to ${shortDate(roi.period.end)}`;
+  for (const row of roi.rows) {
+    const item = document.createElement("div");
+    item.className = `roi-row recommendation-${row.recommendation}`;
+    const notes = row.notes && row.notes.length ? row.notes : [];
+    item.innerHTML = `
+      <div class="roi-head">
+        <div>
+          <strong></strong>
+          <span></span>
+        </div>
+        <b class="tag"></b>
+      </div>
+      <div class="roi-metrics">
+        <div><span>Current</span><strong></strong></div>
+        <div><span>Previous</span><strong></strong></div>
+        <div><span>Delta</span><strong></strong></div>
+        <div><span>Per Effort</span><strong></strong></div>
+      </div>
+      <div class="note-list"></div>
+    `;
+    item.querySelector(".roi-head strong").textContent = `#${row.roi_rank} ${row.name}`;
+    item.querySelector(".roi-head span").textContent = `${titleCase(row.trend)} - ${row.target_capture_pct}% of expected value`;
+    item.querySelector(".tag").textContent = row.recommendation;
+    const metrics = item.querySelectorAll(".roi-metrics strong");
+    metrics[0].textContent = row.current_period;
+    metrics[1].textContent = row.previous_period;
+    metrics[2].textContent = row.delta;
+    metrics[3].textContent = row.roi_per_effort;
+
+    const noteList = item.querySelector(".note-list");
+    if (!notes.length) {
+      const note = document.createElement("span");
+      note.textContent = "No conversion notes recorded.";
+      noteList.appendChild(note);
+    } else {
+      for (const noteItem of notes) {
+        const note = document.createElement("span");
+        note.textContent = `${noteItem.amount} - ${noteItem.note}`;
+        noteList.appendChild(note);
+      }
+    }
+    list.appendChild(item);
+  }
+}
+
+function renderPriorityCalls(roi) {
+  const list = $("#recommendationList");
+  list.replaceChildren();
+  if (!roi || !roi.rows || !roi.rows.length) {
+    list.appendChild(emptyRow("No recommendations yet."));
+    return;
+  }
+
+  const calls = [
+    ...roi.push_recommendations.map((item) => ({ ...item, call: "Push" })),
+    ...roi.pause_recommendations.map((item) => ({ ...item, call: "Pause" })),
+  ];
+  const visible = calls.length ? calls.slice(0, 5) : roi.rows.slice(0, 3).map((item) => ({ ...item, call: "Watch" }));
+  for (const item of visible) {
+    const row = document.createElement("div");
+    row.className = `priority-row recommendation-${item.recommendation}`;
+    row.innerHTML = "<strong></strong><span></span>";
+    row.querySelector("strong").textContent = `${item.call}: ${item.name}`;
+    row.querySelector("span").textContent = item.recommendation_reason;
+    list.appendChild(row);
+  }
+}
+
 function renderConfig(payload) {
   const list = $("#configList");
   const status = payload.status;
@@ -169,7 +249,9 @@ function renderIncome(income) {
     row.className = "income-row";
     row.innerHTML = "<strong></strong><span></span>";
     row.querySelector("strong").textContent = item.counted;
-    row.querySelector("span").textContent = `${item.source} - ${item.occurred_at}`;
+    const strategy = item.strategy ? ` [${item.strategy}]` : "";
+    const note = item.note ? ` - ${item.note}` : "";
+    row.querySelector("span").textContent = `${item.source}${strategy} - ${item.occurred_at}${note}`;
     list.appendChild(row);
   }
 }
@@ -307,6 +389,12 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "--:--:--";
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function shortDate(value) {
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function capitalize(value) {

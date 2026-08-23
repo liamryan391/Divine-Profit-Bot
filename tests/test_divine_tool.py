@@ -20,6 +20,7 @@ from divine_tool.core import (
     set_mood,
     set_quota,
     status_report,
+    strategy_roi_summary,
 )
 from divine_tool.web import make_handler
 
@@ -81,7 +82,7 @@ class DivineToolTests(unittest.TestCase):
     def test_web_api_records_income(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
-            set_quota(data_dir, "watchful", parse_money_to_minor("100"), "week")
+            set_quota(data_dir, "watchful", parse_money_to_minor("1000"), "week")
             server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -102,6 +103,7 @@ class DivineToolTests(unittest.TestCase):
 
                 self.assertTrue(payload["ok"])
                 self.assertEqual(payload["state"]["status"]["earned_minor"], 3000)
+                self.assertIn("strategy_roi", payload["state"])
             finally:
                 server.shutdown()
                 server.server_close()
@@ -164,6 +166,41 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(config["channels"][0]["id"], "freelance_services")
             self.assertEqual(config["channels"][0]["deadline_fit"], "high")
             self.assertEqual(config["channels"][0]["repeatability"], "medium")
+
+    def test_strategy_roi_compares_periods_and_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("1000"), "week")
+            set_mood(data_dir, "watchful")
+            add_income(
+                data_dir,
+                amount_minor=parse_money_to_minor("40"),
+                currency="GBP",
+                gbp_minor=None,
+                source="previous invoice",
+                strategy="freelance_services",
+                occurred_on=date(2026, 8, 12),
+            )
+            add_income(
+                data_dir,
+                amount_minor=parse_money_to_minor("85"),
+                currency="GBP",
+                gbp_minor=None,
+                source="current invoice",
+                note="client renewed",
+                strategy="freelance_services",
+                occurred_on=date(2026, 8, 19),
+            )
+
+            summary = strategy_roi_summary(data_dir, today=date(2026, 8, 20))
+            rows = {row["id"]: row for row in summary["rows"]}
+
+            self.assertEqual(rows["freelance_services"]["current_period_minor"], 8500)
+            self.assertEqual(rows["freelance_services"]["previous_period_minor"], 4000)
+            self.assertEqual(rows["freelance_services"]["trend"], "growing")
+            self.assertEqual(rows["freelance_services"]["recommendation"], "push")
+            self.assertEqual(rows["freelance_services"]["notes"][0]["note"], "client renewed")
+            self.assertTrue(any(row["recommendation"] == "pause" for row in summary["pause_recommendations"]))
 
 
 if __name__ == "__main__":
