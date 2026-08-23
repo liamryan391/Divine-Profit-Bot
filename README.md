@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.0.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.1.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -33,6 +33,7 @@ python -m divine_tool import .\income-export.csv --type payment --dry-run
 python -m divine_tool external
 python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-08-30 --invoice INV-001
 python -m divine_tool account status
+python -m divine_tool deploy preflight
 python -m divine_tool upgrade
 ```
 
@@ -115,6 +116,7 @@ The local web app provides:
 - Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
 - Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
 - Owner account setup, password login, protected dashboard/API routes, session logout, and role-aware account status.
+- Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 
 Run it with:
 
@@ -137,6 +139,42 @@ python -m divine_tool account list
 Passwords are stored as salted hashes, and browser sessions are stored as hashed local session tokens. The API blocks dashboard data, income writes, imports, approvals, and configuration changes until the owner is signed in.
 
 Secret policy: keep external credentials in environment variables, not config files. Current supported variables are `DIVINE_STRIPE_SECRET_KEY`, `DIVINE_GITHUB_TOKEN`, and `GITHUB_TOKEN`.
+
+## Hosted Deployment
+
+The production path is a two-service container setup:
+
+- `web`: serves the dashboard and API.
+- `daemon`: runs the background worker against the same persistent state volume.
+
+Prepare local deployment settings:
+
+```powershell
+Copy-Item .env.example .env
+python -m divine_tool account setup creator
+python -m divine_tool deploy preflight --host 0.0.0.0
+```
+
+Run with Docker Compose:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+```
+
+Check the hosted service:
+
+```powershell
+python -m divine_tool deploy healthcheck --url http://127.0.0.1:8765/api/health
+```
+
+Create a portable backup of config, SQLite state, and command logs:
+
+```powershell
+python -m divine_tool deploy backup
+```
+
+For HTTPS hosting behind a reverse proxy or cloud load balancer, set `DIVINE_PUBLIC_URL` and `DIVINE_COOKIE_SECURE=true` in the host environment. Keep API keys and payment credentials in environment variables only.
 
 ## Strategy Scoring
 

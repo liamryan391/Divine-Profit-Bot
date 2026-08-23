@@ -1,0 +1,45 @@
+services:
+  web:
+    build: .
+    command: python -m divine_tool web
+    environment:
+      DIVINE_DATA_DIR: /data
+      DIVINE_HOST: 0.0.0.0
+      DIVINE_PORT: 8765
+      DIVINE_DEPLOYMENT_MODE: production
+      DIVINE_PUBLIC_URL: "${DIVINE_PUBLIC_URL:-}"
+      DIVINE_COOKIE_SECURE: "${DIVINE_COOKIE_SECURE:-false}"
+      DIVINE_STRIPE_SECRET_KEY: "${DIVINE_STRIPE_SECRET_KEY:-}"
+      DIVINE_GITHUB_TOKEN: "${DIVINE_GITHUB_TOKEN:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    ports:
+      - "${DIVINE_WEB_PORT:-8765}:8765"
+    volumes:
+      - divine_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "divine_tool", "deploy", "healthcheck", "--url", "http://127.0.0.1:8765/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  daemon:
+    build: .
+    command: python -m divine_tool daemon
+    environment:
+      DIVINE_DATA_DIR: /data
+      DIVINE_DAEMON_INTERVAL: "${DIVINE_DAEMON_INTERVAL:-300}"
+      DIVINE_DEPLOYMENT_MODE: production
+      DIVINE_STRIPE_SECRET_KEY: "${DIVINE_STRIPE_SECRET_KEY:-}"
+      DIVINE_GITHUB_TOKEN: "${DIVINE_GITHUB_TOKEN:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    volumes:
+      - divine_data:/data
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  divine_data:

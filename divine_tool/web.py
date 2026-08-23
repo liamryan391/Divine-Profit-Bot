@@ -46,23 +46,38 @@ from .core import (
     strategy_roi_summary,
     worker_status,
 )
+from .deployment import deployment_environment
 
 
 STATIC_DIR = Path(__file__).with_name("static")
 SESSION_COOKIE = "divine_session"
 
 
-def session_cookie_header(token: str, expires_at: str) -> str:
+def session_cookie_header(token: str, expires_at: str, secure: bool | None = None) -> str:
     try:
         expires = datetime.fromisoformat(expires_at)
         max_age = max(int((expires - datetime.now()).total_seconds()), 60)
     except ValueError:
         max_age = 12 * 60 * 60
-    return f"Set-Cookie: {SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+    if secure is None:
+        secure = bool(deployment_environment()["cookie_secure"])
+    attributes = [f"{SESSION_COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Lax", f"Max-Age={max_age}"]
+    if secure:
+        attributes.append("Secure")
+    return "Set-Cookie: " + "; ".join(attributes)
 
 
 def clear_session_cookie_header() -> str:
     return f"Set-Cookie: {SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+
+def deployment_health() -> dict[str, Any]:
+    env = deployment_environment()
+    return {
+        "mode": env["mode"],
+        "public_url": env["public_url"],
+        "cookie_secure": env["cookie_secure"],
+    }
 
 
 def run_web(data_dir: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
@@ -95,7 +110,15 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     self.send_json(dashboard_payload(data_dir, account))
                     return
                 if parsed.path == "/api/health":
-                    self.send_json({"ok": True, "version": __version__, "worker": worker_status(data_dir), "auth": auth_status(data_dir)})
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "version": __version__,
+                            "worker": worker_status(data_dir),
+                            "auth": auth_status(data_dir),
+                            "deployment": deployment_health(),
+                        }
+                    )
                     return
                 if parsed.path == "/api/logs":
                     query = parse_qs(parsed.query)
@@ -321,6 +344,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
             self.end_headers()
             self.wfile.write(data)
 
@@ -363,6 +388,9 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
             for header in extra_headers or []:
                 name, value = header.split(":", 1)
                 self.send_header(name.strip(), value.strip())

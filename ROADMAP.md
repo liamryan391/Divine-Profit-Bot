@@ -8,11 +8,13 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v1.0.0`: first complete operational release with web dashboard, API, daemon worker, persistent state, and safe local operation.
 - `v1.1.0`, `v1.2.0`, `v1.3.0`, `v1.4.0`, `v1.5.0`, `v1.6.0`: meaningful feature upgrades after `v1.0.0`, such as new modules, reports, integrations, or dashboards.
 - `v1.1.1`, `v1.1.2`: patch releases for bug fixes, small polish, reliability improvements, or security fixes.
-- `v2.0.0`: major architecture or product expansion, especially account protection, external integrations, or production deployment.
+- `v2.0.0`: account protection and authenticated local operation.
+- `v2.1.0`: hosted deployment packaging, preflight, monitoring, and backups.
+- `v2.2.0` or later: multi-temple expansion and deeper production scaling.
 
 ## Current Status
 
-Current version: `v2.0.0`.
+Current version: `v2.1.0`.
 
 Completed:
 
@@ -40,6 +42,11 @@ Completed:
 - Approval queue with approve, reject, and manual-complete states.
 - Owner account setup, password login, hashed sessions, protected dashboard/API routes, and role-aware account status.
 - Secret-management guidance for future hosted integrations.
+- Hosted deployment preflight checks.
+- Docker and Docker Compose packaging for web plus daemon services.
+- Environment-based production configuration.
+- Healthcheck command for hosted monitoring.
+- Portable state backups for config, SQLite data, and command logs.
 
 ## Phase 0: Foundation
 
@@ -328,19 +335,22 @@ Release status: shipped.
 
 ### Stage 4.2: Hosted Deployment
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
-- Production build.
-- Hosted database.
-- Background job hosting.
-- Monitoring.
-- Backups.
+- Production container build.
+- Persistent hosted state volume for the SQLite database.
+- Background daemon service hosting.
+- Health endpoint plus deployment healthcheck command.
+- Portable backups.
+- Production environment template.
 
 Release target:
 
-- `v2.0.0`.
+- `v2.1.0`.
+
+Release status: shipped.
 
 ### Stage 4.3: Multi-Temple Expansion
 
@@ -355,7 +365,7 @@ Deliverables:
 
 Release target:
 
-- `v2.1.0` or later.
+- `v2.2.0` or later.
 
 ## Operational Definition
 
@@ -374,14 +384,17 @@ The tool is fully operational for protected local use when the Creator can:
 - Review temple logs.
 - Receive practical next-action recommendations.
 - Restart the app without losing state.
+- Run the web and daemon services on a host with persistent state.
+- Check production readiness before public exposure.
+- Take a portable backup of the state directory.
 
 ## Recommended Next Build Step
 
-Build Phase 4, Stage 4.2 next:
+Build Phase 4, Stage 4.3 next:
 
-- Prepare production build/deployment options.
-- Decide hosted database and background job strategy.
-- Add monitoring and backup planning.
-- Keep secrets out of project files.
+- Add multiple projects or temples.
+- Keep separate quota profiles per temple.
+- Add reusable strategy templates.
+- Build cross-temple reporting.
 
-That turns the protected local temple into a deployable production application plan.
+That turns the single protected production temple into a multi-temple revenue operating system.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 import time
 from datetime import date
@@ -40,6 +41,7 @@ from .core import (
     status_report,
     strategy_roi_summary,
 )
+from .deployment import create_backup, deployment_environment, deployment_preflight, format_preflight, healthcheck_url
 from .web import run_web
 
 
@@ -58,11 +60,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    env = deployment_environment()
     parser = argparse.ArgumentParser(
         prog="divine-tool",
         description="Lawful revenue quota tracker and background command daemon.",
     )
-    parser.add_argument("--data-dir", default=str(default_data_dir()), help="State directory, default: ./.divine_tool")
+    parser.add_argument(
+        "--data-dir",
+        default=str(env["data_dir"]),
+        help="State directory, default: ./.divine_tool or DIVINE_DATA_DIR.",
+    )
     sub = parser.add_subparsers(required=True)
 
     init = sub.add_parser("init", help="Create config and database state.")
@@ -188,6 +195,21 @@ def build_parser() -> argparse.ArgumentParser:
     account_list = account_sub.add_parser("list", help="List local accounts.")
     account_list.set_defaults(func=cmd_account_list)
 
+    deploy = sub.add_parser("deploy", help="Deployment preflight, health checks, and backups.")
+    deploy_sub = deploy.add_subparsers(required=True)
+    deploy_preflight = deploy_sub.add_parser("preflight", help="Check whether this state is ready for hosting.")
+    deploy_preflight.add_argument("--host", default=env["host"], help="Hosted bind address to validate.")
+    deploy_preflight.add_argument("--port", type=int, default=env["port"], help="Hosted port to validate.")
+    deploy_preflight.add_argument("--format", choices=["text", "json"], default="text")
+    deploy_preflight.add_argument("--strict", action="store_true", help="Exit non-zero unless every check passes.")
+    deploy_preflight.set_defaults(func=cmd_deploy_preflight)
+    deploy_health = deploy_sub.add_parser("healthcheck", help="Check a running hosted web service.")
+    deploy_health.add_argument("--url", help="Health URL, default: local /api/health from deployment env.")
+    deploy_health.set_defaults(func=cmd_deploy_healthcheck)
+    deploy_backup = deploy_sub.add_parser("backup", help="Create a portable backup of the deployment state.")
+    deploy_backup.add_argument("--output", help="Backup output directory.")
+    deploy_backup.set_defaults(func=cmd_deploy_backup)
+
     command = sub.add_parser("command", help="Queue commands for the daemon.")
     command_sub = command.add_subparsers(required=True)
     command_income = command_sub.add_parser("add-income", help="Queue an income entry.")
@@ -214,8 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.set_defaults(func=cmd_daemon)
 
     web = sub.add_parser("web", help="Run the local web dashboard and API.")
-    web.add_argument("--host", default="127.0.0.1", help="Host interface, default 127.0.0.1.")
-    web.add_argument("--port", type=int, default=8765, help="Port, default 8765.")
+    web.add_argument("--host", default=env["host"], help="Host interface, default 127.0.0.1 or DIVINE_HOST.")
+    web.add_argument("--port", type=int, default=env["port"], help="Port, default 8765 or DIVINE_PORT.")
     web.set_defaults(func=cmd_web)
 
     return parser
@@ -497,6 +519,40 @@ def cmd_account_list(_args: argparse.Namespace, data_dir: Path) -> int:
     return 0
 
 
+def cmd_deploy_preflight(args: argparse.Namespace, data_dir: Path) -> int:
+    result = deployment_preflight(data_dir, host=args.host, port=args.port)
+    if args.format == "json":
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(format_preflight(result))
+    if args.strict and result["status"] != "ready":
+        return 2
+    return 0
+
+
+def cmd_deploy_healthcheck(args: argparse.Namespace, _data_dir: Path) -> int:
+    env = deployment_environment()
+    url = args.url or f"http://127.0.0.1:{env['port']}/api/health"
+    result = healthcheck_url(url)
+    if result["ok"]:
+        payload = result.get("payload", {})
+        version = payload.get("version", "unknown")
+        worker = payload.get("worker", {}).get("state", "unknown")
+        print(f"Healthcheck OK: version {version}, worker {worker}")
+        return 0
+    print(f"Healthcheck failed: {result.get('error') or result.get('status_code')}", file=sys.stderr)
+    return 2
+
+
+def cmd_deploy_backup(args: argparse.Namespace, data_dir: Path) -> int:
+    output_dir = Path(args.output).resolve() if args.output else None
+    backup = create_backup(data_dir, output_dir)
+    print(f"Backup written: {backup['archive']}")
+    print(f"Files: {', '.join(backup['files'])}")
+    print(f"Size: {backup['size_bytes']} bytes")
+    return 0
+
+
 def cmd_command_income(args: argparse.Namespace, data_dir: Path) -> int:
     command = {
         "action": "add_income",
@@ -531,7 +587,10 @@ def cmd_daemon(args: argparse.Namespace, data_dir: Path) -> int:
     ensure_state(data_dir)
     interval = args.interval
     if interval is None:
-        interval = int(load_config(data_dir).get("automation", {}).get("check_interval_seconds", 300))
+        env = deployment_environment()
+        interval = env["daemon_interval"]
+        if "DIVINE_DAEMON_INTERVAL" not in os.environ:
+            interval = int(load_config(data_dir).get("automation", {}).get("check_interval_seconds", 300))
     while True:
         outcomes = process_command_inbox(data_dir)
         record_heartbeat(data_dir, detail=f"processed {len(outcomes)} command(s)")

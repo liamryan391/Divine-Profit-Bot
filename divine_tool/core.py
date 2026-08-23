@@ -114,6 +114,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "allowed_env_vars": ["DIVINE_STRIPE_SECRET_KEY", "DIVINE_GITHUB_TOKEN", "GITHUB_TOKEN"],
         },
     },
+    "deployment": {
+        "mode": "local",
+        "public_url": "",
+        "health_path": "/api/health",
+        "backup": {
+            "enabled": True,
+            "directory": "backups",
+            "retain_count": 7,
+        },
+        "background_job": {
+            "service_name": "divine-daemon",
+            "restart_policy": "unless-stopped",
+        },
+    },
     "ethical_rules": [
         "No theft, fraud, scams, spam, market manipulation, unauthorized access, coercion, or evasion.",
         "No autonomous real-money trading or payments without explicit human approval.",
@@ -369,6 +383,22 @@ def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
                     changed = True
             current_auth[key] = nested
     migrated["auth"] = current_auth
+
+    default_deployment = DEFAULT_CONFIG.get("deployment", {})
+    current_deployment = dict(migrated.get("deployment", {}))
+    for key, value in default_deployment.items():
+        if key not in current_deployment:
+            current_deployment[key] = value
+            changed = True
+            continue
+        if isinstance(value, dict):
+            nested = dict(current_deployment.get(key, {}))
+            for nested_key, nested_value in value.items():
+                if nested_key not in nested:
+                    nested[nested_key] = nested_value
+                    changed = True
+            current_deployment[key] = nested
+    migrated["deployment"] = current_deployment
 
     return migrated, changed
 

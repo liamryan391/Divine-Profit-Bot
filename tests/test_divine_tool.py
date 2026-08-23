@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+import zipfile
 from datetime import date
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,7 @@ from divine_tool.core import (
     load_config,
     parse_money_to_minor,
     process_command_inbox,
+    record_heartbeat,
     save_config,
     review_approval_action,
     set_mood,
@@ -37,6 +39,7 @@ from divine_tool.core import (
     status_report,
     strategy_roi_summary,
 )
+from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
 from divine_tool.web import make_handler
 
 
@@ -281,6 +284,7 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(config["channels"][0]["deadline_fit"], "high")
             self.assertEqual(config["channels"][0]["repeatability"], "medium")
             self.assertTrue(config["auth"]["enabled"])
+            self.assertTrue(config["deployment"]["backup"]["enabled"])
 
     def test_owner_account_and_session_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,6 +310,49 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(auth_status(data_dir, session["token"])["account"]["username"], "creator.one")
             destroy_session(data_dir, session["token"])
             self.assertFalse(auth_status(data_dir, session["token"])["authenticated"])
+
+    def test_deployment_preflight_and_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "state"
+            backup_dir = Path(tmp) / "backups"
+            environ = {
+                "DIVINE_DATA_DIR": str(data_dir),
+                "DIVINE_BACKUP_DIR": str(backup_dir),
+                "DIVINE_HOST": "0.0.0.0",
+                "DIVINE_PORT": "8765",
+                "DIVINE_DAEMON_INTERVAL": "60",
+                "DIVINE_PUBLIC_URL": "https://divine.example",
+                "DIVINE_COOKIE_SECURE": "true",
+            }
+
+            env = deployment_environment(environ)
+
+            self.assertEqual(env["data_dir"], data_dir.resolve())
+            self.assertEqual(env["backup_dir"], backup_dir.resolve())
+            self.assertEqual(env["daemon_interval"], 60)
+            self.assertTrue(env["cookie_secure"])
+
+            blocked = deployment_preflight(data_dir, host="0.0.0.0", port=8765, environ=environ)
+
+            self.assertEqual(blocked["status"], "blocked")
+            self.assertTrue(any(item["name"] == "owner_account" and item["severity"] == "fail" for item in blocked["checks"]))
+
+            create_account(data_dir, "creator", "strong-pass-123")
+            record_heartbeat(data_dir)
+            add_income(data_dir, parse_money_to_minor("25"), "GBP", None, "deployment smoke")
+
+            ready = deployment_preflight(data_dir, host="0.0.0.0", port=8765, environ=environ)
+
+            self.assertEqual(ready["status"], "ready")
+
+            backup = create_backup(data_dir, backup_dir)
+
+            self.assertTrue(backup["archive"].exists())
+            with zipfile.ZipFile(backup["archive"]) as archive:
+                names = set(archive.namelist())
+            self.assertIn("config.json", names)
+            self.assertIn("divine_tool.sqlite3", names)
+            self.assertIn("manifest.json", names)
 
     def test_strategy_roi_compares_periods_and_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

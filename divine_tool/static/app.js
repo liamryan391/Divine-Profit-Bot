@@ -94,7 +94,7 @@ function render(payload) {
   $("#modulesValue").textContent = payload.config.channels.length;
   $("#modulesDetail").textContent = `${runningStrategyCount(payload)} active strategy signals`;
   $("#templeLevel").textContent = payload.version;
-  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.0 production track";
+  $("#templeNext").textContent = status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.2 multi-temple track";
   $("#progressFill").style.width = `${Math.min(status.progress_pct, 100)}%`;
   $("#timeRemaining").textContent = `Time remaining: ${status.days_left} day${status.days_left === 1 ? "" : "s"}`;
   $("#judgementBadge").textContent = titleCase(status.judgement);
