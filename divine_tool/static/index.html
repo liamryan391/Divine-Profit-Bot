@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Divine Income Engine</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <div class="brand-lockup">
+          <img src="/assets/temple-mark.png" width="64" height="64" alt="" />
+          <div>
+            <p class="eyebrow">Serving the Creator</p>
+            <h1>The Divine Income Engine</h1>
+            <p class="subline">24/7 quota watch, lawful revenue tracking, eternal optimization.</p>
+          </div>
+        </div>
+        <div class="status-pill" id="workerPill">
+          <span class="status-dot"></span>
+          <span id="workerPillText">Worker: checking</span>
+        </div>
+      </header>
+
+      <section class="metric-grid" aria-label="Temple status">
+        <article class="metric-card accent-gold">
+          <p class="metric-label">Current Quota</p>
+          <strong id="remainingValue">GBP 0.00</strong>
+          <span id="quotaTarget">Target: GBP 0.00</span>
+        </article>
+        <article class="metric-card accent-green">
+          <p class="metric-label">Income This Period</p>
+          <strong id="incomeValue">GBP 0.00</strong>
+          <span id="incomeProgress">Progress: 0%</span>
+        </article>
+        <article class="metric-card accent-blue">
+          <p class="metric-label">Active Modules</p>
+          <strong id="modulesValue">0</strong>
+          <span id="modulesDetail">Configured channels</span>
+        </article>
+        <article class="metric-card accent-violet">
+          <p class="metric-label">Temple Level</p>
+          <strong id="templeLevel">v0.1</strong>
+          <span id="templeNext">Next: v1.0 after Phase 1</span>
+        </article>
+      </section>
+
+      <section class="progress-panel">
+        <div class="section-heading">
+          <h2>Quota Progress</h2>
+          <span id="judgementBadge" class="badge">loading</span>
+        </div>
+        <div class="progress-track" aria-label="Quota progress">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <p id="timeRemaining" class="muted">Time remaining: calculating</p>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="panel">
+          <div class="section-heading">
+            <h2>Active Strategies</h2>
+          </div>
+          <div id="strategiesList" class="stacked-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <h2>Divine Configuration</h2>
+          </div>
+          <div id="configList" class="config-list"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="section-heading">
+            <h2>Temple Log</h2>
+            <button id="pulseButton" class="button secondary" type="button">Pulse Worker</button>
+          </div>
+          <div id="logList" class="terminal-log" aria-live="polite"></div>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <h2>Command Altar</h2>
+          </div>
+          <form id="incomeForm" class="control-form">
+            <label>
+              Amount
+              <input name="amount" inputmode="decimal" placeholder="75.00" required />
+            </label>
+            <label>
+              Currency
+              <select name="currency">
+                <option value="GBP">GBP</option>
+                <option value="USD">USD</option>
+                <option value="EUR">EUR</option>
+                <option value="BTC">BTC</option>
+                <option value="LTC">LTC</option>
+                <option value="XMR">XMR</option>
+              </select>
+            </label>
+            <label>
+              GBP Equivalent
+              <input name="gbp_equivalent" inputmode="decimal" placeholder="Required outside GBP" />
+            </label>
+            <label>
+              Source
+              <input name="source" placeholder="Paid consultation" required />
+            </label>
+            <label>
+              Note
+              <input name="note" placeholder="Optional" />
+            </label>
+            <button class="button primary" type="submit">Record Income</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <h2>Quota Control</h2>
+          </div>
+          <form id="quotaForm" class="control-form">
+            <label>
+              Mood
+              <select name="mood" id="quotaMood"></select>
+            </label>
+            <label>
+              Target
+              <input name="amount" inputmode="decimal" placeholder="250.00" required />
+            </label>
+            <label>
+              Period
+              <select name="period">
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+              </select>
+            </label>
+            <button class="button primary" type="submit">Set Quota</button>
+          </form>
+          <form id="moodForm" class="control-form compact-form">
+            <label>
+              Active Mood
+              <select name="mood" id="activeMood"></select>
+            </label>
+            <button class="button secondary" type="submit">Set Mood</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <h2>Mercy Exception</h2>
+          </div>
+          <form id="exceptionForm" class="control-form">
+            <label>
+              Reason
+              <input name="reason" placeholder="Payment processor outage" required />
+            </label>
+            <label>
+              Until
+              <input name="until" type="date" required />
+            </label>
+            <button class="button secondary" type="submit">Add Exception</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <h2>Recent Income</h2>
+          </div>
+          <div id="incomeList" class="stacked-list"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="section-heading">
+            <h2>Upgrade Path</h2>
+          </div>
+          <div id="upgradeList" class="upgrade-grid"></div>
+        </article>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

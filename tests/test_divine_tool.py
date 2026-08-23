@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import tempfile
+import threading
 import unittest
 from datetime import date
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from divine_tool.core import (
     DivineToolError,
@@ -15,6 +19,7 @@ from divine_tool.core import (
     set_quota,
     status_report,
 )
+from divine_tool.web import make_handler
 
 
 class DivineToolTests(unittest.TestCase):
@@ -70,6 +75,35 @@ class DivineToolTests(unittest.TestCase):
 
             self.assertEqual(outcomes, ["added income #1"])
             self.assertEqual(report["earned_minor"], 2500)
+
+    def test_web_api_records_income(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("100"), "week")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with urlopen(f"{base_url}/") as response:
+                    self.assertIn(b"Divine Income Engine", response.read())
+
+                body = json.dumps({"amount": "30", "source": "web invoice"}).encode("utf-8")
+                request = Request(
+                    f"{base_url}/api/income",
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["state"]["status"]["earned_minor"], 3000)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
 
 if __name__ == "__main__":

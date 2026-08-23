@@ -114,6 +114,26 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                level TEXT NOT NULL,
+                category TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS worker_heartbeat (
+                worker_name TEXT PRIMARY KEY,
+                last_seen_at TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         conn.commit()
 
 
@@ -130,6 +150,10 @@ def db(data_dir: Path):
         yield conn
     finally:
         conn.close()
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def load_config(data_dir: Path) -> dict[str, Any]:
@@ -152,6 +176,91 @@ def ensure_config_only(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     if not (data_dir / "config.json").exists():
         save_config(data_dir, DEFAULT_CONFIG)
+
+
+def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {key: row[key] for key in row.keys()}
+
+
+def log_event(data_dir: Path, message: str, category: str = "system", level: str = "info") -> int:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO events (level, category, message, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (level, category, message, now_iso()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_events(data_dir: Path, limit: int = 50) -> list[sqlite3.Row]:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT * FROM events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+        )
+
+
+def record_heartbeat(data_dir: Path, worker_name: str = "daemon", detail: str = "quota check complete") -> None:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        conn.execute(
+            """
+            INSERT INTO worker_heartbeat (worker_name, last_seen_at, detail)
+            VALUES (?, ?, ?)
+            ON CONFLICT(worker_name) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at,
+                detail = excluded.detail
+            """,
+            (worker_name, now_iso(), detail),
+        )
+        conn.commit()
+
+
+def worker_status(data_dir: Path, worker_name: str = "daemon") -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    interval = int(config.get("automation", {}).get("check_interval_seconds", 300))
+    stale_after = max(interval * 2, 60)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM worker_heartbeat
+            WHERE worker_name = ?
+            """,
+            (worker_name,),
+        ).fetchone()
+
+    if row is None:
+        return {
+            "worker_name": worker_name,
+            "state": "not started",
+            "last_seen_at": None,
+            "age_seconds": None,
+            "detail": "",
+            "stale_after_seconds": stale_after,
+        }
+
+    last_seen = datetime.fromisoformat(row["last_seen_at"])
+    age = max(int((datetime.now() - last_seen).total_seconds()), 0)
+    return {
+        "worker_name": worker_name,
+        "state": "running" if age <= stale_after else "stale",
+        "last_seen_at": row["last_seen_at"],
+        "age_seconds": age,
+        "detail": row["detail"],
+        "stale_after_seconds": stale_after,
+    }
 
 
 def parse_money_to_minor(value: str | int | float | Decimal) -> int:
@@ -211,7 +320,7 @@ def add_income(
     if gbp_minor is None:
         gbp_minor = amount_minor
     occurred = (occurred_on or date.today()).isoformat()
-    created = datetime.now().isoformat(timespec="seconds")
+    created = now_iso()
     with db(data_dir) as conn:
         cur = conn.execute(
             """
@@ -221,7 +330,9 @@ def add_income(
             (amount_minor, currency, gbp_minor, source, note, occurred, created),
         )
         conn.commit()
-        return int(cur.lastrowid)
+        income_id = int(cur.lastrowid)
+    log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}", "income")
+    return income_id
 
 
 def list_income(data_dir: Path, limit: int = 20) -> list[sqlite3.Row]:
@@ -260,6 +371,7 @@ def set_mood(data_dir: Path, mood_name: str) -> None:
         raise DivineToolError(f"Unknown mood '{mood_name}'. Known moods: {known}")
     config["active_mood"] = mood_name
     save_config(data_dir, config)
+    log_event(data_dir, f"Mood changed to {mood_name}", "config")
 
 
 def set_quota(data_dir: Path, mood_name: str, amount_minor: int, period: str) -> None:
@@ -272,6 +384,7 @@ def set_quota(data_dir: Path, mood_name: str, amount_minor: int, period: str) ->
     config["moods"][mood_name] = existing
     config.setdefault("active_mood", mood_name)
     save_config(data_dir, config)
+    log_event(data_dir, f"{mood_name} quota set to {format_money(amount_minor)} per {period}", "config")
 
 
 def add_exception(
@@ -290,10 +403,12 @@ def add_exception(
             INSERT INTO exceptions (reason, starts_on, ends_on, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (reason, start.isoformat(), ends_on.isoformat(), datetime.now().isoformat(timespec="seconds")),
+            (reason, start.isoformat(), ends_on.isoformat(), now_iso()),
         )
         conn.commit()
-        return int(cur.lastrowid)
+        exception_id = int(cur.lastrowid)
+    log_event(data_dir, f"Exception added until {ends_on.isoformat()}: {reason}", "exception")
+    return exception_id
 
 
 def list_exceptions(data_dir: Path, limit: int = 20) -> list[sqlite3.Row]:
@@ -454,9 +569,10 @@ def enqueue_command(data_dir: Path, command: dict[str, Any]) -> None:
     ensure_state(data_dir)
     path = command_file(data_dir)
     payload = dict(command)
-    payload["queued_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["queued_at"] = now_iso()
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, sort_keys=True) + "\n")
+    log_event(data_dir, f"Command queued: {payload.get('action', 'unknown')}", "command")
 
 
 def process_command(data_dir: Path, command: dict[str, Any]) -> str:
@@ -517,13 +633,15 @@ def process_command_inbox(data_dir: Path) -> list[str]:
         try:
             command = json.loads(raw)
             result = process_command(data_dir, command)
-            command["processed_at"] = datetime.now().isoformat(timespec="seconds")
+            command["processed_at"] = now_iso()
             command["result"] = result
             append_jsonl(processed_path, command)
+            log_event(data_dir, f"Command processed: {result}", "command")
             outcomes.append(result)
         except Exception as exc:  # keep daemon alive and preserve bad commands
-            failed = {"raw": raw, "failed_at": datetime.now().isoformat(timespec="seconds"), "error": str(exc)}
+            failed = {"raw": raw, "failed_at": now_iso(), "error": str(exc)}
             append_jsonl(failed_path, failed)
+            log_event(data_dir, f"Command failed: {exc}", "command", "error")
             outcomes.append(f"failed command: {exc}")
     return outcomes
 

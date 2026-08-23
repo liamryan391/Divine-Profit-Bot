@@ -12,7 +12,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v0.1.0`.
+Current version: `v1.0.0`.
 
 Completed:
 
@@ -24,15 +24,12 @@ Completed:
 - Basic daemon loop.
 - Upgrade recommendations.
 - Unit tests for the core flow.
-
-Not `v1` ready yet:
-
-- No web dashboard.
-- No local API server.
-- No frontend controls.
-- No daemon supervisor or status heartbeat.
-- No browser-based temple log.
-- No packaged run command for the full hybrid app.
+- Local API service.
+- Digital Temple dashboard.
+- Browser controls for income, quotas, moods, and exceptions.
+- Worker heartbeat indicator.
+- Browser-based temple log.
+- API test for the web income flow.
 
 ## Phase 0: Foundation
 
@@ -89,7 +86,7 @@ Goal: make the project a usable local web application backed by the existing eng
 
 ### Stage 1.1: Local API Service
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -104,7 +101,7 @@ Exit gate:
 
 ### Stage 1.2: Digital Temple Dashboard
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -125,7 +122,7 @@ Exit gate:
 
 ### Stage 1.3: Control Panel
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -142,7 +139,7 @@ Exit gate:
 
 ### Stage 1.4: Worker Heartbeat
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -158,7 +155,7 @@ Exit gate:
 
 ### Stage 1.5: V1 Packaging
 
-Status: pending.
+Status: complete.
 
 Deliverables:
 
@@ -186,6 +183,8 @@ The project is `v1.0.0` ready when all of these are true:
 - The README explains setup, run, and operation.
 - Tests pass.
 - No module performs unlawful, deceptive, spammy, unauthorized, or autonomous high-risk money movement.
+
+Status: ready.
 
 ## Phase 2: V1.1 Revenue Intelligence
 
@@ -350,10 +349,10 @@ The tool is fully operational for `v1` when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 1, Stage 1.1 and Stage 1.2 together:
+Build Phase 2, Stage 2.1 next:
 
-- Add the local API service.
-- Add the first Digital Temple dashboard.
-- Connect dashboard cards to real quota state.
+- Add opportunity scoring.
+- Rank revenue actions by expected value, effort, risk, deadline fit, and repeatability.
+- Track which strategies produce recorded income.
 
-That creates the first true hybrid version and gives the project a visible command center.
+That begins `v1.1.0` and turns the dashboard from a command center into a smarter decision engine.

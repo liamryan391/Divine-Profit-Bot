@@ -23,10 +23,12 @@ from .core import (
     parse_date,
     parse_money_to_minor,
     process_command_inbox,
+    record_heartbeat,
     set_mood,
     set_quota,
     status_report,
 )
+from .web import run_web
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,6 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.add_argument("--once", action="store_true", help="Process one pass and exit.")
     daemon.add_argument("--interval", type=int, help="Override check interval in seconds.")
     daemon.set_defaults(func=cmd_daemon)
+
+    web = sub.add_parser("web", help="Run the local web dashboard and API.")
+    web.add_argument("--host", default="127.0.0.1", help="Host interface, default 127.0.0.1.")
+    web.add_argument("--port", type=int, default=8765, help="Port, default 8765.")
+    web.set_defaults(func=cmd_web)
 
     return parser
 
@@ -264,12 +271,18 @@ def cmd_daemon(args: argparse.Namespace, data_dir: Path) -> int:
         interval = int(load_config(data_dir).get("automation", {}).get("check_interval_seconds", 300))
     while True:
         outcomes = process_command_inbox(data_dir)
+        record_heartbeat(data_dir, detail=f"processed {len(outcomes)} command(s)")
         for outcome in outcomes:
             print(f"command: {outcome}", flush=True)
         print_status(status_report(data_dir), compact=True)
         if args.once:
             return 0
         time.sleep(max(interval, 1))
+
+
+def cmd_web(args: argparse.Namespace, data_dir: Path) -> int:
+    run_web(data_dir, host=args.host, port=args.port)
+    return 0
 
 
 def print_status(report: dict[str, object], compact: bool = False) -> None:

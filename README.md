@@ -1,15 +1,27 @@
 # Divine Tool
 
-Divine Tool is a local command-line revenue cockpit. It tracks a weekly or monthly GBP quota, records lawful income, accepts queued commands, and can run as a small background daemon that watches the quota state.
+Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or monthly GBP quota, records lawful income, accepts queued commands, runs a browser dashboard, and can run as a small background daemon that watches the quota state.
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Project direction: this is moving toward a hybrid web app plus daemon worker. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v1.0.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
 ```powershell
 python -m divine_tool init
+python -m divine_tool web
+```
+
+Open the dashboard at:
+
+```text
+http://127.0.0.1:8765
+```
+
+Core CLI commands still work:
+
+```powershell
 python -m divine_tool status
 python -m divine_tool quota set watchful 250 --period week
 python -m divine_tool income add 75 --source "paid consultation"
@@ -58,6 +70,8 @@ By default, state lives in `.divine_tool/`:
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
 - `divine_tool.sqlite3`: income ledger and exceptions.
 - `commands.jsonl`: daemon command inbox.
+- `commands.processed.jsonl`: processed daemon commands.
+- `commands.failed.jsonl`: failed daemon commands.
 
 Use another state directory with:
 
@@ -74,3 +88,24 @@ python -m divine_tool exception add --reason "payment processor outage" --until 
 python -m divine_tool income list
 python -m divine_tool config show
 ```
+
+## Web App
+
+The local web app provides:
+
+- Quota, income, active module, and temple level cards.
+- Period progress and remaining time.
+- Active strategy recommendations.
+- Divine configuration status.
+- Temple log.
+- Recent income.
+- Income, quota, mood, and exception controls.
+- Worker heartbeat indicator.
+
+Run it with:
+
+```powershell
+python -m divine_tool web --port 8765
+```
+
+The dashboard and API share the same `.divine_tool/` state as the CLI and daemon.
