@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import type { ButtonHTMLAttributes, ChangeEventHandler, InputHTMLAttributes, ReactNode } from "react";
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ChangeEventHandler, InputHTMLAttributes, ReactNode } from "react";
 import type { DashboardPayload, WorkerStatus } from "../types";
 import { capitalize, cx, slugify } from "../lib/format";
 
@@ -40,6 +40,22 @@ export function Button({
       {Icon ? <Icon aria-hidden="true" size={17} strokeWidth={2.4} /> : null}
       <span>{children}</span>
     </button>
+  );
+}
+
+export function ActionLink({
+  children,
+  href,
+  icon: Icon,
+  variant = "ghost",
+  className = "",
+  ...props
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string; icon?: LucideIcon; variant?: ButtonVariant }) {
+  return (
+    <a className={cx("temple-button", buttonVariants[variant], className)} href={href} {...props}>
+      {Icon ? <Icon aria-hidden="true" size={17} strokeWidth={2.4} /> : null}
+      <span>{children}</span>
+    </a>
   );
 }
 

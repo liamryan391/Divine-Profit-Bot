@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowRight,
   BarChart3,
   Check,
   ClipboardList,
@@ -43,7 +44,7 @@ import {
   slugify,
   titleCase,
 } from "../lib/format";
-import { Badge, Button, EmptyRow, Field, MiniMetric, MoodSelect, Panel, SelectField, StrategySelect, Toolbar } from "./ui";
+import { ActionLink, Badge, Button, EmptyRow, Field, MiniMetric, MoodSelect, Panel, SelectField, StrategySelect, Toolbar } from "./ui";
 
 export function QuotaProgressPanel({ dashboard }: { dashboard: DashboardPayload }) {
   return (
@@ -229,6 +230,57 @@ export function ApprovalQueuePanel({
         onSubmit={(event) => onSubmit(event, "/api/approval/draft", "Draft queued for approval")}
       />
       <ApprovalList approvals={dashboard.approvals} busy={busy} onReview={onReview} />
+    </Panel>
+  );
+}
+
+export function UrgentApprovalsPanel({
+  dashboard,
+  busy,
+  onReview,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  onReview: (id: number, decision: string) => Promise<void>;
+}) {
+  const pending = (dashboard.approvals.recent || []).filter((item) => item.status === "pending").slice(0, 4);
+  return (
+    <Panel
+      title="Urgent Approvals"
+      icon={ClipboardList}
+      wide
+      actions={
+        <Toolbar>
+          <Badge>{pending.length} pending</Badge>
+          <ActionLink href="#/approvals" icon={ArrowRight}>
+            Queue
+          </ActionLink>
+        </Toolbar>
+      }
+    >
+      {pending.length ? (
+        <div className="grid gap-2.5">
+          {pending.map((item) => (
+            <div key={item.id} className={cx("temple-row grid gap-3 border-l-4", approvalBorder(item.status))}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid min-w-0 gap-1">
+                  <strong>
+                    #{item.id} {item.title}
+                  </strong>
+                  <span className="text-sm text-temple-muted">
+                    {item.kind_label} - {item.strategy || "unassigned"}
+                  </span>
+                </div>
+                <b className="text-xs font-black uppercase text-temple-gold">{item.status}</b>
+              </div>
+              <p className="line-clamp-3 text-sm leading-6 text-temple-muted">{item.body}</p>
+              <ApprovalActions item={item} busy={busy} onReview={onReview} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyRow>No pending approval actions.</EmptyRow>
+      )}
     </Panel>
   );
 }

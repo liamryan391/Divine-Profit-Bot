@@ -1,37 +1,11 @@
-import { Activity, Coins, Gauge, Target } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, apiRequest } from "./api";
 import { AuthGate } from "./components/auth";
-import {
-  ApprovalQueuePanel,
-  CommandAltarPanel,
-  ConfigPanel,
-  ExternalSignalsPanel,
-  ImportAltarPanel,
-  MercyExceptionPanel,
-  PriorityCallsPanel,
-  QuotaControlPanel,
-  QuotaProgressPanel,
-  RecentIncomePanel,
-  ReportForgePanel,
-  StrategiesPanel,
-  StrategyRoiPanel,
-  TempleLogPanel,
-  TempleSwitchboardPanel,
-  TopOffering,
-  UpgradePathPanel,
-} from "./components/dashboard-panels";
-import { DashboardGrid, DashboardShell, LoadingPanel, MetricGrid, ScreenFrame } from "./components/layout";
-import { MetricCard, Toast } from "./components/ui";
-import {
-  actionPastTense,
-  authFromPayload,
-  canLoadDashboard,
-  capitalize,
-  formPayload,
-  runningStrategyCount,
-  slugify,
-} from "./lib/format";
+import { DashboardViewContent } from "./components/dashboard-views";
+import { DashboardShell, LoadingPanel, ScreenFrame } from "./components/layout";
+import { Toast } from "./components/ui";
+import { actionPastTense, authFromPayload, canLoadDashboard, formPayload, slugify } from "./lib/format";
+import { defaultDashboardView, type DashboardView, viewFromHash } from "./lib/navigation";
 import type {
   ApprovalAction,
   AuthResponse,
@@ -48,6 +22,9 @@ function App() {
   const [external, setExternal] = useState<ExternalSnapshot | null>(null);
   const [report, setReport] = useState<ReportPayload | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [activeView, setActiveView] = useState<DashboardView>(() =>
+    typeof window === "undefined" ? defaultDashboardView : viewFromHash(window.location.hash),
+  );
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState("");
   const toastTimer = useRef<number | undefined>(undefined);
@@ -139,6 +116,16 @@ function App() {
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  useEffect(() => {
+    if (!window.location.hash) {
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/${defaultDashboardView}`);
+    }
+    const syncView = () => setActiveView(viewFromHash(window.location.hash));
+    syncView();
+    window.addEventListener("hashchange", syncView);
+    return () => window.removeEventListener("hashchange", syncView);
+  }, []);
 
   const needsGate = auth ? auth.enabled && (!auth.authenticated || auth.setup_required) : false;
 
@@ -371,85 +358,35 @@ function App() {
 
   const activeTempleId = dashboard.config.active_temple?.id || dashboard.status.temple?.id || "";
   const reportView = report || dashboard.report;
+  const pendingApprovals = dashboard.approvals.counts.pending || 0;
 
   return (
     <DashboardShell
       auth={dashboard.auth}
+      activeView={activeView}
       activeTempleId={activeTempleId}
       temples={dashboard.config.temples}
       worker={dashboard.worker}
       busy={busy}
+      pendingApprovals={pendingApprovals}
       onTempleChange={(templeId) => void switchTemple(templeId)}
       onLogout={() => void logout()}
     >
-      <MetricGrid>
-        <MetricCard
-          accent="gold"
-          icon={Target}
-          label="Current Quota"
-          value={dashboard.status.remaining}
-          detail={`${capitalize(dashboard.status.period.name)} target: ${dashboard.status.quota}`}
-        />
-        <MetricCard
-          accent="green"
-          icon={Coins}
-          label="Income This Period"
-          value={dashboard.status.earned}
-          detail={`Progress: ${dashboard.status.progress_pct}%`}
-        />
-        <MetricCard
-          accent="blue"
-          icon={Activity}
-          label="Active Modules"
-          value={String(dashboard.config.channels.length)}
-          detail={`${runningStrategyCount(dashboard)} active strategy signals`}
-        />
-        <MetricCard
-          accent="violet"
-          icon={Gauge}
-          label="Temple Level"
-          value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.4 growth track"}
-        />
-      </MetricGrid>
-
-      <QuotaProgressPanel dashboard={dashboard} />
-      <TopOffering item={dashboard.top_opportunity} />
-
-      <DashboardGrid>
-        <TempleSwitchboardPanel
-          dashboard={dashboard}
-          busy={busy}
-          onSubmit={(event, path, success) => void handleJsonForm(event, path, success)}
-        />
-        <StrategiesPanel dashboard={dashboard} />
-        <StrategyRoiPanel dashboard={dashboard} />
-        <PriorityCallsPanel dashboard={dashboard} />
-        <ConfigPanel dashboard={dashboard} />
-        <ExternalSignalsPanel external={external} busy={busy} onRefresh={() => void refreshExternalConnections()} />
-        <ApprovalQueuePanel
-          dashboard={dashboard}
-          busy={busy}
-          onSubmit={(event, path, success) => void handleJsonForm(event, path, success)}
-          onReview={reviewApproval}
-        />
-        <TempleLogPanel dashboard={dashboard} busy={busy} onPulse={() => void pulseWorker()} />
-        <CommandAltarPanel
-          dashboard={dashboard}
-          busy={busy}
-          onSubmit={(event, path, success) => void handleJsonForm(event, path, success)}
-        />
-        <ImportAltarPanel dashboard={dashboard} busy={busy} importResult={importResult} onImport={(event) => void importCsv(event)} />
-        <QuotaControlPanel
-          dashboard={dashboard}
-          busy={busy}
-          onSubmit={(event, path, success) => void handleJsonForm(event, path, success)}
-        />
-        <MercyExceptionPanel busy={busy} onSubmit={(event, path, success) => void handleJsonForm(event, path, success)} />
-        <RecentIncomePanel dashboard={dashboard} />
-        <UpgradePathPanel dashboard={dashboard} />
-        <ReportForgePanel report={reportView} busy={busy} onGenerate={() => void generateReport()} onDownload={downloadReport} />
-      </DashboardGrid>
+      <DashboardViewContent
+        view={activeView}
+        dashboard={dashboard}
+        external={external}
+        report={reportView}
+        importResult={importResult}
+        busy={busy}
+        onJsonForm={(event, path, success) => void handleJsonForm(event, path, success)}
+        onImport={(event) => void importCsv(event)}
+        onReviewApproval={reviewApproval}
+        onPulseWorker={() => void pulseWorker()}
+        onRefreshExternal={() => void refreshExternalConnections()}
+        onGenerateReport={() => void generateReport()}
+        onDownloadReport={downloadReport}
+      />
 
       <Toast message={toast} />
     </DashboardShell>

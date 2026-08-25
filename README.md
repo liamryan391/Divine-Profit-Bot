@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.3.2`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.3.3`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -122,6 +122,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 - Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 - Componentized React layout shell with shared cards, panels, fields, buttons, badges, toolbars, and dashboard sections.
+- Hash-based navigation for overview, temples, strategies, imports, approvals, reports, and settings views.
 
 Run it with:
 
