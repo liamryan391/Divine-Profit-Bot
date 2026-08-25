@@ -13,11 +13,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.2.0`: multi-temple expansion with separate profiles and cross-temple reporting.
 - `v2.3.0`: React, TypeScript, and Tailwind frontend foundation for the Digital Temple dashboard.
 - `v2.3.1`: local owner password reset support for forgotten passwords.
+- `v2.3.2`: shared React component system and layout shell for the dashboard.
 - `v2.4.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
 
 ## Current Status
 
-Current version: `v2.3.1`.
+Current version: `v2.3.2`.
 
 Completed:
 
@@ -58,6 +59,7 @@ Completed:
 - Patch `v2.2.1`: fixed dashboard stylesheet/script asset paths that could leave the website on a blank screen.
 - Roadmap 2.0 Stage 2.0.1: React, TypeScript, Tailwind CSS, and Vite frontend foundation while preserving the existing Python API and daemon.
 - Patch `v2.3.1`: added a local owner password reset command that rotates the password hash and signs out old sessions.
+- Roadmap 2.0 Stage 2.0.2: split the dashboard into reusable React components and a stronger layout shell.
 
 ## Phase 0: Foundation
 
@@ -421,7 +423,7 @@ Release status: shipped.
 
 ### Stage 2.0.2: Component System And Layout Shell
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -433,7 +435,9 @@ Deliverables:
 
 Release target:
 
-- `v2.3.1` or later.
+- `v2.3.2`.
+
+Release status: shipped.
 
 ### Stage 2.0.3: Navigation And Information Architecture
 
@@ -449,7 +453,7 @@ Deliverables:
 
 Release target:
 
-- `v2.3.2` or later.
+- `v2.3.3` or later.
 
 ### Stage 2.0.4: Auth UX And Account Recovery Readiness
 
@@ -467,7 +471,7 @@ Deliverables:
 
 Release target:
 
-- `v2.3.3` or later.
+- `v2.3.4` or later.
 
 ### Stage 2.0.5: Workflow Forms And Feedback
 
@@ -483,7 +487,7 @@ Deliverables:
 
 Release target:
 
-- `v2.3.4` or later.
+- `v2.3.5` or later.
 
 ### Stage 2.0.6: Responsive Design And Accessibility
 
@@ -499,7 +503,7 @@ Deliverables:
 
 Release target:
 
-- `v2.3.5` or later.
+- `v2.3.6` or later.
 
 ### Stage 2.0.7: Visual QA And Phase 5 Readiness
 
@@ -515,7 +519,7 @@ Deliverables:
 
 Release target:
 
-- `v2.3.6` or later.
+- `v2.3.7` or later.
 
 ### Roadmap 2.0 Completion Gate
 
@@ -607,11 +611,11 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Roadmap 2.0, Stage 2.0.2 next:
+Build Roadmap 2.0, Stage 2.0.3 next:
 
-- Split the dashboard into reusable components and a stronger layout shell.
-- Keep the current visual identity.
-- Prepare the app for overview, temples, strategies, imports, approvals, reports, and settings views.
+- Add primary navigation and information architecture across overview, temples, strategies, imports, approvals, reports, and settings.
+- Keep the first-screen dashboard focused on quota health, worker state, top action, and urgent approvals.
+- Move longer workflows into deeper views without changing the existing API contract.
 - Finish Roadmap 2.0 before starting Phase 5, Stage 5.1.
 
 Backend Roadmap 3.0 should wait until after Phase 5, Stage 5.1 unless the lead pipeline exposes a real backend blocker. The next best revenue move after Roadmap 2.0 is still the lead pipeline.

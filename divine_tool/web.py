@@ -349,6 +349,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
         def serve_static(self, path: str) -> None:
             if path == "/":
                 path = "/index.html"
+            if path == "/favicon.ico":
+                path = "/favicon.svg"
             parts = [part for part in path.removeprefix("/").split("/") if part not in {"", ".", ".."}]
             target = (STATIC_DIR / Path(*parts)).resolve()
             root = STATIC_DIR.resolve()
