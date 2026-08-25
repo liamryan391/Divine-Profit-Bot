@@ -155,6 +155,14 @@ python -m divine_tool account list
 
 Passwords are stored as salted hashes, and browser sessions are stored as hashed local session tokens. The API blocks dashboard data, income writes, imports, approvals, and configuration changes until the owner is signed in.
 
+If you forget the local username, list configured accounts with:
+
+```powershell
+python -m divine_tool account list
+```
+
+The tool cannot display an existing password because passwords are not stored in recoverable form. Roadmap 2.0 includes a planned login recovery UX for username reminders, optional recovery email, and safe password reset flows.
+
 Secret policy: keep external credentials in environment variables, not config files. Current supported variables are `DIVINE_STRIPE_SECRET_KEY`, `DIVINE_GITHUB_TOKEN`, and `GITHUB_TOKEN`.
 
 ## Hosted Deployment

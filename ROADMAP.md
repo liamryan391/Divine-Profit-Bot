@@ -391,6 +391,13 @@ Rationale:
 - Phase 5 Lead Pipeline will add heavier state, filtering, forms, and workflow screens.
 - A React foundation reduces frontend risk before those features are added.
 
+Sequencing rule:
+
+- Roadmap 2.0 does not renumber the product roadmap.
+- Phase 5, Stage 5.1 remains the next product-growth phase.
+- Phase 5 stays paused until Roadmap 2.0 reaches its completion gate.
+- Backend Roadmap 3.0 waits unless a Roadmap 2.0 or Phase 5 feature exposes a real backend blocker.
+
 ### Stage 2.0.1: React Frontend Foundation
 
 Status: complete.
@@ -410,35 +417,102 @@ Release target:
 
 Release status: shipped.
 
-### Stage 2.0.2: Component System And Navigation
+### Stage 2.0.2: Component System And Layout Shell
 
 Status: future.
 
 Deliverables:
 
 - Shared cards, panels, buttons, fields, status badges, and list components.
-- Stable page sections for overview, temples, strategies, imports, approvals, reports, and settings.
-- Navigation that keeps the first screen focused and makes deeper workflows easier to find.
-- Mobile and desktop responsive polish.
+- Consistent icon usage across dashboard actions.
+- Reusable page header, toolbar, section, drawer, modal, and toast patterns.
+- Layout shell that can support multiple views without nested card clutter.
+- Reduced duplication in frontend markup.
 
 Release target:
 
 - `v2.3.1` or later.
 
-### Stage 2.0.3: Workflow UX And Visual QA
+### Stage 2.0.3: Navigation And Information Architecture
 
 Status: future.
 
 Deliverables:
 
-- Focused interaction states for loading, empty, success, and failure paths.
-- Form validation and clearer submit states.
-- Browser smoke checks for auth, dashboard loading, report generation, and core controls.
-- Accessibility pass for labels, keyboard flow, and status updates.
+- Primary navigation for overview, temples, strategies, imports, approvals, reports, and settings.
+- First-screen dashboard focused on quota health, worker state, top action, and urgent approvals.
+- Deeper workflow views for long forms and dense lists.
+- URL-aware routes or view state so the app can return to the same workflow after refresh.
+- Clear empty states that explain what is missing without becoming marketing copy.
 
 Release target:
 
 - `v2.3.2` or later.
+
+### Stage 2.0.4: Auth UX And Account Recovery Readiness
+
+Status: future.
+
+Deliverables:
+
+- Cleaner login and owner setup screens.
+- Username reminder path for local accounts.
+- Optional recovery email field on owner account profile.
+- Password reset design that never reveals stored passwords.
+- Local-owner recovery runbook for self-hosted installs.
+- Frontend copy for forgotten username/password states.
+
+Release target:
+
+- `v2.3.3` or later.
+
+### Stage 2.0.5: Workflow Forms And Feedback
+
+Status: future.
+
+Deliverables:
+
+- Stronger client-side validation for quota, income, imports, approvals, reports, and temple creation.
+- Better loading, disabled, success, warning, and failure states.
+- Safer destructive or irreversible action confirmations.
+- Inline field errors instead of toast-only feedback.
+- Form state preservation for longer workflows.
+
+Release target:
+
+- `v2.3.4` or later.
+
+### Stage 2.0.6: Responsive Design And Accessibility
+
+Status: future.
+
+Deliverables:
+
+- Mobile, tablet, and desktop layout pass.
+- Keyboard navigation pass for all interactive controls.
+- Accessible labels and status regions for live updates.
+- Contrast and focus-ring verification.
+- Text wrapping and overflow checks for long strategy, temple, report, and approval content.
+
+Release target:
+
+- `v2.3.5` or later.
+
+### Stage 2.0.7: Visual QA And Phase 5 Readiness
+
+Status: future.
+
+Deliverables:
+
+- Browser smoke checks for auth, dashboard loading, report generation, imports, approvals, and core controls.
+- Screenshot checks for desktop and mobile widths.
+- Frontend build and static serving checks in CI or the local test routine.
+- Lead Pipeline UI slots identified before backend work begins.
+- API contract notes for the Phase 5 lead records and pipeline views.
+
+Release target:
+
+- `v2.3.6` or later.
 
 ### Roadmap 2.0 Completion Gate
 
@@ -449,6 +523,8 @@ Roadmap 2.0 is complete when:
 - The frontend build is documented and repeatable.
 - Tests cover static asset serving and API compatibility.
 - Phase 5 Lead Pipeline can be added without expanding a single monolithic browser script.
+- Login, forgotten-credential, and owner setup UX have a clear safe path.
+- Navigation can support the Lead Pipeline as a first-class workflow.
 
 ## Phase 5: Growth Operations
 
@@ -530,9 +606,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 Build Roadmap 2.0, Stage 2.0.2 next:
 
-- Split the dashboard into a clearer component and navigation system.
+- Split the dashboard into reusable components and a stronger layout shell.
 - Keep the current visual identity.
-- Make overview, temples, strategies, imports, approvals, reports, and settings easier to scan.
+- Prepare the app for overview, temples, strategies, imports, approvals, reports, and settings views.
 - Finish Roadmap 2.0 before starting Phase 5, Stage 5.1.
 
 Backend Roadmap 3.0 should wait until after Phase 5, Stage 5.1 unless the lead pipeline exposes a real backend blocker. The next best revenue move after Roadmap 2.0 is still the lead pipeline.
