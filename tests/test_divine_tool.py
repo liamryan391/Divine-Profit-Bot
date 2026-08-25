@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -116,17 +117,20 @@ class DivineToolTests(unittest.TestCase):
             try:
                 with urlopen(f"{base_url}/") as response:
                     html = response.read()
-                    self.assertIn(b"Divine Income Engine", html)
-                    self.assertIn(b'href="/styles.css"', html)
-                    self.assertIn(b'src="/app.js"', html)
+                    html_text = html.decode("utf-8")
+                    self.assertIn("Divine Income Engine", html_text)
+                    css_match = re.search(r'href="(/assets/index-[^"]+\.css)"', html_text)
+                    js_match = re.search(r'src="(/assets/index-[^"]+\.js)"', html_text)
+                    self.assertIsNotNone(css_match)
+                    self.assertIsNotNone(js_match)
 
-                with urlopen(f"{base_url}/styles.css") as response:
+                with urlopen(f"{base_url}{css_match.group(1)}") as response:
                     self.assertEqual(response.status, 200)
-                    self.assertIn(b".auth-gate", response.read())
+                    self.assertIn(b".temple-shell", response.read())
 
-                with urlopen(f"{base_url}/app.js") as response:
+                with urlopen(f"{base_url}{js_match.group(1)}") as response:
                     self.assertEqual(response.status, 200)
-                    self.assertIn(b"function boot()", response.read())
+                    self.assertIn(b"Opening the temple", response.read())
 
                 try:
                     urlopen(f"{base_url}/api/status")

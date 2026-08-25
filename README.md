@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.2.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.3.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -102,7 +102,7 @@ python -m divine_tool config show
 
 ## Web App
 
-The local web app provides:
+The local web app is now a React, TypeScript, and Tailwind CSS dashboard served by the Python app. It provides:
 
 - Quota, income, active module, and temple level cards.
 - Period progress and remaining time.
@@ -129,6 +129,19 @@ python -m divine_tool web --port 8765
 ```
 
 The dashboard and API share the same `.divine_tool/` state as the CLI and daemon.
+
+For frontend development, run the Python web app for the API and use the Vite dev server for the browser UI:
+
+```powershell
+npm install
+npm run dev
+```
+
+Compile the production dashboard into `divine_tool/static/` with:
+
+```powershell
+npm run build
+```
 
 ## Accounts And Authentication
 

@@ -1,0 +1,244 @@
+export type JsonMap = Record<string, unknown>;
+
+export interface AuthAccount {
+  id: number;
+  username: string;
+  display_name?: string;
+  role: string;
+  created_at?: string;
+  last_login_at?: string;
+  disabled?: boolean;
+}
+
+export interface AuthStatus {
+  enabled: boolean;
+  setup_required: boolean;
+  authenticated: boolean;
+  account: AuthAccount | null;
+  accounts?: AuthAccount[];
+  secret_management?: JsonMap;
+}
+
+export interface WorkerStatus {
+  worker_name?: string;
+  state: string;
+  last_seen_at?: string | null;
+  age_seconds: number | null;
+  detail?: string;
+  stale_after_seconds?: number;
+}
+
+export interface Temple {
+  id: string;
+  name: string;
+  description?: string;
+  template?: string;
+  active?: boolean;
+}
+
+export interface TempleSummaryRow {
+  id: string;
+  name: string;
+  active: boolean;
+  judgement: string;
+  top_strategy: string;
+  earned: string;
+  quota: string;
+  progress_pct: number;
+  mood: string;
+}
+
+export interface TempleSummary {
+  temple_count: number;
+  overall_progress_pct: number;
+  total_earned_minor: number;
+  rows: TempleSummaryRow[];
+}
+
+export interface StatusReport {
+  god_name: string;
+  temple?: Temple;
+  mood: string;
+  period: {
+    name: string;
+    start: string;
+    end: string;
+  };
+  quota_minor: number;
+  earned_minor: number;
+  remaining_minor: number;
+  quota: string;
+  earned: string;
+  remaining: string;
+  progress: number;
+  progress_pct: number;
+  days_left: number;
+  judgement: string;
+  punishment?: string;
+  exception?: unknown;
+}
+
+export interface StrategyChannel {
+  id?: string;
+  name: string;
+  expected_gbp_minor?: number;
+  effort?: string;
+  risk?: string;
+  next_action?: string;
+}
+
+export interface ConfigPayload {
+  god_name: string;
+  active_mood: string;
+  base_currency: string;
+  active_temple?: Temple;
+  temples: Temple[];
+  strategy_templates: JsonMap;
+  moods: Record<string, JsonMap>;
+  channels: StrategyChannel[];
+}
+
+export interface Opportunity {
+  id: string;
+  rank: number;
+  name: string;
+  expected: string;
+  period_income: string;
+  score: number;
+  score_label: string;
+  fit?: string;
+  risk?: string;
+  rationale: string;
+  next_action: string;
+  components: Record<string, number>;
+}
+
+export interface StrategyRoiRow {
+  id: string;
+  name: string;
+  roi_rank: number;
+  trend: string;
+  target_capture_pct: number;
+  recommendation: string;
+  recommendation_reason: string;
+  current_period: string;
+  previous_period: string;
+  delta: string;
+  roi_per_effort: string;
+  notes: Array<{ amount: string; note: string }>;
+}
+
+export interface StrategyRoi {
+  period: {
+    start: string;
+    end: string;
+  };
+  rows: StrategyRoiRow[];
+  push_recommendations: StrategyRoiRow[];
+  pause_recommendations: StrategyRoiRow[];
+}
+
+export interface IncomeEntry {
+  id: number;
+  amount: string;
+  counted: string;
+  currency: string;
+  source: string;
+  strategy?: string;
+  note?: string;
+  occurred_at: string;
+}
+
+export interface EventEntry {
+  id?: number;
+  category: string;
+  message: string;
+  created_at: string;
+}
+
+export interface ReportPayload {
+  title: string;
+  markdown: string;
+  earned: string;
+  quota: string;
+  period: {
+    start: string;
+    end: string;
+  };
+}
+
+export interface ApprovalAction {
+  id: number;
+  kind: string;
+  kind_label: string;
+  title: string;
+  body: string;
+  status: string;
+  strategy?: string;
+}
+
+export interface ApprovalSummary {
+  counts: Record<string, number>;
+  recent: ApprovalAction[];
+}
+
+export interface ExternalConnection {
+  id: string;
+  name: string;
+  state: string;
+  summary: string;
+  next_action?: string;
+  items?: Array<Record<string, string>>;
+}
+
+export interface ExternalSnapshot {
+  connected_count: number;
+  disabled_count?: number;
+  connections: ExternalConnection[];
+}
+
+export interface ImportRow {
+  row_number?: number;
+  status: string;
+  reason?: string;
+  existing_id?: number;
+  gbp?: string;
+  source?: string;
+}
+
+export interface ImportResult {
+  dry_run: boolean;
+  ready_count?: number;
+  imported_count: number;
+  duplicate_count: number;
+  skipped_count: number;
+  rows: ImportRow[];
+}
+
+export interface DashboardPayload {
+  version: string;
+  status: StatusReport;
+  income: IncomeEntry[];
+  exceptions: JsonMap[];
+  events: EventEntry[];
+  opportunities: Opportunity[];
+  top_opportunity: Opportunity | null;
+  strategy_roi: StrategyRoi;
+  report: ReportPayload;
+  upgrades: string[];
+  approvals: ApprovalSummary;
+  temples: TempleSummary;
+  auth: AuthStatus;
+  worker: WorkerStatus;
+  config: ConfigPayload;
+}
+
+export interface AuthResponse {
+  auth: AuthStatus;
+}
+
+export interface DashboardResponse {
+  ok?: boolean;
+  state: DashboardPayload;
+  auth?: AuthStatus;
+}

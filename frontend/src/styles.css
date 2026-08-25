@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    min-width: 320px;
+  }
+
+  body {
+    margin: 0;
+    background-color: #07080d;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(180deg, #0b1020 0%, #07080d 36%, #090d17 100%);
+    background-size: 64px 64px, 64px 64px, 100% 100%;
+    color: theme("colors.temple.text");
+    font-family:
+      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: 0;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .temple-shell {
+    @apply mx-auto w-[min(1180px,calc(100%-32px))] py-7 sm:w-[min(1180px,calc(100%-48px))];
+  }
+
+  .temple-panel {
+    @apply rounded-lg border border-white/5 bg-gradient-to-b from-[#1d283a]/95 to-[#141d2c]/95 p-5 shadow-temple md:p-6;
+  }
+
+  .temple-card {
+    @apply rounded-lg border border-white/5 bg-gradient-to-b from-[#1d283a]/95 to-[#141d2c]/95 p-5 shadow-temple;
+  }
+
+  .temple-input {
+    @apply min-h-11 w-full rounded-lg border border-temple-line bg-temple-panelDeep px-3 py-2.5 text-temple-text outline-none transition focus:border-temple-blue focus:ring-4 focus:ring-temple-blue/20;
+  }
+
+  .temple-button {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-transparent px-3.5 py-2.5 text-sm font-black text-[#07101c] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-wait disabled:opacity-60;
+  }
+
+  .temple-button-primary {
+    @apply bg-gradient-to-br from-temple-gold to-[#ff8d4a];
+  }
+
+  .temple-button-secondary {
+    @apply bg-gradient-to-br from-temple-green to-temple-blue;
+  }
+
+  .temple-button-ghost {
+    @apply border-temple-line bg-transparent text-temple-text hover:bg-white/5;
+  }
+
+  .temple-badge {
+    @apply inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-temple-line bg-temple-surface/80 px-3 py-2 text-sm text-temple-muted;
+  }
+
+  .temple-row {
+    @apply rounded-lg bg-temple-panelDeep p-3 text-temple-text;
+  }
+
+  .field-label {
+    @apply grid gap-1.5 text-sm font-bold text-temple-muted;
+  }
+
+  .section-heading {
+    @apply mb-4 flex items-center justify-between gap-4;
+  }
+}

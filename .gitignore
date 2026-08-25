@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .divine_tool/
 .pytest_cache/
+node_modules/
+frontend/dist/
+*.tsbuildinfo

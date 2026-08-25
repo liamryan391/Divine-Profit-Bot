@@ -11,11 +11,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.0.0`: account protection and authenticated local operation.
 - `v2.1.0`: hosted deployment packaging, preflight, monitoring, and backups.
 - `v2.2.0`: multi-temple expansion with separate profiles and cross-temple reporting.
-- `v2.3.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
+- `v2.3.0`: React, TypeScript, and Tailwind frontend foundation for the Digital Temple dashboard.
+- `v2.4.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
 
 ## Current Status
 
-Current version: `v2.2.1`.
+Current version: `v2.3.0`.
 
 Completed:
 
@@ -54,6 +55,7 @@ Completed:
 - Dashboard Temple Switchboard and active temple selector.
 - Cross-temple quota rollups.
 - Patch `v2.2.1`: fixed dashboard stylesheet/script asset paths that could leave the website on a blank screen.
+- Roadmap 2.0 Stage 2.0.1: React, TypeScript, Tailwind CSS, and Vite frontend foundation while preserving the existing Python API and daemon.
 
 ## Phase 0: Foundation
 
@@ -378,9 +380,81 @@ Release target:
 
 Release status: shipped.
 
+## Roadmap 2.0: Frontend Rebuild
+
+Goal: modernize the browser app before adding larger growth workflows, while keeping the existing Python backend, SQLite state, API routes, and daemon worker intact.
+
+Rationale:
+
+- The `v2.2.1` UI is visually healthy and usable.
+- The old frontend was a single static HTML/CSS/JS surface.
+- Phase 5 Lead Pipeline will add heavier state, filtering, forms, and workflow screens.
+- A React foundation reduces frontend risk before those features are added.
+
+### Stage 2.0.1: React Frontend Foundation
+
+Status: complete.
+
+Deliverables:
+
+- Vite build pipeline.
+- React app shell.
+- TypeScript frontend data contracts.
+- Tailwind CSS design foundation.
+- Existing dashboard behavior preserved against the current API.
+- Compiled static bundle served by the Python web app.
+
+Release target:
+
+- `v2.3.0`.
+
+Release status: shipped.
+
+### Stage 2.0.2: Component System And Navigation
+
+Status: future.
+
+Deliverables:
+
+- Shared cards, panels, buttons, fields, status badges, and list components.
+- Stable page sections for overview, temples, strategies, imports, approvals, reports, and settings.
+- Navigation that keeps the first screen focused and makes deeper workflows easier to find.
+- Mobile and desktop responsive polish.
+
+Release target:
+
+- `v2.3.1` or later.
+
+### Stage 2.0.3: Workflow UX And Visual QA
+
+Status: future.
+
+Deliverables:
+
+- Focused interaction states for loading, empty, success, and failure paths.
+- Form validation and clearer submit states.
+- Browser smoke checks for auth, dashboard loading, report generation, and core controls.
+- Accessibility pass for labels, keyboard flow, and status updates.
+
+Release target:
+
+- `v2.3.2` or later.
+
+### Roadmap 2.0 Completion Gate
+
+Roadmap 2.0 is complete when:
+
+- The React frontend is the only active dashboard implementation.
+- Core workflows are visually checked in desktop and mobile widths.
+- The frontend build is documented and repeatable.
+- Tests cover static asset serving and API compatibility.
+- Phase 5 Lead Pipeline can be added without expanding a single monolithic browser script.
+
 ## Phase 5: Growth Operations
 
 Goal: help each temple convert legitimate opportunities into tracked revenue.
+
+Status: paused until Roadmap 2.0 is complete.
 
 ### Stage 5.1: Lead Pipeline
 
@@ -396,7 +470,7 @@ Deliverables:
 
 Release target:
 
-- `v2.3.0`.
+- `v2.4.0`.
 
 ### Stage 5.2: Conversion Tracking
 
@@ -411,7 +485,7 @@ Deliverables:
 
 Release target:
 
-- `v2.4.0` or later.
+- `v2.5.0` or later.
 
 ### Stage 5.3: Revenue Rules
 
@@ -426,7 +500,7 @@ Deliverables:
 
 Release target:
 
-- `v2.5.0` or later.
+- `v2.6.0` or later.
 
 ## Operational Definition
 
@@ -454,11 +528,11 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Phase 5, Stage 5.1 next:
+Build Roadmap 2.0, Stage 2.0.2 next:
 
-- Add a lead pipeline per temple.
-- Track offer, value, source, stage, next step, and follow-up date.
-- Score leads against the active quota gap.
-- Connect completed leads to income entries.
+- Split the dashboard into a clearer component and navigation system.
+- Keep the current visual identity.
+- Make overview, temples, strategies, imports, approvals, reports, and settings easier to scan.
+- Finish Roadmap 2.0 before starting Phase 5, Stage 5.1.
 
-That turns the multi-temple operating system into a real growth pipeline.
+Backend Roadmap 3.0 should wait until after Phase 5, Stage 5.1 unless the lead pipeline exposes a real backend blocker. The next best revenue move after Roadmap 2.0 is still the lead pipeline.
