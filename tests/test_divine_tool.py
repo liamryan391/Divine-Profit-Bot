@@ -44,6 +44,7 @@ from divine_tool.core import (
     strategy_roi_summary,
     switch_temple,
     temple_summary,
+    update_account_profile,
 )
 from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
 from divine_tool.web import make_handler
@@ -141,7 +142,12 @@ class DivineToolTests(unittest.TestCase):
                     blocked.close()
 
                 setup_body = json.dumps(
-                    {"username": "creator", "display_name": "Creator", "password": "strong-pass-123"}
+                    {
+                        "username": "creator",
+                        "display_name": "Creator",
+                        "recovery_email": "Creator@Example.COM",
+                        "password": "strong-pass-123",
+                    }
                 ).encode("utf-8")
                 setup_request = Request(
                     f"{base_url}/api/auth/setup",
@@ -156,9 +162,26 @@ class DivineToolTests(unittest.TestCase):
                 self.assertTrue(setup_payload["ok"])
                 self.assertTrue(setup_payload["auth"]["authenticated"])
                 self.assertEqual(setup_payload["auth"]["account"]["role"], "owner")
+                self.assertEqual(setup_payload["auth"]["account"]["recovery_email"], "creator@example.com")
 
                 json_headers = {"Content-Type": "application/json", "Cookie": cookie}
                 auth_headers = {"Cookie": cookie}
+
+                profile_body = json.dumps(
+                    {"display_name": "Prime Creator", "recovery_email": "prime@example.com"}
+                ).encode("utf-8")
+                profile_request = Request(
+                    f"{base_url}/api/account/profile",
+                    data=profile_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(profile_request) as response:
+                    profile_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(profile_payload["ok"])
+                self.assertEqual(profile_payload["account"]["display_name"], "Prime Creator")
+                self.assertEqual(profile_payload["state"]["auth"]["account"]["recovery_email"], "prime@example.com")
 
                 body = json.dumps({"amount": "30", "source": "web invoice"}).encode("utf-8")
                 request = Request(
@@ -358,15 +381,33 @@ class DivineToolTests(unittest.TestCase):
 
             self.assertTrue(auth_status(data_dir)["setup_required"])
 
-            account = create_account(data_dir, "Creator.One", "strong-pass-123", display_name="Creator")
+            account = create_account(
+                data_dir,
+                "Creator.One",
+                "strong-pass-123",
+                display_name="Creator",
+                recovery_email="Creator@Example.COM",
+            )
 
             self.assertEqual(account["username"], "creator.one")
             self.assertEqual(account["role"], "owner")
+            self.assertEqual(account["recovery_email"], "creator@example.com")
             self.assertEqual(len(list_accounts(data_dir)), 1)
             self.assertFalse(auth_status(data_dir)["setup_required"])
 
+            updated = update_account_profile(
+                data_dir,
+                int(account["id"]),
+                display_name="Prime Creator",
+                recovery_email="prime@example.com",
+            )
+            self.assertEqual(updated["display_name"], "Prime Creator")
+            self.assertEqual(updated["recovery_email"], "prime@example.com")
+
             with self.assertRaises(DivineToolError):
                 create_account(data_dir, "second", "strong-pass-123")
+            with self.assertRaises(DivineToolError):
+                update_account_profile(data_dir, int(account["id"]), recovery_email="not-an-email")
             with self.assertRaises(DivineToolError):
                 create_session(data_dir, "creator.one", "wrong-pass")
 
@@ -376,6 +417,7 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(auth_status(data_dir, session["token"])["account"]["username"], "creator.one")
             reset = reset_account_password(data_dir, "creator.one", "better-pass-456")
             self.assertEqual(reset["username"], "creator.one")
+            self.assertEqual(reset["recovery_email"], "prime@example.com")
             self.assertFalse(auth_status(data_dir, session["token"])["authenticated"])
             with self.assertRaises(DivineToolError):
                 create_session(data_dir, "creator.one", "strong-pass-123")

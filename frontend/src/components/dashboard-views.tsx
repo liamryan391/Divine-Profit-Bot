@@ -4,6 +4,7 @@ import type { DashboardView } from "../lib/navigation";
 import { capitalize, runningStrategyCount } from "../lib/format";
 import type { DashboardPayload, ExternalSnapshot, ImportResult, ReportPayload } from "../types";
 import {
+  AccountRecoveryPanel,
   ApprovalQueuePanel,
   CommandAltarPanel,
   ConfigPanel,
@@ -26,7 +27,7 @@ import {
 import { DashboardGrid, MetricGrid, ViewHeader } from "./layout";
 import { MetricCard } from "./ui";
 
-type JsonFormHandler = (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+type JsonFormHandler = (event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm?: boolean) => void;
 
 interface DashboardViewContentProps {
   view: DashboardView;
@@ -163,6 +164,7 @@ function SettingsView({ dashboard, external, busy, onJsonForm, onPulseWorker, on
   return (
     <DashboardGrid>
       <ConfigPanel dashboard={dashboard} />
+      <AccountRecoveryPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
       <QuotaControlPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
       <MercyExceptionPanel busy={busy} onSubmit={onJsonForm} />
       <ExternalSignalsPanel external={external} busy={busy} onRefresh={onRefreshExternal} />

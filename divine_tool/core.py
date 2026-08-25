@@ -332,6 +332,7 @@ def ensure_state(data_dir: Path) -> None:
                 username TEXT NOT NULL UNIQUE,
                 display_name TEXT NOT NULL DEFAULT '',
                 role TEXT NOT NULL DEFAULT 'owner',
+                recovery_email TEXT NOT NULL DEFAULT '',
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -340,6 +341,7 @@ def ensure_state(data_dir: Path) -> None:
             )
             """
         )
+        ensure_column(conn, "accounts", "recovery_email", "TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS auth_sessions (
@@ -1257,6 +1259,20 @@ def validate_password(config: dict[str, Any], password: str) -> None:
         raise DivineToolError("Password cannot start or end with whitespace.")
 
 
+def validate_recovery_email(email: str) -> str:
+    cleaned = email.strip().lower()
+    if not cleaned:
+        return ""
+    if len(cleaned) > 254:
+        raise DivineToolError("Recovery email must be 254 characters or fewer.")
+    if any(char.isspace() for char in cleaned):
+        raise DivineToolError("Recovery email cannot contain whitespace.")
+    local, separator, domain = cleaned.partition("@")
+    if not separator or not local or not domain or "." not in domain or domain.startswith(".") or domain.endswith("."):
+        raise DivineToolError("Recovery email must look like name@example.com.")
+    return cleaned
+
+
 def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 240000)
@@ -1280,12 +1296,14 @@ def create_account(
     username: str,
     password: str,
     display_name: str = "",
+    recovery_email: str = "",
     role: str = "owner",
 ) -> dict[str, Any]:
     ensure_state(data_dir)
     config = load_config(data_dir)
     username = validate_username(username)
     validate_password(config, password)
+    recovery_email = validate_recovery_email(recovery_email)
     role = role.strip().lower() or "owner"
     if role != "owner":
         raise DivineToolError("Only owner accounts are supported in this local release.")
@@ -1298,10 +1316,10 @@ def create_account(
         cur = conn.execute(
             """
             INSERT INTO accounts
-                (username, display_name, role, password_salt, password_hash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (username, display_name, role, recovery_email, password_salt, password_hash, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, display_name.strip(), role, salt, password_hash, created),
+            (username, display_name.strip(), role, recovery_email, salt, password_hash, created),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(cur.lastrowid),)).fetchone()
@@ -1322,6 +1340,35 @@ def list_accounts(data_dir: Path) -> list[dict[str, Any]]:
             )
         )
     return [account_to_dict(row) for row in rows]
+
+
+def update_account_profile(
+    data_dir: Path,
+    account_id: int,
+    display_name: str | None = None,
+    recovery_email: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    updates: list[str] = []
+    values: list[Any] = []
+    if display_name is not None:
+        updates.append("display_name = ?")
+        values.append(display_name.strip())
+    if recovery_email is not None:
+        updates.append("recovery_email = ?")
+        values.append(validate_recovery_email(recovery_email))
+    if not updates:
+        raise DivineToolError("No account profile changes provided.")
+    values.append(int(account_id))
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(account_id),)).fetchone()
+        if row is None or int(row["disabled"]):
+            raise DivineToolError("Account not found.")
+        conn.execute(f"UPDATE accounts SET {', '.join(updates)} WHERE id = ?", values)
+        conn.commit()
+        updated = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(account_id),)).fetchone()
+    log_event(data_dir, f"Account recovery profile updated: {updated['username']}", "auth")
+    return account_to_dict(updated)
 
 
 def reset_account_password(data_dir: Path, username: str, password: str) -> dict[str, Any]:
@@ -1452,6 +1499,7 @@ def account_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         "username": row["username"],
         "display_name": row["display_name"],
         "role": row["role"],
+        "recovery_email": row["recovery_email"],
         "created_at": row["created_at"],
         "last_login_at": row["last_login_at"],
         "disabled": bool(row["disabled"]),

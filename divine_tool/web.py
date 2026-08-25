@@ -48,6 +48,7 @@ from .core import (
     strategy_roi_summary,
     switch_temple,
     temple_summary,
+    update_account_profile,
     worker_status,
 )
 from .deployment import deployment_environment
@@ -174,6 +175,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         username=str(payload["username"]),
                         password=str(payload["password"]),
                         display_name=str(payload.get("display_name", "")),
+                        recovery_email=str(payload.get("recovery_email", "")),
                     )
                     session = create_session(
                         data_dir,
@@ -215,6 +217,15 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 account = self.require_auth()
                 if account is None:
+                    return
+                if parsed.path == "/api/account/profile":
+                    updated_account = update_account_profile(
+                        data_dir,
+                        account_id=int(account["id"]),
+                        display_name=str(payload.get("display_name", "")),
+                        recovery_email=str(payload.get("recovery_email", "")),
+                    )
+                    self.send_json({"ok": True, "account": updated_account, "state": dashboard_payload(data_dir, updated_account)})
                     return
                 if parsed.path == "/api/income":
                     income_id = add_income(

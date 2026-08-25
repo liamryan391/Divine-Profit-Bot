@@ -144,7 +144,7 @@ export function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-h-[62px] rounded-lg bg-white/[0.035] p-2.5">
       <span className="mb-1.5 block text-xs font-black uppercase text-temple-muted">{label}</span>
-      <strong>{value}</strong>
+      <strong className="break-words">{value}</strong>
     </div>
   );
 }

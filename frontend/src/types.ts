@@ -5,6 +5,7 @@ export interface AuthAccount {
   username: string;
   display_name?: string;
   role: string;
+  recovery_email?: string;
   created_at?: string;
   last_login_at?: string;
   disabled?: boolean;

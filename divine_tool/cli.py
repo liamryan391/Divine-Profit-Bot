@@ -211,6 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_setup = account_sub.add_parser("setup", help="Create the first local owner account.")
     account_setup.add_argument("username")
     account_setup.add_argument("--display-name", default="")
+    account_setup.add_argument("--recovery-email", default="", help="Optional email label for account recovery reference.")
     account_setup.add_argument("--password", help="Password. If omitted, a hidden prompt is used.")
     account_setup.set_defaults(func=cmd_account_setup)
     account_list = account_sub.add_parser("list", help="List local accounts.")
@@ -579,7 +580,7 @@ def cmd_account_setup(args: argparse.Namespace, data_dir: Path) -> int:
         confirm = getpass.getpass("Confirm password: ")
         if password != confirm:
             raise DivineToolError("Passwords do not match.")
-    account = create_account(data_dir, args.username, password, display_name=args.display_name)
+    account = create_account(data_dir, args.username, password, display_name=args.display_name, recovery_email=args.recovery_email)
     print(f"Created owner account: {account['username']}")
     return 0
 
@@ -591,7 +592,8 @@ def cmd_account_list(_args: argparse.Namespace, data_dir: Path) -> int:
         return 0
     for account in accounts:
         disabled = " disabled" if account["disabled"] else ""
-        print(f"#{account['id']} {account['username']} ({account['role']}){disabled}")
+        recovery = f" recovery:{account['recovery_email']}" if account.get("recovery_email") else ""
+        print(f"#{account['id']} {account['username']} ({account['role']}){disabled}{recovery}")
     return 0
 
 

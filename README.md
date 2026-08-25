@@ -4,13 +4,13 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.3.3`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.3.4`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
 ```powershell
 python -m divine_tool init
-python -m divine_tool account setup creator
+python -m divine_tool account setup creator --recovery-email owner@example.com
 python -m divine_tool web
 ```
 
@@ -119,6 +119,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Read-only external signals for fiat currency rates, GitHub project telemetry, optional payment summaries, and product analytics summaries.
 - Human-approved action drafts for invoice reminders, outreach messages, and content prompts.
 - Owner account setup, password login, protected dashboard/API routes, session logout, and role-aware account status.
+- Recovery-ready auth screens with username reminder, password reset fallback, and optional owner recovery email.
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 - Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 - Componentized React layout shell with shared cards, panels, fields, buttons, badges, toolbars, and dashboard sections.
@@ -150,7 +151,7 @@ npm run build
 The web dashboard is protected once an owner account exists. On a fresh state directory, create the owner from the browser setup screen or from the CLI:
 
 ```powershell
-python -m divine_tool account setup creator
+python -m divine_tool account setup creator --recovery-email owner@example.com
 python -m divine_tool account status
 python -m divine_tool account list
 python -m divine_tool account reset-password creator
@@ -164,7 +165,7 @@ If you forget the local username, list configured accounts with:
 python -m divine_tool account list
 ```
 
-The tool cannot display an existing password because passwords are not stored in recoverable form. Roadmap 2.0 includes a planned login recovery UX for username reminders, optional recovery email, and safe password reset flows.
+The tool cannot display an existing password because passwords are not stored in recoverable form. The login screen and Settings view surface the safe local fallback commands, and Settings can store an optional recovery email label on the owner profile.
 
 If you know the username but forgot the password, reset it with:
 
@@ -185,7 +186,7 @@ Prepare local deployment settings:
 
 ```powershell
 Copy-Item .env.example .env
-python -m divine_tool account setup creator
+python -m divine_tool account setup creator --recovery-email owner@example.com
 python -m divine_tool deploy preflight --host 0.0.0.0
 ```
 

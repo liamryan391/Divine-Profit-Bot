@@ -8,7 +8,9 @@ import {
   Download,
   FileText,
   Gauge,
+  KeyRound,
   Landmark,
+  Mail,
   Plus,
   RefreshCcw,
   Send,
@@ -176,6 +178,72 @@ export function ConfigPanel({ dashboard }: { dashboard: DashboardPayload }) {
   return (
     <Panel title="Divine Configuration" icon={Settings}>
       <ConfigList dashboard={dashboard} />
+    </Panel>
+  );
+}
+
+export function AccountRecoveryPanel({
+  dashboard,
+  busy,
+  onSubmit,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm?: boolean) => void;
+}) {
+  const account = dashboard.auth.account;
+  const username = account?.username || "owner";
+  const displayName = account?.display_name || "";
+  const recoveryEmail = account?.recovery_email || "";
+  return (
+    <Panel
+      title="Account Recovery"
+      icon={KeyRound}
+      wide
+      meta={recoveryEmail ? "email linked" : "email not set"}
+    >
+      <div className="grid gap-2.5 md:grid-cols-3">
+        <MiniMetric label="Username" value={username} />
+        <MiniMetric label="Display Name" value={displayName || "Creator"} />
+        <MiniMetric label="Recovery Email" value={recoveryEmail || "Not set"} />
+      </div>
+      <form
+        key={`account-${account?.id || "local"}-${displayName}-${recoveryEmail}`}
+        className="mt-4 grid gap-3 border-t border-temple-line pt-4 md:grid-cols-3"
+        onSubmit={(event) => onSubmit(event, "/api/account/profile", "Recovery profile updated", false)}
+      >
+        <Field label="Display Name" name="display_name" autoComplete="name" defaultValue={displayName} placeholder="Creator" />
+        <Field
+          label="Recovery Email"
+          name="recovery_email"
+          type="email"
+          autoComplete="email"
+          defaultValue={recoveryEmail}
+          placeholder="owner@example.com"
+        />
+        <div className="flex items-end">
+          <Button icon={Mail} disabled={busy === "/api/account/profile"} type="submit">
+            Save Recovery
+          </Button>
+        </div>
+      </form>
+      <div className="mt-4 grid gap-2.5">
+        <div className="temple-row grid gap-2 border-l-4 border-l-temple-gold">
+          <strong>Username reminder</strong>
+          <code className="break-words rounded-md bg-[#091020] px-2.5 py-2 font-mono text-xs leading-5 text-[#d9e5ff]">
+            python -m divine_tool account list
+          </code>
+        </div>
+        <div className="temple-row grid gap-2 border-l-4 border-l-temple-blue">
+          <strong>Password reset</strong>
+          <code className="break-words rounded-md bg-[#091020] px-2.5 py-2 font-mono text-xs leading-5 text-[#d9e5ff]">
+            python -m divine_tool account reset-password {username}
+          </code>
+          <span className="text-sm leading-6 text-temple-muted">
+            Existing passwords cannot be displayed; reset rotates the hash and signs out active sessions.
+          </span>
+        </div>
+      </div>
     </Panel>
   );
 }

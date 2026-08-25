@@ -168,7 +168,7 @@ function App() {
     }
   }
 
-  async function handleJsonForm(event: FormEvent<HTMLFormElement>, path: string, success: string) {
+  async function handleJsonForm(event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm = true) {
     event.preventDefault();
     const form = event.currentTarget;
     setBusy(path);
@@ -178,7 +178,9 @@ function App() {
         body: JSON.stringify(formPayload(form)),
       });
       applyDashboard(payload.state);
-      form.reset();
+      if (resetForm) {
+        form.reset();
+      }
       showToast(success);
     } catch (error) {
       handleApiError(error);
@@ -379,7 +381,7 @@ function App() {
         report={reportView}
         importResult={importResult}
         busy={busy}
-        onJsonForm={(event, path, success) => void handleJsonForm(event, path, success)}
+        onJsonForm={(event, path, success, resetForm) => void handleJsonForm(event, path, success, resetForm)}
         onImport={(event) => void importCsv(event)}
         onReviewApproval={reviewApproval}
         onPulseWorker={() => void pulseWorker()}
