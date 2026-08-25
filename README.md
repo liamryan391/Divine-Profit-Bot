@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.2.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.2.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 

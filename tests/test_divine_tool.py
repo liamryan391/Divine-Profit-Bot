@@ -115,7 +115,18 @@ class DivineToolTests(unittest.TestCase):
             base_url = f"http://127.0.0.1:{server.server_port}"
             try:
                 with urlopen(f"{base_url}/") as response:
-                    self.assertIn(b"Divine Income Engine", response.read())
+                    html = response.read()
+                    self.assertIn(b"Divine Income Engine", html)
+                    self.assertIn(b'href="/styles.css"', html)
+                    self.assertIn(b'src="/app.js"', html)
+
+                with urlopen(f"{base_url}/styles.css") as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b".auth-gate", response.read())
+
+                with urlopen(f"{base_url}/app.js") as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b"function boot()", response.read())
 
                 try:
                     urlopen(f"{base_url}/api/status")
@@ -167,7 +178,7 @@ class DivineToolTests(unittest.TestCase):
 
                 import_body = json.dumps(
                     {
-                        "csv_text": "Date,Amount,Source,Strategy\n2026-08-21,15.00,web import,freelance_services\n",
+                        "csv_text": f"Date,Amount,Source,Strategy\n{date.today().isoformat()},15.00,web import,freelance_services\n",
                         "source_type": "payment",
                         "dry_run": False,
                         "filename": "web-import.csv",

@@ -15,7 +15,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.2.0`.
+Current version: `v2.2.1`.
 
 Completed:
 
@@ -53,6 +53,7 @@ Completed:
 - CLI temple list/create/switch/summary commands.
 - Dashboard Temple Switchboard and active temple selector.
 - Cross-temple quota rollups.
+- Patch `v2.2.1`: fixed dashboard stylesheet/script asset paths that could leave the website on a blank screen.
 
 ## Phase 0: Foundation
 
