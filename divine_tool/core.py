@@ -1324,6 +1324,32 @@ def list_accounts(data_dir: Path) -> list[dict[str, Any]]:
     return [account_to_dict(row) for row in rows]
 
 
+def reset_account_password(data_dir: Path, username: str, password: str) -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    username = validate_username(username)
+    validate_password(config, password)
+    salt, password_hash = hash_password(password)
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE username = ?", (username,)).fetchone()
+        if row is None or int(row["disabled"]):
+            raise DivineToolError("Account not found.")
+        account_id = int(row["id"])
+        conn.execute(
+            """
+            UPDATE accounts
+            SET password_salt = ?, password_hash = ?
+            WHERE id = ?
+            """,
+            (salt, password_hash, account_id),
+        )
+        conn.execute("DELETE FROM auth_sessions WHERE account_id = ?", (account_id,))
+        conn.commit()
+        updated = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    log_event(data_dir, f"Owner account password reset: {username}", "auth")
+    return account_to_dict(updated)
+
+
 def create_session(data_dir: Path, username: str, password: str, user_agent: str = "") -> dict[str, Any]:
     ensure_state(data_dir)
     config = load_config(data_dir)

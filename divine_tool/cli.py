@@ -37,6 +37,7 @@ from .core import (
     parse_money_to_minor,
     process_command_inbox,
     record_heartbeat,
+    reset_account_password,
     review_approval_action,
     set_mood,
     set_quota,
@@ -214,6 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
     account_setup.set_defaults(func=cmd_account_setup)
     account_list = account_sub.add_parser("list", help="List local accounts.")
     account_list.set_defaults(func=cmd_account_list)
+    account_reset = account_sub.add_parser("reset-password", help="Reset a local owner account password.")
+    account_reset.add_argument("username")
+    account_reset.add_argument("--password", help="New password. If omitted, a hidden prompt is used.")
+    account_reset.set_defaults(func=cmd_account_reset_password)
 
     deploy = sub.add_parser("deploy", help="Deployment preflight, health checks, and backups.")
     deploy_sub = deploy.add_subparsers(required=True)
@@ -587,6 +592,19 @@ def cmd_account_list(_args: argparse.Namespace, data_dir: Path) -> int:
     for account in accounts:
         disabled = " disabled" if account["disabled"] else ""
         print(f"#{account['id']} {account['username']} ({account['role']}){disabled}")
+    return 0
+
+
+def cmd_account_reset_password(args: argparse.Namespace, data_dir: Path) -> int:
+    password = args.password
+    if not password:
+        password = getpass.getpass("New owner password: ")
+        confirm = getpass.getpass("Confirm new password: ")
+        if password != confirm:
+            raise DivineToolError("Passwords do not match.")
+    account = reset_account_password(data_dir, args.username, password)
+    print(f"Password reset for account: {account['username']}")
+    print("Existing sessions were signed out.")
     return 0
 
 

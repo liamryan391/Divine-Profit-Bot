@@ -12,11 +12,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.1.0`: hosted deployment packaging, preflight, monitoring, and backups.
 - `v2.2.0`: multi-temple expansion with separate profiles and cross-temple reporting.
 - `v2.3.0`: React, TypeScript, and Tailwind frontend foundation for the Digital Temple dashboard.
+- `v2.3.1`: local owner password reset support for forgotten passwords.
 - `v2.4.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
 
 ## Current Status
 
-Current version: `v2.3.0`.
+Current version: `v2.3.1`.
 
 Completed:
 
@@ -56,6 +57,7 @@ Completed:
 - Cross-temple quota rollups.
 - Patch `v2.2.1`: fixed dashboard stylesheet/script asset paths that could leave the website on a blank screen.
 - Roadmap 2.0 Stage 2.0.1: React, TypeScript, Tailwind CSS, and Vite frontend foundation while preserving the existing Python API and daemon.
+- Patch `v2.3.1`: added a local owner password reset command that rotates the password hash and signs out old sessions.
 
 ## Phase 0: Foundation
 
@@ -459,6 +461,7 @@ Deliverables:
 - Username reminder path for local accounts.
 - Optional recovery email field on owner account profile.
 - Password reset design that never reveals stored passwords.
+- Existing CLI password reset surfaced as the local fallback path.
 - Local-owner recovery runbook for self-hosted installs.
 - Frontend copy for forgotten username/password states.
 

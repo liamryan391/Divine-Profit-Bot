@@ -35,6 +35,7 @@ from divine_tool.core import (
     parse_money_to_minor,
     process_command_inbox,
     record_heartbeat,
+    reset_account_password,
     save_config,
     review_approval_action,
     set_mood,
@@ -373,8 +374,16 @@ class DivineToolTests(unittest.TestCase):
 
             self.assertTrue(session["token"])
             self.assertEqual(auth_status(data_dir, session["token"])["account"]["username"], "creator.one")
-            destroy_session(data_dir, session["token"])
+            reset = reset_account_password(data_dir, "creator.one", "better-pass-456")
+            self.assertEqual(reset["username"], "creator.one")
             self.assertFalse(auth_status(data_dir, session["token"])["authenticated"])
+            with self.assertRaises(DivineToolError):
+                create_session(data_dir, "creator.one", "strong-pass-123")
+            new_session = create_session(data_dir, "creator.one", "better-pass-456", user_agent="test")
+            self.assertEqual(auth_status(data_dir, new_session["token"])["account"]["username"], "creator.one")
+            destroy_session(data_dir, session["token"])
+            destroy_session(data_dir, new_session["token"])
+            self.assertFalse(auth_status(data_dir, new_session["token"])["authenticated"])
 
     def test_multi_temple_profiles_scope_income(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
