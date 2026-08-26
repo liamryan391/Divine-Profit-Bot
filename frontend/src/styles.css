@@ -29,6 +29,16 @@
     letter-spacing: 0;
   }
 
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:focus-visible {
+    outline: 3px solid theme("colors.temple.gold");
+    outline-offset: 3px;
+  }
+
   button,
   input,
   select,
@@ -38,24 +48,28 @@
 }
 
 @layer components {
+  .skip-link {
+    @apply fixed left-4 top-4 z-[100] -translate-y-24 rounded-lg bg-temple-gold px-4 py-3 text-sm font-black text-[#07101c] shadow-glow transition focus:translate-y-0;
+  }
+
   .temple-shell {
-    @apply mx-auto w-[min(1180px,calc(100%-32px))] py-7 sm:w-[min(1180px,calc(100%-48px))];
+    @apply mx-auto w-[min(1180px,calc(100%-24px))] py-5 sm:w-[min(1180px,calc(100%-48px))] lg:py-7;
   }
 
   .temple-panel {
-    @apply rounded-lg border border-white/5 bg-gradient-to-b from-[#1d283a]/95 to-[#141d2c]/95 p-5 shadow-temple md:p-6;
+    @apply min-w-0 rounded-lg border border-white/5 bg-gradient-to-b from-[#1d283a]/95 to-[#141d2c]/95 p-4 shadow-temple sm:p-5 md:p-6;
   }
 
   .temple-card {
-    @apply rounded-lg border border-white/5 bg-gradient-to-b from-[#1d283a]/95 to-[#141d2c]/95 p-5 shadow-temple;
+    @apply min-w-0 rounded-lg border border-white/5 bg-gradient-to-b from-[#1d283a]/95 to-[#141d2c]/95 p-4 shadow-temple sm:p-5;
   }
 
   .temple-input {
-    @apply min-h-11 w-full rounded-lg border border-temple-line bg-temple-panelDeep px-3 py-2.5 text-temple-text outline-none transition focus:border-temple-blue focus:ring-4 focus:ring-temple-blue/20;
+    @apply min-h-11 w-full min-w-0 rounded-lg border border-temple-line bg-temple-panelDeep px-3 py-2.5 text-temple-text outline-none transition focus:border-temple-blue focus:ring-4 focus:ring-temple-blue/20 disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .temple-button {
-    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-transparent px-3.5 py-2.5 text-sm font-black text-[#07101c] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-wait disabled:opacity-60;
+    @apply inline-flex min-h-11 max-w-full items-center justify-center gap-2 whitespace-normal rounded-lg border border-transparent px-3.5 py-2.5 text-center text-sm font-black text-[#07101c] transition hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-temple-gold/35 focus-visible:ring-offset-2 focus-visible:ring-offset-[#07101c] disabled:translate-y-0 disabled:cursor-wait disabled:opacity-60;
   }
 
   .temple-button-primary {
@@ -71,11 +85,11 @@
   }
 
   .temple-badge {
-    @apply inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-temple-line bg-temple-surface/80 px-3 py-2 text-sm text-temple-muted;
+    @apply inline-flex min-h-9 max-w-full items-center justify-center gap-2 rounded-lg border border-temple-line bg-temple-surface/80 px-3 py-2 text-left text-sm text-temple-muted;
   }
 
   .temple-row {
-    @apply rounded-lg bg-temple-panelDeep p-3 text-temple-text;
+    @apply min-w-0 rounded-lg bg-temple-panelDeep p-3 text-temple-text;
   }
 
   .field-label {
@@ -83,6 +97,17 @@
   }
 
   .section-heading {
-    @apply mb-4 flex items-center justify-between gap-4;
+    @apply mb-4 flex min-w-0 items-center justify-between gap-4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

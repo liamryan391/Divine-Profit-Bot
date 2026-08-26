@@ -50,16 +50,26 @@ import type { WorkflowFeedback, WorkflowFeedbackMap } from "../lib/forms";
 import { ActionLink, Badge, Button, EmptyRow, Field, FormNotice, MiniMetric, MoodSelect, Panel, SelectField, StrategySelect, Toolbar } from "./ui";
 
 export function QuotaProgressPanel({ dashboard }: { dashboard: DashboardPayload }) {
+  const progress = Math.min(Math.max(dashboard.status.progress_pct, 0), 100);
   return (
     <section className="temple-panel mt-4">
       <div className="section-heading">
         <h2 className="text-lg font-black">Quota Progress</h2>
         <Badge>{titleCase(dashboard.status.judgement)}</Badge>
       </div>
-      <div className="h-6 overflow-hidden rounded-lg border border-[#141f33] bg-[#0b1120]" aria-label="Quota progress">
+      <div
+        className="h-6 overflow-hidden rounded-lg border border-[#141f33] bg-[#0b1120]"
+        role="progressbar"
+        aria-label="Quota progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress}
+        aria-valuetext={`${dashboard.status.progress_pct}% of ${dashboard.status.quota}`}
+      >
         <div
           className="h-full rounded-lg bg-gradient-to-r from-temple-gold via-temple-green to-temple-blue transition-[width] duration-300"
-          style={{ width: `${Math.min(dashboard.status.progress_pct, 100)}%` }}
+          style={{ width: `${progress}%` }}
+          aria-hidden="true"
         />
       </div>
       <p className="mt-2 text-temple-muted">
@@ -76,7 +86,7 @@ export function TopOffering({ item }: { item: Opportunity | null }) {
         <h2 className="text-lg font-black">Top Offering</h2>
         <Badge>{item ? `${item.score}/100 - ${titleCase(item.score_label)}` : "score --"}</Badge>
       </div>
-      <strong className="mb-2 block text-[clamp(1.35rem,3vw,2rem)] text-temple-gold">
+      <strong className="mb-2 block break-words text-2xl text-temple-gold sm:text-3xl">
         {item ? `#${item.rank} ${item.name}` : "No recommendation available"}
       </strong>
       <p className="text-temple-muted">
@@ -346,16 +356,16 @@ export function UrgentApprovalsPanel({
         <div className="grid gap-2.5">
           {pending.map((item) => (
             <div key={item.id} className={cx("temple-row grid gap-3 border-l-4", approvalBorder(item.status))}>
-              <div className="flex items-start justify-between gap-3">
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                 <div className="grid min-w-0 gap-1">
-                  <strong>
+                  <strong className="break-words">
                     #{item.id} {item.title}
                   </strong>
                   <span className="text-sm text-temple-muted">
                     {item.kind_label} - {item.strategy || "unassigned"}
                   </span>
                 </div>
-                <b className="text-xs font-black uppercase text-temple-gold">{item.status}</b>
+                <b className="text-xs font-black uppercase text-temple-gold sm:text-right">{item.status}</b>
               </div>
               <p className="line-clamp-3 text-sm leading-6 text-temple-muted">{item.body}</p>
               <ApprovalActions item={item} busy={busy} onReview={onReview} />
@@ -608,7 +618,7 @@ export function ReportForgePanel({
       <div className="mb-3">
         <FormNotice feedback={feedback} />
       </div>
-      <pre className="max-h-[520px] min-h-[320px] overflow-auto rounded-lg border border-temple-line bg-[#091020] p-4 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap">
+      <pre className="max-h-[520px] min-h-[320px] overflow-auto rounded-lg border border-temple-line bg-[#091020] p-4 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap break-words">
         {report.markdown}
       </pre>
     </Panel>
@@ -624,19 +634,19 @@ function TempleSummaryList({ summary }: { summary: DashboardPayload["temples"] }
       {summary.rows.map((item) => (
         <div
           key={item.id}
-          className={cx("temple-row flex items-center justify-between gap-3", item.active && "border-l-4 border-l-temple-gold")}
+          className={cx("temple-row grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center", item.active && "border-l-4 border-l-temple-gold")}
         >
           <div className="grid min-w-0 gap-1">
-            <strong>{item.active ? `Active: ${item.name}` : item.name}</strong>
+            <strong className="break-words">{item.active ? `Active: ${item.name}` : item.name}</strong>
             <span className="text-sm text-temple-muted">
               {titleCase(item.judgement)} - top: {item.top_strategy}
             </span>
           </div>
-          <div className="grid shrink-0 justify-items-end gap-1">
-            <b className="text-temple-green">
+          <div className="grid min-w-0 gap-1 sm:justify-items-end">
+            <b className="break-words text-temple-green sm:text-right">
               {item.earned} / {item.quota}
             </b>
-            <small className="text-temple-muted">
+            <small className="text-temple-muted sm:text-right">
               {item.progress_pct}% - {item.mood}
             </small>
           </div>
@@ -653,19 +663,19 @@ function StrategyList({ items }: { items: Opportunity[] }) {
   return (
     <div className="grid gap-2.5">
       {items.slice(0, 5).map((item) => (
-        <div key={item.id} className="temple-row grid grid-cols-[1fr_auto] items-start gap-3" title={item.next_action}>
+        <div key={item.id} className="temple-row grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start" title={item.next_action}>
           <div className="grid min-w-0 gap-1.5">
-            <strong>{item.name}</strong>
+            <strong className="break-words">{item.name}</strong>
             <span className="text-sm text-temple-muted">
               {item.expected} expected - {item.period_income} recorded this period
             </span>
             <small className="text-temple-muted">{item.rationale}</small>
           </div>
-          <div className="grid min-w-24 justify-items-end gap-2">
+          <div className="grid min-w-0 gap-2 sm:min-w-24 sm:justify-items-end">
             <b className={cx("text-xs font-black uppercase", item.fit === "deadline" || item.risk !== "low" ? "text-temple-gold" : "text-temple-green")}>
               {item.score}/100
             </b>
-            <div className="h-2 w-24 overflow-hidden rounded-full bg-[#172238]">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-[#172238] sm:w-24" aria-hidden="true">
               <span
                 className="block h-full rounded-full bg-gradient-to-r from-temple-gold to-temple-green"
                 style={{ width: `${Math.min(item.score, 100)}%` }}
@@ -686,16 +696,16 @@ function StrategyRoiList({ roi }: { roi: StrategyRoi }) {
     <div className="grid gap-2.5">
       {roi.rows.map((row) => (
         <div key={row.id} className={cx("temple-row grid gap-3 border-l-4", recommendationBorder(row.recommendation))}>
-          <div className="flex items-start justify-between gap-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
             <div className="grid min-w-0 gap-1">
-              <strong>
+              <strong className="break-words">
                 #{row.roi_rank} {row.name}
               </strong>
               <span className="text-sm text-temple-muted">
                 {titleCase(row.trend)} - {row.target_capture_pct}% of expected value
               </span>
             </div>
-            <b className="shrink-0 text-xs font-black uppercase text-temple-green">{row.recommendation}</b>
+            <b className="text-xs font-black uppercase text-temple-green sm:text-right">{row.recommendation}</b>
           </div>
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <MiniMetric label="Current" value={row.current_period} />
@@ -755,9 +765,9 @@ function ConfigList({ dashboard }: { dashboard: DashboardPayload }) {
   return (
     <div className="grid gap-2.5">
       {rows.map(([label, value]) => (
-        <div key={label} className="temple-row flex items-center justify-between gap-3">
-          <strong>{label}</strong>
-          <span className="text-sm font-bold uppercase text-temple-muted">{value}</span>
+        <div key={label} className="temple-row grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <strong className="break-words">{label}</strong>
+          <span className="break-words text-sm font-bold uppercase text-temple-muted sm:text-right">{value}</span>
         </div>
       ))}
     </div>
@@ -771,12 +781,12 @@ function ExternalList({ snapshot }: { snapshot: ExternalSnapshot | null }) {
   return (
     <div className="grid gap-2.5">
       {snapshot.connections.map((connection) => (
-        <div key={connection.id} className={cx("temple-row grid grid-cols-[1fr_auto] gap-x-3 gap-y-2 border-l-4", externalBorder(connection.state))}>
+        <div key={connection.id} className={cx("temple-row grid gap-x-3 gap-y-2 border-l-4 sm:grid-cols-[minmax(0,1fr)_auto]", externalBorder(connection.state))}>
           <div className="grid min-w-0 gap-1">
-            <strong>{connection.name}</strong>
+            <strong className="break-words">{connection.name}</strong>
             <span className="text-sm text-temple-muted">{connection.summary}</span>
           </div>
-          <b className="text-xs font-black uppercase text-temple-green">{connection.state}</b>
+          <b className="text-xs font-black uppercase text-temple-green sm:text-right">{connection.state}</b>
           <small className="col-span-full text-temple-muted">
             {connection.items && connection.items.length
               ? connection.items.slice(0, 4).map(externalItemText).join(" - ")
@@ -849,18 +859,18 @@ function ApprovalList({
     <div className="mt-4 grid gap-2.5">
       {rows.slice(0, 8).map((item) => (
         <div key={item.id} className={cx("temple-row grid gap-3 border-l-4", approvalBorder(item.status))}>
-          <div className="flex items-start justify-between gap-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
             <div className="grid min-w-0 gap-1">
-              <strong>
+              <strong className="break-words">
                 #{item.id} {item.title}
               </strong>
               <span className="text-sm text-temple-muted">
                 {item.kind_label} - {item.strategy || "unassigned"}
               </span>
             </div>
-            <b className="text-xs font-black uppercase text-temple-green">{item.status}</b>
+            <b className="text-xs font-black uppercase text-temple-green sm:text-right">{item.status}</b>
           </div>
-          <pre className="max-h-[190px] overflow-auto rounded-lg bg-[#091020] p-3 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap">
+          <pre className="max-h-[190px] overflow-auto rounded-lg bg-[#091020] p-3 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap break-words">
             {item.body}
           </pre>
           <ApprovalActions item={item} busy={busy} onReview={onReview} />
@@ -946,7 +956,7 @@ function LogLine({ time, category, message }: { time: string; category: string; 
     <div className="grid gap-0 border-b border-white/5 pb-2 leading-6 md:grid-cols-[92px_90px_1fr] md:gap-3 md:border-b-0 md:pb-0">
       <time className="text-temple-green">{time}</time>
       <span className="text-temple-green">{category}</span>
-      <strong>{message}</strong>
+      <strong className="break-words">{message}</strong>
     </div>
   );
 }
@@ -991,9 +1001,9 @@ function RecentIncome({ items }: { items: DashboardPayload["income"] }) {
         const strategy = item.strategy ? ` [${item.strategy}]` : "";
         const note = item.note ? ` - ${item.note}` : "";
         return (
-          <div key={item.id} className="temple-row flex items-center justify-between gap-3">
-            <strong>{item.counted}</strong>
-            <span className="text-right text-sm text-temple-muted">
+          <div key={item.id} className="temple-row grid gap-2 sm:grid-cols-[minmax(0,0.55fr)_minmax(0,1fr)] sm:items-center">
+            <strong className="break-words">{item.counted}</strong>
+            <span className="break-words text-sm text-temple-muted sm:text-right">
               {item.source}
               {strategy} - {item.occurred_at}
               {note}

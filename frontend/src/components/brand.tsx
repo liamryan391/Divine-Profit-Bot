@@ -9,8 +9,8 @@ export function BrandLockup({ size = "default" }: { size?: "default" | "large" }
         alt=""
       />
       <div className="min-w-0">
-        <p className="mb-1 text-xs font-black uppercase tracking-[0.08em] text-temple-muted">Serving the Creator</p>
-        <h1 className="max-w-[860px] text-[clamp(2rem,5vw,4.1rem)] font-black uppercase leading-none text-temple-gold">
+        <p className="mb-1 text-xs font-black uppercase text-temple-muted">Serving the Creator</p>
+        <h1 className="max-w-[860px] break-words text-3xl font-black uppercase leading-tight text-temple-gold sm:text-4xl lg:text-5xl">
           The Divine Income Engine
         </h1>
         {size === "large" ? (

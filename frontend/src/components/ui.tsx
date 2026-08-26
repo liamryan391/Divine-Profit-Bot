@@ -72,15 +72,15 @@ export function Badge({ children }: { children: ReactNode }) {
 }
 
 export function StatusPill({ text }: { text: string }) {
-  return <div className="temple-badge">{text}</div>;
+  return <div className="temple-badge break-words">{text}</div>;
 }
 
 export function WorkerPill({ worker }: { worker: WorkerStatus }) {
   const color = worker.state === "running" ? "bg-temple-green" : worker.state === "stale" ? "bg-temple-gold" : "bg-temple-red";
   const age = worker.age_seconds === null ? "no heartbeat" : `${worker.age_seconds}s ago`;
   return (
-    <div className="temple-badge">
-      <span className={cx("h-2.5 w-2.5 rounded-full shadow-[0_0_16px_currentColor]", color)} />
+    <div className="temple-badge break-words" role="status" aria-live="polite" aria-label={`Worker ${worker.state}, last heartbeat ${age}`}>
+      <span className={cx("h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_16px_currentColor]", color)} aria-hidden="true" />
       <span>
         Worker: {worker.state} ({age})
       </span>
@@ -102,12 +102,12 @@ export function MetricCard({
   detail: string;
 }) {
   return (
-    <article className={cx("temple-card min-h-[158px] border-l-4", accentBorder[accent])}>
-      <div className={cx("mb-4 flex items-center gap-2 font-black", accentText[accent])}>
+    <article className={cx("temple-card min-h-[158px] min-w-0 border-l-4", accentBorder[accent])}>
+      <div className={cx("mb-4 flex min-w-0 items-center gap-2 font-black", accentText[accent])}>
         <Icon aria-hidden="true" size={20} />
-        <p className="m-0">{label}</p>
+        <p className="m-0 min-w-0 break-words">{label}</p>
       </div>
-      <strong className={cx("mb-2 block text-[clamp(1.65rem,4vw,2.35rem)] leading-none", accentText[accent])}>
+      <strong className={cx("mb-2 block break-words text-3xl leading-none sm:text-4xl", accentText[accent])}>
         {value}
       </strong>
       <span className="text-temple-muted">{detail}</span>
@@ -131,9 +131,9 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <article className={cx("temple-panel", wide && "lg:col-span-2")}>
+    <article className={cx("temple-panel min-w-0", wide && "xl:col-span-2")}>
       <div className="section-heading flex-col items-start sm:flex-row">
-        <h2 className="flex items-center gap-2 text-lg font-black">
+        <h2 className="flex min-w-0 items-center gap-2 break-words text-lg font-black">
           <Icon aria-hidden="true" className="text-temple-gold" size={20} />
           {title}
         </h2>
@@ -145,7 +145,7 @@ export function Panel({
 }
 
 export function Toolbar({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={cx("flex w-full flex-wrap items-center gap-2 sm:w-auto", className)}>{children}</div>;
+  return <div className={cx("flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto", className)}>{children}</div>;
 }
 
 export function MiniMetric({ label, value }: { label: string; value: string }) {
