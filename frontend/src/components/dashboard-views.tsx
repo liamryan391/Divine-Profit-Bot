@@ -11,6 +11,7 @@ import {
   ConfigPanel,
   ExternalSignalsPanel,
   ImportAltarPanel,
+  LeadPipelineReadinessPanel,
   MercyExceptionPanel,
   PriorityCallsPanel,
   QuotaControlPanel,
@@ -54,6 +55,7 @@ export function DashboardViewContent(props: DashboardViewContentProps) {
       {props.view === "overview" ? <OverviewView {...props} /> : null}
       {props.view === "temples" ? <TemplesView {...props} /> : null}
       {props.view === "strategies" ? <StrategiesView {...props} /> : null}
+      {props.view === "leads" ? <LeadsView {...props} /> : null}
       {props.view === "imports" ? <ImportsView {...props} /> : null}
       {props.view === "approvals" ? <ApprovalsView {...props} /> : null}
       {props.view === "reports" ? <ReportsView {...props} /> : null}
@@ -129,6 +131,16 @@ function StrategiesView({ dashboard }: DashboardViewContentProps) {
         <RecentIncomePanel dashboard={dashboard} />
       </DashboardGrid>
     </>
+  );
+}
+
+function LeadsView({ dashboard }: DashboardViewContentProps) {
+  return (
+    <DashboardGrid>
+      <LeadPipelineReadinessPanel dashboard={dashboard} />
+      <StrategiesPanel dashboard={dashboard} />
+      <RecentIncomePanel dashboard={dashboard} />
+    </DashboardGrid>
   );
 }
 

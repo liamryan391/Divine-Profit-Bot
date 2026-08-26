@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.3.6`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.3.7`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -126,6 +126,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hash-based navigation for overview, temples, strategies, imports, approvals, reports, and settings views.
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
+- Roadmap 2.0 visual QA readiness with a static bundle check and a reserved Lead Pipeline route for Phase 5.
 
 Run it with:
 
@@ -147,6 +148,36 @@ Compile the production dashboard into `divine_tool/static/` with:
 ```powershell
 npm run build
 ```
+
+Run the static frontend QA check after a build:
+
+```powershell
+npm run qa:static
+```
+
+The QA check verifies the generated HTML, CSS, and JS asset references, the responsive/accessibility hooks, and the reserved `#/leads` Phase 5 route.
+
+## Lead Pipeline Readiness
+
+Roadmap 2.0 reserves `#/leads` for Phase 5, Stage 5.1. The route currently documents the intended UI slots and API contract before the backend is added.
+
+Planned Phase 5 UI slots:
+
+- Pipeline board.
+- Lead intake form.
+- Follow-up queue.
+- Lead detail workspace.
+- Temple filters.
+- Conversion handoff into income tracking.
+
+Planned Phase 5 API shape:
+
+- `GET /api/leads?temple_id=&stage=&limit=`
+- `POST /api/leads`
+- `PATCH /api/leads/{id}`
+- `POST /api/leads/{id}/note`
+- `POST /api/leads/{id}/advance`
+- `GET /api/leads/summary`
 
 ## Accounts And Authentication
 

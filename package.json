@@ -1,11 +1,12 @@
 {
   "name": "divine-profit-bot",
   "private": true,
-  "version": "2.3.6",
+  "version": "2.3.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "qa:static": "node scripts/frontend_qa.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

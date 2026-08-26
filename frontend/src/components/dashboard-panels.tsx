@@ -191,6 +191,60 @@ export function PriorityCallsPanel({ dashboard }: { dashboard: DashboardPayload 
   );
 }
 
+const leadPipelineSlots = [
+  ["Pipeline Board", "Columns for new, contacted, qualified, proposal, won, and lost leads."],
+  ["Lead Intake", "Creator-approved form for source, offer, estimated value, strategy, and next step."],
+  ["Follow-up Queue", "Due-date view for callbacks, invoice nudges, and human-approved outreach drafts."],
+  ["Lead Detail", "Single lead workspace with notes, stage history, linked approvals, and linked income."],
+  ["Temple Filters", "Per-temple filters that keep lead work scoped to the active income temple."],
+  ["Conversion Handoff", "Bridge from a won lead into ledger income and later conversion tracking."],
+];
+
+const leadApiContracts = [
+  "GET /api/leads?temple_id=&stage=&limit=",
+  "POST /api/leads",
+  "PATCH /api/leads/{id}",
+  "POST /api/leads/{id}/note",
+  "POST /api/leads/{id}/advance",
+  "GET /api/leads/summary",
+];
+
+export function LeadPipelineReadinessPanel({ dashboard }: { dashboard: DashboardPayload }) {
+  const activeTemple = dashboard.status.temple || dashboard.config.active_temple;
+  return (
+    <Panel title="Lead Pipeline Readiness" icon={Target} wide meta="Phase 5 prepared">
+      <div className="grid gap-2.5 md:grid-cols-3">
+        <MiniMetric label="Route Slot" value="#/leads" />
+        <MiniMetric label="Temple Scope" value={activeTemple?.name || activeTemple?.id || "main"} />
+        <MiniMetric label="Strategy Inputs" value={`${dashboard.config.channels.length} available`} />
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        <div className="grid gap-2.5">
+          <h3 className="text-sm font-black uppercase text-temple-muted">UI Slots</h3>
+          {leadPipelineSlots.map(([label, detail]) => (
+            <div key={label} className="temple-row grid gap-1 border-l-4 border-l-temple-blue">
+              <strong className="break-words">{label}</strong>
+              <span className="text-sm leading-6 text-temple-muted">{detail}</span>
+            </div>
+          ))}
+        </div>
+        <div className="grid content-start gap-2.5">
+          <h3 className="text-sm font-black uppercase text-temple-muted">API Contract Notes</h3>
+          {leadApiContracts.map((contract) => (
+            <code key={contract} className="temple-row block break-words font-mono text-xs leading-5 text-[#d9e5ff]">
+              {contract}
+            </code>
+          ))}
+          <p className="text-sm leading-6 text-temple-muted">
+            Lead records should include temple_id, stage, source, offer, estimated GBP value, probability, follow-up date, next action,
+            strategy id, notes, and conversion link fields.
+          </p>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
 export function ConfigPanel({ dashboard }: { dashboard: DashboardPayload }) {
   return (
     <Panel title="Divine Configuration" icon={Settings}>

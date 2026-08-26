@@ -1,4 +1,4 @@
-export type DashboardView = "overview" | "temples" | "strategies" | "imports" | "approvals" | "reports" | "settings";
+export type DashboardView = "overview" | "temples" | "strategies" | "leads" | "imports" | "approvals" | "reports" | "settings";
 
 export interface DashboardViewMeta {
   id: DashboardView;
@@ -27,6 +27,12 @@ export const dashboardViews: DashboardViewMeta[] = [
     label: "Strategies",
     kicker: "Revenue Signals",
     summary: "Ranked opportunities, ROI, priority calls, and recent income.",
+  },
+  {
+    id: "leads",
+    label: "Leads",
+    kicker: "Phase 5 Slot",
+    summary: "Lead Pipeline shell, UI slots, and API contract notes before backend work begins.",
   },
   {
     id: "imports",
@@ -58,10 +64,11 @@ export const dashboardViewMeta: Record<DashboardView, DashboardViewMeta> = {
   overview: dashboardViews[0],
   temples: dashboardViews[1],
   strategies: dashboardViews[2],
-  imports: dashboardViews[3],
-  approvals: dashboardViews[4],
-  reports: dashboardViews[5],
-  settings: dashboardViews[6],
+  leads: dashboardViews[3],
+  imports: dashboardViews[4],
+  approvals: dashboardViews[5],
+  reports: dashboardViews[6],
+  settings: dashboardViews[7],
 };
 
 export function viewHref(view: DashboardView) {

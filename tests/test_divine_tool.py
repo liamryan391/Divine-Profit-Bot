@@ -132,7 +132,10 @@ class DivineToolTests(unittest.TestCase):
 
                 with urlopen(f"{base_url}{js_match.group(1)}") as response:
                     self.assertEqual(response.status, 200)
-                    self.assertIn(b"Opening the temple", response.read())
+                    js_body = response.read()
+                    self.assertIn(b"Opening the temple", js_body)
+                    self.assertIn(b"Lead Pipeline Readiness", js_body)
+                    self.assertIn(b"GET /api/leads?temple_id=&stage=&limit=", js_body)
 
                 try:
                     urlopen(f"{base_url}/api/status")

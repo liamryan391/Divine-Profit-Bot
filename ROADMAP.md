@@ -18,11 +18,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.3.4`: auth UX and account recovery readiness.
 - `v2.3.5`: workflow form validation, inline feedback, and safer actions.
 - `v2.3.6`: responsive design, accessibility, keyboard focus, and overflow hardening.
+- `v2.3.7`: visual QA readiness, static frontend checks, and Lead Pipeline route/API planning.
 - `v2.4.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
 
 ## Current Status
 
-Current version: `v2.3.6`.
+Current version: `v2.3.7`.
 
 Completed:
 
@@ -68,6 +69,7 @@ Completed:
 - Roadmap 2.0 Stage 2.0.4: added recovery-aware auth screens, recovery email metadata, and Settings recovery commands.
 - Roadmap 2.0 Stage 2.0.5: added workflow validation, inline notices, progress states, import confirmation, and approval safeguards.
 - Roadmap 2.0 Stage 2.0.6: added responsive layout hardening, skip navigation, visible focus states, live status semantics, reduced-motion support, and overflow-safe dense content.
+- Roadmap 2.0 Stage 2.0.7: added a repeatable static frontend QA routine, reserved the `#/leads` Lead Pipeline route, and documented the Phase 5 UI slots and API contract.
 
 ## Phase 0: Foundation
 
@@ -523,7 +525,7 @@ Release status: shipped.
 
 ### Stage 2.0.7: Visual QA And Phase 5 Readiness
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -535,9 +537,13 @@ Deliverables:
 
 Release target:
 
-- `v2.3.7` or later.
+- `v2.3.7`.
+
+Release status: shipped.
 
 ### Roadmap 2.0 Completion Gate
+
+Status: complete.
 
 Roadmap 2.0 is complete when:
 
@@ -553,7 +559,7 @@ Roadmap 2.0 is complete when:
 
 Goal: help each temple convert legitimate opportunities into tracked revenue.
 
-Status: paused until Roadmap 2.0 is complete.
+Status: ready to resume after Roadmap 2.0 completion.
 
 ### Stage 5.1: Lead Pipeline
 
@@ -627,11 +633,11 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Roadmap 2.0, Stage 2.0.7 next:
+Build Phase 5, Stage 5.1: Lead Pipeline next:
 
-- Run browser smoke checks for auth, dashboard loading, report generation, imports, approvals, and core controls.
-- Capture screenshot checks for desktop and mobile widths.
-- Document the Lead Pipeline UI slots and API contract notes before Phase 5 resumes.
-- Finish Roadmap 2.0 before starting Phase 5, Stage 5.1.
+- Add the lead persistence model scoped by temple.
+- Add API endpoints for lead list, create, update, notes, stage advance, and summary.
+- Replace the `#/leads` readiness panel with the real pipeline board, intake form, follow-up queue, and lead detail workspace.
+- Tie lead priority scoring to quota gap, expected value, probability, follow-up date, and strategy evidence.
 
 Backend Roadmap 3.0 should wait until after Phase 5, Stage 5.1 unless the lead pipeline exposes a real backend blocker. The next best revenue move after Roadmap 2.0 is still the lead pipeline.
