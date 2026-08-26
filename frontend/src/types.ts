@@ -183,6 +183,53 @@ export interface ApprovalSummary {
   recent: ApprovalAction[];
 }
 
+export interface LeadStageSummary {
+  id: string;
+  label: string;
+  count: number;
+  value: string;
+}
+
+export interface LeadEntry {
+  id: number;
+  title: string;
+  contact?: string;
+  source?: string;
+  offer: string;
+  estimated_value: string;
+  estimated_value_minor: number;
+  weighted_value: string;
+  weighted_value_minor: number;
+  probability: number;
+  probability_pct: number;
+  stage: string;
+  stage_label: string;
+  strategy?: string;
+  next_action?: string;
+  follow_up_on?: string;
+  follow_up_state: string;
+  days_until_follow_up: number | null;
+  notes?: string;
+  priority_score: number;
+  priority_label: string;
+  priority_components: Record<string, number>;
+}
+
+export interface LeadPipelineSummary {
+  stages: LeadStageSummary[];
+  counts: Record<string, number>;
+  open_count: number;
+  total_count: number;
+  due_count: number;
+  total_estimated_value: string;
+  total_estimated_value_minor: number;
+  weighted_value: string;
+  weighted_value_minor: number;
+  rows: LeadEntry[];
+  top: LeadEntry[];
+  due: LeadEntry[];
+}
+
 export interface ExternalConnection {
   id: string;
   name: string;
@@ -228,6 +275,7 @@ export interface DashboardPayload {
   report: ReportPayload;
   upgrades: string[];
   approvals: ApprovalSummary;
+  leads: LeadPipelineSummary;
   temples: TempleSummary;
   auth: AuthStatus;
   worker: WorkerStatus;

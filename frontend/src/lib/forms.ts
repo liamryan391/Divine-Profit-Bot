@@ -19,6 +19,7 @@ type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 const MONEY_RE = /^\d+(?:[.,]\d+)?$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TEMPLE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
+const PERCENT_RE = /^\d+(?:[.,]\d+)?$/;
 
 export function clearWorkflowFormValidity(form: HTMLFormElement) {
   for (const element of Array.from(form.elements)) {
@@ -127,6 +128,10 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateApprovalDraft(form, issues);
   }
 
+  if (workflowKey === "/api/leads") {
+    validateLead(form, issues);
+  }
+
   if (workflowKey === "import") {
     const file = fileOf(form, "file");
     if (!file) {
@@ -137,6 +142,19 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
   }
 
   return dedupeIssues(issues);
+}
+
+function validateLead(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "title", "Lead");
+  requireText(form, issues, "source", "Source");
+  requireText(form, issues, "offer", "Offer");
+  requirePositiveMoney(form, issues, "estimated_value", "Estimated Value");
+  requireProbability(form, issues, "probability", "Probability");
+  requireText(form, issues, "next_action", "Next Action");
+  const followUp = valueOf(form, "follow_up_on");
+  if (followUp && Number.isNaN(new Date(`${followUp}T00:00:00`).getTime())) {
+    issues.push({ field: "follow_up_on", label: "Follow Up", message: "Use a valid date." });
+  }
 }
 
 function validateApprovalDraft(form: HTMLFormElement, issues: WorkflowIssue[]) {
@@ -201,6 +219,17 @@ function requirePositiveMoney(form: HTMLFormElement, issues: WorkflowIssue[], fi
   }
   if (!MONEY_RE.test(value) || Number(value.replace(",", ".")) <= 0) {
     issues.push({ field, label, message: "Enter a positive amount." });
+  }
+}
+
+function requireProbability(form: HTMLFormElement, issues: WorkflowIssue[], field: string, label: string) {
+  const value = valueOf(form, field);
+  if (!value) {
+    issues.push({ field, label, message: "Required." });
+    return;
+  }
+  if (!PERCENT_RE.test(value) || Number(value.replace(",", ".")) < 0 || Number(value.replace(",", ".")) > 100) {
+    issues.push({ field, label, message: "Enter a percent from 0 to 100." });
   }
 }
 

@@ -31,8 +31,8 @@ export const dashboardViews: DashboardViewMeta[] = [
   {
     id: "leads",
     label: "Leads",
-    kicker: "Phase 5 Slot",
-    summary: "Lead Pipeline shell, UI slots, and API contract notes before backend work begins.",
+    kicker: "Pipeline",
+    summary: "Lead intake, stage movement, weighted value, due follow-ups, and priority scoring.",
   },
   {
     id: "imports",

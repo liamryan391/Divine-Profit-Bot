@@ -231,6 +231,8 @@ APPROVAL_KINDS = {
 }
 
 APPROVAL_STATUSES = {"pending", "approved", "rejected", "completed"}
+LEAD_STAGES = ("new", "contacted", "qualified", "proposal", "won", "lost")
+OPEN_LEAD_STAGES = {"new", "contacted", "qualified", "proposal"}
 DEFAULT_TEMPLE_ID = "main"
 
 
@@ -325,6 +327,50 @@ def ensure_state(data_dir: Path) -> None:
         ensure_column(conn, "approval_actions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_status ON approval_actions(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_temple_status ON approval_actions(temple_id, status)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
+                title TEXT NOT NULL,
+                contact TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                offer TEXT NOT NULL DEFAULT '',
+                estimated_value_minor INTEGER NOT NULL DEFAULT 0,
+                probability REAL NOT NULL DEFAULT 0.5,
+                stage TEXT NOT NULL DEFAULT 'new',
+                strategy TEXT NOT NULL DEFAULT '',
+                next_action TEXT NOT NULL DEFAULT '',
+                follow_up_on TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                converted_income_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                closed_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        ensure_column(conn, "leads", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+        ensure_column(conn, "leads", "stage", "TEXT NOT NULL DEFAULT 'new'")
+        ensure_column(conn, "leads", "strategy", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "leads", "next_action", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "leads", "follow_up_on", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "leads", "closed_at", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_temple_stage ON leads(temple_id, stage)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_temple_follow_up ON leads(temple_id, follow_up_on)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                temple_id TEXT NOT NULL DEFAULT 'main',
+                note TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(lead_id) REFERENCES leads(id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_lead_notes_lead ON lead_notes(lead_id, created_at)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS accounts (
@@ -2102,6 +2148,399 @@ def approval_action_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         item["metadata"] = {}
     item["kind_label"] = APPROVAL_KINDS.get(str(item["kind"]), title_case_from_key(str(item["kind"])))
     return item
+
+
+def create_lead(
+    data_dir: Path,
+    title: str,
+    contact: str = "",
+    source: str = "",
+    offer: str = "",
+    estimated_value_minor: int = 0,
+    probability: float = 0.5,
+    stage: str = "new",
+    strategy: str = "",
+    next_action: str = "",
+    follow_up_on: date | None = None,
+    notes: str = "",
+    temple_id: str | None = None,
+) -> int:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_title = title.strip()
+    if len(cleaned_title) < 2:
+        raise DivineToolError("Lead title must be at least 2 characters.")
+    cleaned_source = source.strip()
+    if not cleaned_source:
+        raise DivineToolError("Lead needs a source.")
+    cleaned_offer = offer.strip()
+    if not cleaned_offer:
+        raise DivineToolError("Lead needs an offer or revenue angle.")
+    cleaned_next_action = next_action.strip()
+    if not cleaned_next_action:
+        raise DivineToolError("Lead needs a next action.")
+    if estimated_value_minor <= 0:
+        raise DivineToolError("Estimated lead value must be positive.")
+    cleaned_stage = normalize_lead_stage(stage)
+    normalized_probability = normalize_probability(probability)
+    created = now_iso()
+    follow_up = follow_up_on.isoformat() if follow_up_on else ""
+    closed = created if cleaned_stage in {"won", "lost"} else ""
+    with db(data_dir) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO leads
+                (temple_id, title, contact, source, offer, estimated_value_minor, probability, stage, strategy,
+                 next_action, follow_up_on, notes, created_at, updated_at, closed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                cleaned_title,
+                contact.strip(),
+                cleaned_source,
+                cleaned_offer,
+                estimated_value_minor,
+                normalized_probability,
+                cleaned_stage,
+                strategy.strip(),
+                cleaned_next_action,
+                follow_up,
+                notes.strip(),
+                created,
+                created,
+                closed,
+            ),
+        )
+        conn.commit()
+        lead_id = int(cur.lastrowid)
+    log_event(data_dir, f"Lead created: {cleaned_title}", "lead", temple_id=scoped_temple_id)
+    return lead_id
+
+
+def update_lead(
+    data_dir: Path,
+    lead_id: int,
+    updates: dict[str, Any],
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    allowed = {
+        "title",
+        "contact",
+        "source",
+        "offer",
+        "estimated_value_minor",
+        "probability",
+        "stage",
+        "strategy",
+        "next_action",
+        "follow_up_on",
+        "notes",
+        "converted_income_id",
+    }
+    cleaned: dict[str, Any] = {}
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        if key == "title":
+            title = str(value).strip()
+            if len(title) < 2:
+                raise DivineToolError("Lead title must be at least 2 characters.")
+            cleaned[key] = title
+        elif key == "estimated_value_minor":
+            amount = int(value)
+            if amount <= 0:
+                raise DivineToolError("Estimated lead value must be positive.")
+            cleaned[key] = amount
+        elif key in {"source", "offer", "next_action"}:
+            text = str(value).strip()
+            if not text:
+                label = title_case_from_key(key)
+                raise DivineToolError(f"Lead {label.lower()} cannot be empty.")
+            cleaned[key] = text
+        elif key == "probability":
+            cleaned[key] = normalize_probability(float(value))
+        elif key == "stage":
+            cleaned[key] = normalize_lead_stage(str(value))
+        elif key == "follow_up_on":
+            cleaned[key] = value.isoformat() if isinstance(value, date) else str(value).strip()
+        elif key == "converted_income_id":
+            cleaned[key] = int(value) if value is not None and str(value).strip() else None
+        else:
+            cleaned[key] = str(value).strip()
+
+    if not cleaned:
+        return get_lead(data_dir, lead_id, temple_id=scoped_temple_id)
+
+    cleaned["updated_at"] = now_iso()
+    if cleaned.get("stage") in {"won", "lost"}:
+        cleaned["closed_at"] = cleaned["updated_at"]
+    elif cleaned.get("stage") in OPEN_LEAD_STAGES:
+        cleaned["closed_at"] = ""
+    assignments = ", ".join(f"{key} = ?" for key in cleaned)
+    values = list(cleaned.values()) + [lead_id, scoped_temple_id]
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT id FROM leads WHERE id = ? AND temple_id = ?", (lead_id, scoped_temple_id)).fetchone()
+        if row is None:
+            raise DivineToolError(f"Lead #{lead_id} was not found.")
+        conn.execute(f"UPDATE leads SET {assignments} WHERE id = ? AND temple_id = ?", values)
+        conn.commit()
+    log_event(data_dir, f"Lead updated: #{lead_id}", "lead", temple_id=scoped_temple_id)
+    return get_lead(data_dir, lead_id, temple_id=scoped_temple_id)
+
+
+def advance_lead(
+    data_dir: Path,
+    lead_id: int,
+    stage: str,
+    note: str = "",
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    updated = update_lead(data_dir, lead_id, {"stage": stage}, temple_id=temple_id)
+    if note.strip():
+        add_lead_note(data_dir, lead_id, note, temple_id=temple_id)
+    return updated
+
+
+def add_lead_note(data_dir: Path, lead_id: int, note: str, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_note = note.strip()
+    if not cleaned_note:
+        raise DivineToolError("Lead note cannot be empty.")
+    created = now_iso()
+    with db(data_dir) as conn:
+        lead = conn.execute("SELECT id FROM leads WHERE id = ? AND temple_id = ?", (lead_id, scoped_temple_id)).fetchone()
+        if lead is None:
+            raise DivineToolError(f"Lead #{lead_id} was not found.")
+        cur = conn.execute(
+            """
+            INSERT INTO lead_notes (lead_id, temple_id, note, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (lead_id, scoped_temple_id, cleaned_note, created),
+        )
+        conn.execute("UPDATE leads SET updated_at = ? WHERE id = ? AND temple_id = ?", (created, lead_id, scoped_temple_id))
+        conn.commit()
+        note_id = int(cur.lastrowid)
+    log_event(data_dir, f"Lead note added: #{lead_id}", "lead", temple_id=scoped_temple_id)
+    return {"id": note_id, "lead_id": lead_id, "temple_id": scoped_temple_id, "note": cleaned_note, "created_at": created}
+
+
+def get_lead(data_dir: Path, lead_id: int, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT * FROM leads WHERE id = ? AND temple_id = ?", (lead_id, scoped_temple_id)).fetchone()
+    if row is None:
+        raise DivineToolError(f"Lead #{lead_id} was not found.")
+    context = lead_scoring_context(data_dir, scoped_temple_id)
+    return lead_to_dict(row, context)
+
+
+def list_leads(
+    data_dir: Path,
+    stage: str = "all",
+    limit: int = 50,
+    temple_id: str | None = None,
+) -> list[dict[str, Any]]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    stage = stage.strip().lower()
+    limit = max(min(limit, 200), 1)
+    with db(data_dir) as conn:
+        if stage == "all":
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM leads
+                    WHERE temple_id = ?
+                    ORDER BY
+                        CASE stage
+                            WHEN 'new' THEN 1
+                            WHEN 'contacted' THEN 2
+                            WHEN 'qualified' THEN 3
+                            WHEN 'proposal' THEN 4
+                            WHEN 'won' THEN 5
+                            WHEN 'lost' THEN 6
+                            ELSE 7
+                        END,
+                        follow_up_on = '',
+                        follow_up_on ASC,
+                        id DESC
+                    LIMIT ?
+                    """,
+                    (scoped_temple_id, limit),
+                )
+            )
+        else:
+            normalized_stage = normalize_lead_stage(stage)
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM leads
+                    WHERE temple_id = ? AND stage = ?
+                    ORDER BY follow_up_on = '', follow_up_on ASC, id DESC
+                    LIMIT ?
+                    """,
+                    (scoped_temple_id, normalized_stage, limit),
+                )
+            )
+    context = lead_scoring_context(data_dir, scoped_temple_id)
+    leads = [lead_to_dict(row, context) for row in rows]
+    leads.sort(key=lambda item: (item["stage_order"], -item["priority_score"], item["follow_up_sort"], -item["id"]))
+    return leads
+
+
+def lead_pipeline_summary(data_dir: Path, limit: int = 60, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    leads = list_leads(data_dir, "all", limit=limit, temple_id=scoped_temple_id)
+    counts = {stage: 0 for stage in LEAD_STAGES}
+    value_by_stage = {stage: 0 for stage in LEAD_STAGES}
+    weighted_by_stage = {stage: 0 for stage in LEAD_STAGES}
+    for lead in leads:
+        stage = str(lead["stage"])
+        counts[stage] = counts.get(stage, 0) + 1
+        value_by_stage[stage] = value_by_stage.get(stage, 0) + int(lead["estimated_value_minor"])
+        weighted_by_stage[stage] = weighted_by_stage.get(stage, 0) + int(lead["weighted_value_minor"])
+    open_leads = [lead for lead in leads if lead["stage"] in OPEN_LEAD_STAGES]
+    due_all = [lead for lead in open_leads if lead["follow_up_state"] in {"overdue", "due_today"}]
+    due = due_all[:6]
+    top = sorted(open_leads, key=lambda item: (item["priority_score"], item["weighted_value_minor"]), reverse=True)[:5]
+    total_estimated = sum(int(lead["estimated_value_minor"]) for lead in open_leads)
+    total_weighted = sum(int(lead["weighted_value_minor"]) for lead in open_leads)
+    return {
+        "stages": [{"id": stage, "label": title_case_from_key(stage), "count": counts.get(stage, 0), "value": format_money(value_by_stage.get(stage, 0))} for stage in LEAD_STAGES],
+        "counts": counts,
+        "open_count": len(open_leads),
+        "total_count": len(leads),
+        "due_count": len(due_all),
+        "total_estimated_value": format_money(total_estimated),
+        "total_estimated_value_minor": total_estimated,
+        "weighted_value": format_money(total_weighted),
+        "weighted_value_minor": total_weighted,
+        "rows": leads,
+        "top": top,
+        "due": due,
+    }
+
+
+def lead_scoring_context(data_dir: Path, temple_id: str) -> dict[str, Any]:
+    report = status_report(data_dir, temple_id=temple_id)
+    opportunity_scores = {item["id"]: int(item["score"]) for item in generate_opportunities(data_dir, temple_id=temple_id)}
+    return {"report": report, "opportunity_scores": opportunity_scores, "today": date.today()}
+
+
+def lead_to_dict(row: sqlite3.Row, context: dict[str, Any]) -> dict[str, Any]:
+    item = row_to_dict(row)
+    estimated = int(item.get("estimated_value_minor") or 0)
+    probability = float(item.get("probability") or 0)
+    weighted = round(estimated * probability)
+    components = lead_priority_components(item, context)
+    priority_score = min(sum(components.values()), 100)
+    follow_up_on = str(item.get("follow_up_on") or "")
+    days_until_follow_up: int | None = None
+    follow_up_state = "unscheduled"
+    if follow_up_on:
+        try:
+            follow_up_date = date.fromisoformat(follow_up_on)
+            days_until_follow_up = (follow_up_date - context["today"]).days
+            if days_until_follow_up < 0:
+                follow_up_state = "overdue"
+            elif days_until_follow_up == 0:
+                follow_up_state = "due_today"
+            elif days_until_follow_up <= 7:
+                follow_up_state = "soon"
+            else:
+                follow_up_state = "scheduled"
+        except ValueError:
+            follow_up_state = "invalid"
+    item["estimated_value"] = format_money(estimated)
+    item["weighted_value"] = format_money(weighted)
+    item["weighted_value_minor"] = weighted
+    item["probability_pct"] = round(probability * 100)
+    item["stage_label"] = title_case_from_key(str(item["stage"]))
+    item["stage_order"] = LEAD_STAGES.index(str(item["stage"])) if str(item["stage"]) in LEAD_STAGES else len(LEAD_STAGES)
+    item["priority_components"] = components
+    item["priority_score"] = priority_score
+    item["priority_label"] = lead_priority_label(priority_score)
+    item["days_until_follow_up"] = days_until_follow_up
+    item["follow_up_state"] = follow_up_state
+    item["follow_up_sort"] = follow_up_on or "9999-12-31"
+    return item
+
+
+def lead_priority_components(item: dict[str, Any], context: dict[str, Any]) -> dict[str, int]:
+    report = context["report"]
+    estimated = int(item.get("estimated_value_minor") or 0)
+    probability = float(item.get("probability") or 0)
+    remaining = max(int(report["remaining_minor"]), 1)
+    if int(report["remaining_minor"]) == 0:
+        value_score = min(round(estimated / 10000 * 8), 30)
+    else:
+        value_score = min(round(estimated / remaining * 30), 30)
+    probability_score = min(round(probability * 25), 25)
+    stage_score = {"new": 3, "contacted": 7, "qualified": 11, "proposal": 14, "won": 8, "lost": 0}.get(str(item.get("stage")), 2)
+    follow_up_score = lead_follow_up_score(str(item.get("follow_up_on") or ""), context["today"], str(item.get("stage")))
+    strategy_score = min(round(context["opportunity_scores"].get(str(item.get("strategy") or ""), 0) / 100 * 10), 10)
+    return {
+        "value": value_score,
+        "probability": probability_score,
+        "stage": stage_score,
+        "follow_up": follow_up_score,
+        "strategy": strategy_score,
+    }
+
+
+def lead_follow_up_score(follow_up_on: str, today: date, stage: str) -> int:
+    if stage in {"won", "lost"}:
+        return 0
+    if not follow_up_on:
+        return 4
+    try:
+        days = (date.fromisoformat(follow_up_on) - today).days
+    except ValueError:
+        return 0
+    if days < 0:
+        return 20
+    if days == 0:
+        return 18
+    if days <= 2:
+        return 15
+    if days <= 7:
+        return 10
+    return 5
+
+
+def lead_priority_label(score: int) -> str:
+    if score >= 75:
+        return "hot"
+    if score >= 55:
+        return "warm"
+    if score >= 35:
+        return "nurture"
+    return "cold"
+
+
+def normalize_lead_stage(stage: str) -> str:
+    cleaned = stage.strip().lower().replace("-", "_").replace(" ", "_") or "new"
+    if cleaned not in LEAD_STAGES:
+        raise DivineToolError(f"Lead stage must be one of: {', '.join(LEAD_STAGES)}.")
+    return cleaned
+
+
+def normalize_probability(value: float) -> float:
+    probability = float(value)
+    if probability > 1:
+        probability = probability / 100
+    if probability < 0 or probability > 1:
+        raise DivineToolError("Lead probability must be between 0 and 100 percent.")
+    return round(probability, 4)
 
 
 def disabled_connection(identifier: str, name: str, summary: str, next_action: str) -> dict[str, Any]:

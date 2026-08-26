@@ -23,6 +23,7 @@ import type {
   DashboardPayload,
   ExternalSnapshot,
   ImportResult,
+  LeadEntry,
   ReportPayload,
 } from "./types";
 
@@ -421,6 +422,29 @@ function App() {
     }
   }
 
+  async function advanceLead(id: number, stage: string) {
+    const busyKey = `lead-${id}-${stage}`;
+    setBusy(busyKey);
+    setWorkflowFeedback("/api/leads", { tone: "info", message: "Updating lead..." });
+    try {
+      const payload = await apiRequest<{ ok: boolean; lead: LeadEntry; state: DashboardPayload }>(
+        `/api/leads/${id}/advance`,
+        {
+          method: "POST",
+          body: JSON.stringify({ stage }),
+        },
+      );
+      applyDashboard(payload.state);
+      setWorkflowFeedback("/api/leads", { tone: "success", message: `Lead moved to ${stage}` });
+      showToast(`Lead moved to ${stage}`);
+    } catch (error) {
+      setWorkflowFeedback("/api/leads", { tone: "error", message: errorMessage(error) });
+      handleApiError(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   if (!auth) {
     return (
       <ScreenFrame>
@@ -475,6 +499,7 @@ function App() {
         onJsonForm={(event, path, success, resetForm) => void handleJsonForm(event, path, success, resetForm)}
         onImport={(event) => void importCsv(event)}
         onReviewApproval={reviewApproval}
+        onAdvanceLead={advanceLead}
         onPulseWorker={() => void pulseWorker()}
         onRefreshExternal={() => void refreshExternalConnections()}
         onGenerateReport={() => void generateReport()}

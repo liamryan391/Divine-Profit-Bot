@@ -11,7 +11,7 @@ import {
   ConfigPanel,
   ExternalSignalsPanel,
   ImportAltarPanel,
-  LeadPipelineReadinessPanel,
+  LeadPipelinePanel,
   MercyExceptionPanel,
   PriorityCallsPanel,
   QuotaControlPanel,
@@ -42,6 +42,7 @@ interface DashboardViewContentProps {
   onJsonForm: JsonFormHandler;
   onImport: (event: FormEvent<HTMLFormElement>) => void;
   onReviewApproval: (id: number, decision: string) => Promise<void>;
+  onAdvanceLead: (id: number, stage: string) => Promise<void>;
   onPulseWorker: () => void;
   onRefreshExternal: () => void;
   onGenerateReport: () => void;
@@ -134,13 +135,23 @@ function StrategiesView({ dashboard }: DashboardViewContentProps) {
   );
 }
 
-function LeadsView({ dashboard }: DashboardViewContentProps) {
+function LeadsView({ dashboard, busy, feedback, onJsonForm, onAdvanceLead }: DashboardViewContentProps) {
   return (
-    <DashboardGrid>
-      <LeadPipelineReadinessPanel dashboard={dashboard} />
-      <StrategiesPanel dashboard={dashboard} />
-      <RecentIncomePanel dashboard={dashboard} />
-    </DashboardGrid>
+    <>
+      <div className="mt-4">
+        <LeadPipelinePanel
+          dashboard={dashboard}
+          busy={busy}
+          feedback={feedback["/api/leads"]}
+          onSubmit={onJsonForm}
+          onAdvance={onAdvanceLead}
+        />
+      </div>
+      <DashboardGrid>
+        <StrategiesPanel dashboard={dashboard} />
+        <RecentIncomePanel dashboard={dashboard} />
+      </DashboardGrid>
+    </>
   );
 }
 

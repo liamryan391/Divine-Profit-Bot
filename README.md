@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.3.7`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.4.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -126,7 +126,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hash-based navigation for overview, temples, strategies, imports, approvals, reports, and settings views.
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
-- Roadmap 2.0 visual QA readiness with a static bundle check and a reserved Lead Pipeline route for Phase 5.
+- Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
 
 Run it with:
 
@@ -155,24 +155,24 @@ Run the static frontend QA check after a build:
 npm run qa:static
 ```
 
-The QA check verifies the generated HTML, CSS, and JS asset references, the responsive/accessibility hooks, and the reserved `#/leads` Phase 5 route.
+The QA check verifies the generated HTML, CSS, and JS asset references, the responsive/accessibility hooks, and the `#/leads` Lead Pipeline route.
 
-## Lead Pipeline Readiness
+## Lead Pipeline
 
-Roadmap 2.0 reserves `#/leads` for Phase 5, Stage 5.1. The route currently documents the intended UI slots and API contract before the backend is added.
+Phase 5, Stage 5.1 ships the `#/leads` workflow for turning legitimate opportunities into tracked revenue. Leads are scoped to the active temple and scored against quota pressure, expected value, probability, follow-up urgency, stage, and strategy evidence.
 
-Planned Phase 5 UI slots:
+Current pipeline tools:
 
-- Pipeline board.
-- Lead intake form.
-- Follow-up queue.
-- Lead detail workspace.
-- Temple filters.
-- Conversion handoff into income tracking.
+- Pipeline board across new, contacted, qualified, proposal, won, and lost stages.
+- Lead intake form for contact, source, offer, value, probability, strategy, next action, follow-up date, and notes.
+- Priority lead queue.
+- Due follow-up queue.
+- One-click stage movement for active leads.
+- Weighted value and open-lead metrics.
 
-Planned Phase 5 API shape:
+Lead API shape:
 
-- `GET /api/leads?temple_id=&stage=&limit=`
+- `GET /api/leads?stage=&limit=`
 - `POST /api/leads`
 - `PATCH /api/leads/{id}`
 - `POST /api/leads/{id}/note`

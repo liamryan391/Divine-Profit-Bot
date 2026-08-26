@@ -39,9 +39,11 @@ const requiredCss = [".temple-shell", ".skip-link", "prefers-reduced-motion", "f
 const requiredJs = [
   "Opening the temple",
   "Skip to dashboard content",
-  "Lead Pipeline Readiness",
-  "GET /api/leads?temple_id=&stage=&limit=",
-  "#/leads",
+  "Lead Pipeline",
+  "Create Lead",
+  "/api/leads",
+  "Lead intake",
+  "due follow-ups",
 ];
 
 for (const token of requiredHtml) {

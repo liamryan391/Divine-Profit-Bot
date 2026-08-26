@@ -28,6 +28,7 @@ import type {
   DashboardPayload,
   ExternalSnapshot,
   ImportResult,
+  LeadEntry,
   Opportunity,
   ReportPayload,
   StrategyRoi,
@@ -191,58 +192,218 @@ export function PriorityCallsPanel({ dashboard }: { dashboard: DashboardPayload 
   );
 }
 
-const leadPipelineSlots = [
-  ["Pipeline Board", "Columns for new, contacted, qualified, proposal, won, and lost leads."],
-  ["Lead Intake", "Creator-approved form for source, offer, estimated value, strategy, and next step."],
-  ["Follow-up Queue", "Due-date view for callbacks, invoice nudges, and human-approved outreach drafts."],
-  ["Lead Detail", "Single lead workspace with notes, stage history, linked approvals, and linked income."],
-  ["Temple Filters", "Per-temple filters that keep lead work scoped to the active income temple."],
-  ["Conversion Handoff", "Bridge from a won lead into ledger income and later conversion tracking."],
-];
+const nextLeadStage: Record<string, string> = {
+  new: "contacted",
+  contacted: "qualified",
+  qualified: "proposal",
+  proposal: "won",
+};
 
-const leadApiContracts = [
-  "GET /api/leads?temple_id=&stage=&limit=",
-  "POST /api/leads",
-  "PATCH /api/leads/{id}",
-  "POST /api/leads/{id}/note",
-  "POST /api/leads/{id}/advance",
-  "GET /api/leads/summary",
-];
-
-export function LeadPipelineReadinessPanel({ dashboard }: { dashboard: DashboardPayload }) {
-  const activeTemple = dashboard.status.temple || dashboard.config.active_temple;
+export function LeadPipelinePanel({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+  onAdvance,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  feedback?: WorkflowFeedback;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+  onAdvance: (id: number, stage: string) => Promise<void>;
+}) {
   return (
-    <Panel title="Lead Pipeline Readiness" icon={Target} wide meta="Phase 5 prepared">
+    <Panel title="Lead Pipeline" icon={Target} wide meta={`${dashboard.leads.open_count} open - ${dashboard.leads.weighted_value} weighted`}>
       <div className="grid gap-2.5 md:grid-cols-3">
-        <MiniMetric label="Route Slot" value="#/leads" />
-        <MiniMetric label="Temple Scope" value={activeTemple?.name || activeTemple?.id || "main"} />
-        <MiniMetric label="Strategy Inputs" value={`${dashboard.config.channels.length} available`} />
+        <MiniMetric label="Open Leads" value={String(dashboard.leads.open_count)} />
+        <MiniMetric label="Weighted Value" value={dashboard.leads.weighted_value} />
+        <MiniMetric label="Due Now" value={String(dashboard.leads.due_count)} />
       </div>
-      <div className="mt-4 grid gap-3 xl:grid-cols-2">
-        <div className="grid gap-2.5">
-          <h3 className="text-sm font-black uppercase text-temple-muted">UI Slots</h3>
-          {leadPipelineSlots.map(([label, detail]) => (
-            <div key={label} className="temple-row grid gap-1 border-l-4 border-l-temple-blue">
-              <strong className="break-words">{label}</strong>
-              <span className="text-sm leading-6 text-temple-muted">{detail}</span>
-            </div>
-          ))}
-        </div>
-        <div className="grid content-start gap-2.5">
-          <h3 className="text-sm font-black uppercase text-temple-muted">API Contract Notes</h3>
-          {leadApiContracts.map((contract) => (
-            <code key={contract} className="temple-row block break-words font-mono text-xs leading-5 text-[#d9e5ff]">
-              {contract}
-            </code>
-          ))}
-          <p className="text-sm leading-6 text-temple-muted">
-            Lead records should include temple_id, stage, source, offer, estimated GBP value, probability, follow-up date, next action,
-            strategy id, notes, and conversion link fields.
-          </p>
+      <LeadIntakeForm dashboard={dashboard} busy={busy === "/api/leads"} feedback={feedback} onSubmit={onSubmit} />
+      <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.45fr)]">
+        <LeadBoard leads={dashboard.leads.rows} stages={dashboard.leads.stages} busy={busy} onAdvance={onAdvance} />
+        <div className="grid content-start gap-3">
+          <LeadQueue title="Priority Leads" items={dashboard.leads.top} empty="No active leads yet." busy={busy} onAdvance={onAdvance} />
+          <LeadQueue title="Due Follow-ups" items={dashboard.leads.due} empty="No lead follow-ups due." busy={busy} onAdvance={onAdvance} />
         </div>
       </div>
     </Panel>
   );
+}
+
+function LeadIntakeForm({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+}: {
+  dashboard: DashboardPayload;
+  busy: boolean;
+  feedback?: WorkflowFeedback;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+}) {
+  return (
+    <form
+      noValidate
+      className="mt-4 grid gap-3 border-t border-temple-line pt-4 md:grid-cols-4"
+      onSubmit={(event) => onSubmit(event, "/api/leads", "Lead created")}
+    >
+      <Field label="Lead" name="title" placeholder="Client or opportunity name" required />
+      <Field label="Contact" name="contact" placeholder="Person or company" />
+      <Field label="Source" name="source" placeholder="Referral, inbound, marketplace" required />
+      <StrategySelect label="Strategy" name="strategy" channels={dashboard.config.channels} />
+      <Field label="Offer" name="offer" placeholder="Paid service, product, retainer" required />
+      <Field label="Estimated Value" name="estimated_value" inputMode="decimal" placeholder="500.00" required />
+      <Field label="Probability %" name="probability" inputMode="decimal" placeholder="60" defaultValue="50" required />
+      <Field label="Follow Up" name="follow_up_on" type="date" />
+      <Field className="md:col-span-2" label="Next Action" name="next_action" placeholder="Send proposal, call, reply, draft outreach" required />
+      <SelectField label="Stage" name="stage" defaultValue="new">
+        {dashboard.leads.stages.map((stage) => (
+          <option key={stage.id} value={stage.id}>
+            {stage.label}
+          </option>
+        ))}
+      </SelectField>
+      <Field label="Notes" name="notes" placeholder="Useful context" />
+      <div className="md:col-span-4">
+        <FormNotice feedback={feedback} />
+      </div>
+      <div className="md:col-span-4">
+        <Button icon={Plus} disabled={busy} type="submit">
+          {busy ? "Creating..." : "Create Lead"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function LeadBoard({
+  leads,
+  stages,
+  busy,
+  onAdvance,
+}: {
+  leads: LeadEntry[];
+  stages: DashboardPayload["leads"]["stages"];
+  busy: string;
+  onAdvance: (id: number, stage: string) => Promise<void>;
+}) {
+  return (
+    <div className="grid gap-3 xl:grid-cols-3">
+      {stages.map((stage) => {
+        const stageLeads = leads.filter((lead) => lead.stage === stage.id);
+        return (
+          <section key={stage.id} className="grid content-start gap-2 rounded-lg border border-temple-line bg-[#10192a] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-black uppercase text-temple-muted">{stage.label}</h3>
+              <Badge>{stage.count}</Badge>
+            </div>
+            <span className="text-xs font-bold text-temple-muted">{stage.value} total value</span>
+            {stageLeads.length ? (
+              stageLeads.slice(0, 8).map((lead) => <LeadCard key={lead.id} lead={lead} busy={busy} onAdvance={onAdvance} />)
+            ) : (
+              <EmptyRow>No leads in this stage.</EmptyRow>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function LeadQueue({
+  title,
+  items,
+  empty,
+  busy,
+  onAdvance,
+}: {
+  title: string;
+  items: LeadEntry[];
+  empty: string;
+  busy: string;
+  onAdvance: (id: number, stage: string) => Promise<void>;
+}) {
+  return (
+    <section className="grid gap-2 rounded-lg border border-temple-line bg-[#10192a] p-3">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-black uppercase text-temple-muted">{title}</h3>
+        <Badge>{items.length}</Badge>
+      </div>
+      {items.length ? items.map((lead) => <LeadCard key={`${title}-${lead.id}`} lead={lead} busy={busy} compact onAdvance={onAdvance} />) : <EmptyRow>{empty}</EmptyRow>}
+    </section>
+  );
+}
+
+function LeadCard({
+  lead,
+  busy,
+  compact = false,
+  onAdvance,
+}: {
+  lead: LeadEntry;
+  busy: string;
+  compact?: boolean;
+  onAdvance: (id: number, stage: string) => Promise<void>;
+}) {
+  const next = nextLeadStage[lead.stage];
+  const isBusy = next ? busy === `lead-${lead.id}-${next}` : false;
+  return (
+    <article className={cx("temple-row grid gap-2 border-l-4", leadPriorityBorder(lead.priority_label))}>
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+        <div className="grid min-w-0 gap-1">
+          <strong className="break-words">
+            #{lead.id} {lead.title}
+          </strong>
+          <span className="text-sm text-temple-muted">
+            {lead.offer} - {lead.weighted_value} weighted
+          </span>
+        </div>
+        <b className="text-xs font-black uppercase text-temple-gold sm:text-right">{lead.priority_label}</b>
+      </div>
+      <div className="grid gap-2 text-sm text-temple-muted">
+        <span>{lead.contact || lead.source || "No contact set"}</span>
+        <span>{leadFollowUpText(lead)}</span>
+        {!compact && lead.next_action ? <span>Next: {lead.next_action}</span> : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge>{lead.priority_score}/100</Badge>
+        <Badge>{lead.probability_pct}%</Badge>
+        <Badge>{lead.stage_label}</Badge>
+        {next ? (
+          <Button icon={ArrowRight} variant="secondary" disabled={isBusy} onClick={() => void onAdvance(lead.id, next)}>
+            {isBusy ? "Moving..." : `Move to ${titleCase(next)}`}
+          </Button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function leadPriorityBorder(priority: string) {
+  if (priority === "hot") {
+    return "border-l-temple-green";
+  }
+  if (priority === "warm") {
+    return "border-l-temple-gold";
+  }
+  if (priority === "nurture") {
+    return "border-l-temple-blue";
+  }
+  return "border-l-temple-violet";
+}
+
+function leadFollowUpText(lead: LeadEntry) {
+  if (!lead.follow_up_on) {
+    return "Follow-up not scheduled";
+  }
+  if (lead.follow_up_state === "overdue") {
+    return `Overdue follow-up: ${lead.follow_up_on}`;
+  }
+  if (lead.follow_up_state === "due_today") {
+    return `Due today: ${lead.follow_up_on}`;
+  }
+  return `Follow-up: ${lead.follow_up_on}`;
 }
 
 export function ConfigPanel({ dashboard }: { dashboard: DashboardPayload }) {

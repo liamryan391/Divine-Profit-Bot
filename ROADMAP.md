@@ -19,11 +19,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.3.5`: workflow form validation, inline feedback, and safer actions.
 - `v2.3.6`: responsive design, accessibility, keyboard focus, and overflow hardening.
 - `v2.3.7`: visual QA readiness, static frontend checks, and Lead Pipeline route/API planning.
-- `v2.4.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
+- `v2.4.0`: Lead Pipeline with temple-scoped lead records, scoring, board UI, intake, and follow-up queues.
+- `v2.5.0` or later: conversion tracking and deeper revenue pipeline improvements.
 
 ## Current Status
 
-Current version: `v2.3.7`.
+Current version: `v2.4.0`.
 
 Completed:
 
@@ -70,6 +71,7 @@ Completed:
 - Roadmap 2.0 Stage 2.0.5: added workflow validation, inline notices, progress states, import confirmation, and approval safeguards.
 - Roadmap 2.0 Stage 2.0.6: added responsive layout hardening, skip navigation, visible focus states, live status semantics, reduced-motion support, and overflow-safe dense content.
 - Roadmap 2.0 Stage 2.0.7: added a repeatable static frontend QA routine, reserved the `#/leads` Lead Pipeline route, and documented the Phase 5 UI slots and API contract.
+- Phase 5 Stage 5.1: shipped the Lead Pipeline with temple-scoped persistence, API endpoints, lead scoring, intake form, board, due follow-ups, and stage movement.
 
 ## Phase 0: Foundation
 
@@ -402,7 +404,7 @@ Rationale:
 
 - The `v2.2.1` UI is visually healthy and usable.
 - The old frontend was a single static HTML/CSS/JS surface.
-- Phase 5 Lead Pipeline will add heavier state, filtering, forms, and workflow screens.
+- Phase 5 Lead Pipeline was expected to add heavier state, filtering, forms, and workflow screens.
 - A React foundation reduces frontend risk before those features are added.
 
 Sequencing rule:
@@ -532,7 +534,7 @@ Deliverables:
 - Browser smoke checks for auth, dashboard loading, report generation, imports, approvals, and core controls.
 - Screenshot checks for desktop and mobile widths.
 - Frontend build and static serving checks in CI or the local test routine.
-- Lead Pipeline UI slots identified before backend work begins.
+- Lead Pipeline UI slots identified before backend work began.
 - API contract notes for the Phase 5 lead records and pipeline views.
 
 Release target:
@@ -551,7 +553,7 @@ Roadmap 2.0 is complete when:
 - Core workflows are visually checked in desktop and mobile widths.
 - The frontend build is documented and repeatable.
 - Tests cover static asset serving and API compatibility.
-- Phase 5 Lead Pipeline can be added without expanding a single monolithic browser script.
+- Phase 5 Lead Pipeline can grow without expanding a single monolithic browser script.
 - Login, forgotten-credential, and owner setup UX have a clear safe path.
 - Navigation can support the Lead Pipeline as a first-class workflow.
 
@@ -559,11 +561,11 @@ Roadmap 2.0 is complete when:
 
 Goal: help each temple convert legitimate opportunities into tracked revenue.
 
-Status: ready to resume after Roadmap 2.0 completion.
+Status: in progress.
 
 ### Stage 5.1: Lead Pipeline
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -571,11 +573,15 @@ Deliverables:
 - Offer, value, source, and next-step fields.
 - Follow-up dates.
 - Pipeline stages.
-- Priority scoring tied to quota gaps.
+- Priority scoring tied to quota gaps, weighted value, follow-up timing, stage, and strategy evidence.
+- Authenticated API endpoints for lead list, summary, create, update, notes, and stage advance.
+- React Lead Pipeline route with intake form, stage board, priority queue, and due follow-up queue.
 
 Release target:
 
 - `v2.4.0`.
+
+Release status: shipped.
 
 ### Stage 5.2: Conversion Tracking
 
@@ -630,14 +636,15 @@ The tool is fully operational for protected local use when the Creator can:
 - Create and switch between multiple temples.
 - Keep separate ledgers and approval queues per temple.
 - Review aggregate quota progress across all temples.
+- Track active leads, due follow-ups, and expected pipeline value per temple.
 
 ## Recommended Next Build Step
 
-Build Phase 5, Stage 5.1: Lead Pipeline next:
+Build Phase 5, Stage 5.2: Conversion Tracking next:
 
-- Add the lead persistence model scoped by temple.
-- Add API endpoints for lead list, create, update, notes, stage advance, and summary.
-- Replace the `#/leads` readiness panel with the real pipeline board, intake form, follow-up queue, and lead detail workspace.
-- Tie lead priority scoring to quota gap, expected value, probability, follow-up date, and strategy evidence.
+- Link won leads to income entries.
+- Add conversion rates by temple, stage, and strategy.
+- Show average deal size and lost-opportunity notes.
+- Feed conversion evidence back into strategy ROI and priority calls.
 
-Backend Roadmap 3.0 should wait until after Phase 5, Stage 5.1 unless the lead pipeline exposes a real backend blocker. The next best revenue move after Roadmap 2.0 is still the lead pipeline.
+Backend Roadmap 3.0 should wait until Phase 5 exposes a larger backend bottleneck. The next best revenue move is Phase 5, Stage 5.2 because it closes the loop between leads and booked income.

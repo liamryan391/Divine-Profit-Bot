@@ -17,8 +17,10 @@ from divine_tool.core import (
     add_income,
     approval_queue_summary,
     auth_status,
+    advance_lead,
     create_account,
     create_approval_draft,
+    create_lead,
     create_session,
     create_temple,
     destroy_session,
@@ -27,7 +29,9 @@ from divine_tool.core import (
     generate_opportunities,
     generate_report,
     import_income_csv,
+    lead_pipeline_summary,
     list_approval_actions,
+    list_leads,
     list_accounts,
     list_income,
     list_temples,
@@ -134,8 +138,9 @@ class DivineToolTests(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                     js_body = response.read()
                     self.assertIn(b"Opening the temple", js_body)
-                    self.assertIn(b"Lead Pipeline Readiness", js_body)
-                    self.assertIn(b"GET /api/leads?temple_id=&stage=&limit=", js_body)
+                    self.assertIn(b"Lead Pipeline", js_body)
+                    self.assertIn(b"Create Lead", js_body)
+                    self.assertIn(b"/api/leads", js_body)
 
                 try:
                     urlopen(f"{base_url}/api/status")
@@ -233,6 +238,45 @@ class DivineToolTests(unittest.TestCase):
 
                 self.assertIn("external", external_payload)
                 self.assertEqual(external_payload["external"]["disabled_count"], 3)
+
+                lead_body = json.dumps(
+                    {
+                        "title": "Acme Retainer",
+                        "contact": "Acme Ops",
+                        "source": "Referral",
+                        "offer": "Monthly automation retainer",
+                        "estimated_value": "750",
+                        "probability": "70",
+                        "strategy": "freelance_services",
+                        "next_action": "Send the first proposal",
+                        "follow_up_on": date.today().isoformat(),
+                    }
+                ).encode("utf-8")
+                lead_request = Request(
+                    f"{base_url}/api/leads",
+                    data=lead_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(lead_request) as response:
+                    lead_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(lead_payload["ok"])
+                self.assertEqual(lead_payload["state"]["leads"]["open_count"], 1)
+                self.assertEqual(lead_payload["state"]["leads"]["top"][0]["title"], "Acme Retainer")
+
+                advance_body = json.dumps({"stage": "contacted", "note": "Reached out"}).encode("utf-8")
+                advance_request = Request(
+                    f"{base_url}/api/leads/{lead_payload['id']}/advance",
+                    data=advance_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(advance_request) as response:
+                    advance_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(advance_payload["lead"]["stage"], "contacted")
+                self.assertEqual(advance_payload["state"]["leads"]["counts"]["contacted"], 1)
 
                 draft_body = json.dumps(
                     {
@@ -339,6 +383,42 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(opportunities[0]["id"], "digital_product")
             self.assertEqual(opportunities[0]["period_income_minor"], 9000)
             self.assertGreater(opportunities[0]["components"]["evidence"], 0)
+
+    def test_lead_pipeline_scores_and_advances_leads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("1000"), "week")
+            set_mood(data_dir, "watchful")
+
+            lead_id = create_lead(
+                data_dir,
+                title="Retainer Prospect",
+                contact="Prospect Ltd",
+                source="Warm referral",
+                offer="Revenue operations retainer",
+                estimated_value_minor=parse_money_to_minor("900"),
+                probability=0.8,
+                strategy="freelance_services",
+                next_action="Send scoped proposal",
+                follow_up_on=date.today(),
+            )
+
+            summary = lead_pipeline_summary(data_dir)
+
+            self.assertEqual(summary["open_count"], 1)
+            self.assertEqual(summary["top"][0]["id"], lead_id)
+            self.assertEqual(summary["due_count"], 1)
+            self.assertGreater(summary["top"][0]["priority_score"], 50)
+
+            contacted = advance_lead(data_dir, lead_id, "contacted", "First message sent")
+            self.assertEqual(contacted["stage"], "contacted")
+            self.assertEqual(list_leads(data_dir, stage="contacted")[0]["id"], lead_id)
+
+            won = advance_lead(data_dir, lead_id, "won")
+            self.assertEqual(won["stage"], "won")
+            closed_summary = lead_pipeline_summary(data_dir)
+            self.assertEqual(closed_summary["open_count"], 0)
+            self.assertEqual(closed_summary["counts"]["won"], 1)
 
     def test_config_migration_adds_strategy_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

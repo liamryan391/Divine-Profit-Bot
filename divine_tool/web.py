@@ -15,11 +15,14 @@ from .core import (
     DivineToolError,
     add_exception,
     add_income,
+    add_lead_note,
+    advance_lead,
     approval_queue_summary,
     auth_status,
     create_account,
     create_session,
     create_approval_draft,
+    create_lead,
     create_temple,
     destroy_session,
     enqueue_command,
@@ -34,6 +37,8 @@ from .core import (
     list_events,
     list_exceptions,
     list_income,
+    lead_pipeline_summary,
+    list_leads,
     list_temples,
     load_config,
     parse_date,
@@ -48,6 +53,7 @@ from .core import (
     strategy_roi_summary,
     switch_temple,
     temple_summary,
+    update_lead,
     update_account_profile,
     worker_status,
 )
@@ -155,6 +161,15 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     status = query.get("status", ["pending"])[0]
                     limit = int(query.get("limit", ["20"])[0])
                     self.send_json({"approvals": serialize_approval_actions(list_approval_actions(data_dir, status=status, limit=limit))})
+                    return
+                if parsed.path == "/api/leads/summary":
+                    self.send_json({"leads": lead_pipeline_summary(data_dir)})
+                    return
+                if parsed.path == "/api/leads":
+                    query = parse_qs(parsed.query)
+                    stage = query.get("stage", ["all"])[0]
+                    limit = int(query.get("limit", ["50"])[0])
+                    self.send_json({"leads": list_leads(data_dir, stage=stage, limit=limit)})
                     return
                 if parsed.path == "/api/temples":
                     self.send_json({"temples": temple_summary(data_dir), "items": list_temples(data_dir)})
@@ -332,10 +347,64 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     )
                     self.send_json({"ok": True, "approval": item, "state": dashboard_payload(data_dir, account)})
                     return
+                if parsed.path == "/api/leads":
+                    lead_id = create_lead(
+                        data_dir,
+                        title=str(payload["title"]),
+                        contact=str(payload.get("contact", "")),
+                        source=str(payload.get("source", "")),
+                        offer=str(payload.get("offer", "")),
+                        estimated_value_minor=lead_estimated_value_minor(payload),
+                        probability=parse_probability_payload(payload.get("probability", 50)),
+                        stage=str(payload.get("stage", "new")),
+                        strategy=str(payload.get("strategy", "")),
+                        next_action=str(payload.get("next_action", "")),
+                        follow_up_on=parse_date(payload["follow_up_on"]) if payload.get("follow_up_on") else None,
+                        notes=str(payload.get("notes", "")),
+                    )
+                    self.send_json({"ok": True, "id": lead_id, "state": dashboard_payload(data_dir, account)})
+                    return
+                lead_parts = lead_path_parts(parsed.path)
+                if lead_parts and len(lead_parts) == 2 and lead_parts[1] == "note":
+                    note = add_lead_note(data_dir, int(lead_parts[0]), str(payload.get("note", "")))
+                    self.send_json({"ok": True, "note": note, "state": dashboard_payload(data_dir, account)})
+                    return
+                if lead_parts and len(lead_parts) == 2 and lead_parts[1] == "advance":
+                    lead = advance_lead(
+                        data_dir,
+                        int(lead_parts[0]),
+                        str(payload["stage"]),
+                        note=str(payload.get("note", "")),
+                    )
+                    self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
+                    return
                 if parsed.path == "/api/daemon/run-once":
                     outcomes = process_command_inbox(data_dir)
                     record_heartbeat(data_dir, detail=f"processed {len(outcomes)} command(s)")
                     self.send_json({"ok": True, "outcomes": outcomes, "state": dashboard_payload(data_dir, account)})
+                    return
+                self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+            except KeyError as exc:
+                self.send_json({"error": f"Missing required field: {exc.args[0]}"}, HTTPStatus.BAD_REQUEST)
+            except DivineToolError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except json.JSONDecodeError:
+                self.send_json({"error": "Request body must be valid JSON."}, HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self.send_json({"error": f"Unexpected server error: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        def do_PATCH(self) -> None:
+            parsed = urlparse(self.path)
+            try:
+                payload = self.read_json()
+                account = self.require_auth()
+                if account is None:
+                    return
+                lead_parts = lead_path_parts(parsed.path)
+                if lead_parts and len(lead_parts) == 1:
+                    updates = lead_updates_from_payload(payload)
+                    lead = update_lead(data_dir, int(lead_parts[0]), updates)
+                    self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
                     return
                 self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             except KeyError as exc:
@@ -456,6 +525,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "report": report,
         "upgrades": generate_upgrades(data_dir),
         "approvals": approval_queue_summary(data_dir),
+        "leads": lead_pipeline_summary(data_dir),
         "temples": temple_summary(data_dir),
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
         "worker": worker_status(data_dir),
@@ -524,3 +594,46 @@ def serialize_approval_actions(rows: list[Any]) -> list[dict[str, Any]]:
         item["kind_label"] = item["kind"].replace("_", " ").title()
         output.append(item)
     return output
+
+
+def lead_path_parts(path: str) -> list[str] | None:
+    if not path.startswith("/api/leads/"):
+        return None
+    parts = [part for part in path.removeprefix("/api/leads/").split("/") if part]
+    if not parts:
+        return None
+    return parts
+
+
+def parse_probability_payload(value: Any) -> float:
+    if isinstance(value, str):
+        cleaned = value.strip().removesuffix("%")
+        if not cleaned:
+            return 0.5
+        return float(cleaned)
+    return float(value)
+
+
+def lead_estimated_value_minor(payload: dict[str, Any]) -> int:
+    if "estimated_value" in payload:
+        return parse_money_to_minor(payload["estimated_value"])
+    if "estimated_value_minor" in payload:
+        return int(payload["estimated_value_minor"])
+    return 0
+
+
+def lead_updates_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    passthrough = {"title", "contact", "source", "offer", "stage", "strategy", "next_action", "notes", "converted_income_id"}
+    for key in passthrough:
+        if key in payload:
+            updates[key] = payload[key]
+    if "estimated_value" in payload:
+        updates["estimated_value_minor"] = parse_money_to_minor(payload["estimated_value"])
+    if "estimated_value_minor" in payload:
+        updates["estimated_value_minor"] = int(payload["estimated_value_minor"])
+    if "probability" in payload:
+        updates["probability"] = parse_probability_payload(payload["probability"])
+    if "follow_up_on" in payload:
+        updates["follow_up_on"] = parse_date(payload["follow_up_on"]) if payload["follow_up_on"] else ""
+    return updates
