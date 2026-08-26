@@ -324,7 +324,7 @@ export interface DashboardPayload {
   upgrades: string[];
   approvals: ApprovalSummary;
   leads: LeadPipelineSummary;
-  conversions: ConversionSummary;
+  conversions?: ConversionSummary;
   temples: TempleSummary;
   auth: AuthStatus;
   worker: WorkerStatus;

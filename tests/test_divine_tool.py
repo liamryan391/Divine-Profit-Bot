@@ -142,6 +142,7 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Opening the temple", js_body)
                     self.assertIn(b"Lead Pipeline", js_body)
                     self.assertIn(b"Conversion Tracking", js_body)
+                    self.assertIn(b"Restart the web server", js_body)
                     self.assertIn(b"Create Lead", js_body)
                     self.assertIn(b"/api/leads", js_body)
                     self.assertIn(b"/api/conversions/record", js_body)

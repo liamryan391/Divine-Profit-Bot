@@ -21,11 +21,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.3.7`: visual QA readiness, static frontend checks, and Lead Pipeline route/API planning.
 - `v2.4.0`: Lead Pipeline with temple-scoped lead records, scoring, board UI, intake, and follow-up queues.
 - `v2.5.0`: conversion tracking with linked lead income, rate summaries, average deal size, and lost opportunity notes.
+- `v2.5.1`: Leads view compatibility fallback when an old server process serves the new frontend bundle.
 - `v2.6.0` or later: safe revenue rules and deeper pipeline automation.
 
 ## Current Status
 
-Current version: `v2.5.0`.
+Current version: `v2.5.1`.
 
 Completed:
 
@@ -74,6 +75,7 @@ Completed:
 - Roadmap 2.0 Stage 2.0.7: added a repeatable static frontend QA routine, reserved the `#/leads` Lead Pipeline route, and documented the Phase 5 UI slots and API contract.
 - Phase 5 Stage 5.1: shipped the Lead Pipeline with temple-scoped persistence, API endpoints, lead scoring, intake form, board, due follow-ups, and stage movement.
 - Phase 5 Stage 5.2: shipped Conversion Tracking with linked lead income, conversion summaries, strategy evidence, report output, and lost opportunity notes.
+- Patch `v2.5.1`: added a Leads view fallback so mixed old-server/new-frontend sessions show a restart notice instead of an empty screen.
 
 ## Phase 0: Foundation
 

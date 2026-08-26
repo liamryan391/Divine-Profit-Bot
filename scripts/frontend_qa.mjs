@@ -41,6 +41,7 @@ const requiredJs = [
   "Skip to dashboard content",
   "Lead Pipeline",
   "Conversion Tracking",
+  "Restart the web server",
   "Create Lead",
   "/api/leads",
   "/api/conversions/record",

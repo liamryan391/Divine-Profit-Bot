@@ -25,6 +25,7 @@ import type { FormEvent } from "react";
 import type {
   ApprovalAction,
   ApprovalSummary,
+  ConversionSummary,
   DashboardPayload,
   ExternalSnapshot,
   ImportResult,
@@ -248,7 +249,8 @@ function ConversionTrackingPanel({
   feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
 }) {
-  const conversions = dashboard.conversions;
+  const hasConversionPayload = Boolean(dashboard.conversions);
+  const conversions = conversionSummaryFor(dashboard);
   const convertibleLeads = dashboard.leads.rows.filter((lead) => isConvertibleLead(lead));
   return (
     <section className="mt-4 grid gap-3 rounded-lg border border-temple-line bg-[#10192a] p-3">
@@ -266,7 +268,9 @@ function ConversionTrackingPanel({
         <MiniMetric label="Win Rate" value={`${conversions.win_rate_pct}%`} />
         <MiniMetric label="Lost Value" value={conversions.lost_value} />
       </div>
-      {convertibleLeads.length ? (
+      {!hasConversionPayload ? (
+        <EmptyRow>Restart the web server to load the v2.5 conversion APIs before recording booked lead income.</EmptyRow>
+      ) : convertibleLeads.length ? (
         <form
           noValidate
           className="grid gap-3 border-t border-temple-line pt-4 md:grid-cols-4"
@@ -306,15 +310,15 @@ function ConversionTrackingPanel({
         <EmptyRow>Move a lead to qualified, proposal, or won before recording booked income.</EmptyRow>
       )}
       <div className="grid gap-3 xl:grid-cols-2">
-        <ConversionStrategyList dashboard={dashboard} />
-        <ConversionEvidenceList dashboard={dashboard} />
+        <ConversionStrategyList conversions={conversions} />
+        <ConversionEvidenceList conversions={conversions} />
       </div>
     </section>
   );
 }
 
-function ConversionStrategyList({ dashboard }: { dashboard: DashboardPayload }) {
-  const rows = dashboard.conversions.by_strategy.slice(0, 5);
+function ConversionStrategyList({ conversions }: { conversions: ConversionSummary }) {
+  const rows = conversions.by_strategy.slice(0, 5);
   if (!rows.length) {
     return <EmptyRow>No strategy conversion evidence yet.</EmptyRow>;
   }
@@ -339,9 +343,9 @@ function ConversionStrategyList({ dashboard }: { dashboard: DashboardPayload }) 
   );
 }
 
-function ConversionEvidenceList({ dashboard }: { dashboard: DashboardPayload }) {
-  const recent = dashboard.conversions.recent.slice(0, 3);
-  const lost = dashboard.conversions.lost_notes.slice(0, 3);
+function ConversionEvidenceList({ conversions }: { conversions: ConversionSummary }) {
+  const recent = conversions.recent.slice(0, 3);
+  const lost = conversions.lost_notes.slice(0, 3);
   return (
     <section className="grid content-start gap-2">
       <h4 className="text-xs font-black uppercase text-temple-muted">Evidence Notes</h4>
@@ -373,6 +377,35 @@ function ConversionEvidenceList({ dashboard }: { dashboard: DashboardPayload }) 
 
 function isConvertibleLead(lead: LeadEntry) {
   return !lead.converted_income_id && ["qualified", "proposal", "won"].includes(lead.stage);
+}
+
+function conversionSummaryFor(dashboard: DashboardPayload): ConversionSummary {
+  if (dashboard.conversions) {
+    return dashboard.conversions;
+  }
+  const templeId = dashboard.status.temple?.id || dashboard.config.active_temple?.id || "main";
+  return {
+    temple_id: templeId,
+    total_leads: dashboard.leads.total_count,
+    open_count: dashboard.leads.open_count,
+    won_count: dashboard.leads.counts.won || 0,
+    lost_count: dashboard.leads.counts.lost || 0,
+    closed_count: (dashboard.leads.counts.won || 0) + (dashboard.leads.counts.lost || 0),
+    converted_count: 0,
+    conversion_rate_pct: 0,
+    win_rate_pct: 0,
+    linked_revenue: "£0.00",
+    linked_revenue_minor: 0,
+    average_deal: "£0.00",
+    average_deal_minor: 0,
+    open_weighted_value: dashboard.leads.weighted_value,
+    open_weighted_value_minor: dashboard.leads.weighted_value_minor,
+    lost_value: "£0.00",
+    lost_value_minor: 0,
+    by_strategy: [],
+    recent: [],
+    lost_notes: [],
+  };
 }
 
 function LeadIntakeForm({
