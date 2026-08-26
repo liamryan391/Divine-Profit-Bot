@@ -1,0 +1,267 @@
+export type WorkflowFeedbackTone = "info" | "success" | "warning" | "error";
+
+export interface WorkflowFeedback {
+  tone: WorkflowFeedbackTone;
+  message: string;
+  details?: string[];
+}
+
+export type WorkflowFeedbackMap = Record<string, WorkflowFeedback | undefined>;
+
+export interface WorkflowIssue {
+  field?: string;
+  label?: string;
+  message: string;
+}
+
+type FormControl = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+
+const MONEY_RE = /^\d+(?:[.,]\d+)?$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TEMPLE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
+
+export function clearWorkflowFormValidity(form: HTMLFormElement) {
+  for (const element of Array.from(form.elements)) {
+    if (isFormControl(element)) {
+      element.setCustomValidity("");
+      element.removeAttribute("aria-invalid");
+    }
+  }
+}
+
+export function clearWorkflowFieldError(target: EventTarget | null) {
+  if (isFormControl(target)) {
+    target.setCustomValidity("");
+    target.removeAttribute("aria-invalid");
+  }
+}
+
+export function applyWorkflowIssues(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  for (const issue of issues) {
+    if (!issue.field) {
+      continue;
+    }
+    const control = getControl(form, issue.field);
+    if (control) {
+      control.setCustomValidity(issue.message);
+      control.setAttribute("aria-invalid", "true");
+    }
+  }
+}
+
+export function focusFirstWorkflowIssue(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  const firstNamed = issues.find((issue) => issue.field);
+  const control = firstNamed?.field ? getControl(form, firstNamed.field) : null;
+  control?.focus();
+}
+
+export function summarizeWorkflowIssues(issues: WorkflowIssue[]): WorkflowFeedback {
+  const details = issues.map((issue) => (issue.label ? `${issue.label}: ${issue.message}` : issue.message));
+  return {
+    tone: "warning",
+    message: issues.length === 1 ? "Review the highlighted field." : `Review ${issues.length} fields before submitting.`,
+    details,
+  };
+}
+
+export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string): WorkflowIssue[] {
+  const issues = nativeIssues(form);
+
+  if (workflowKey === "/api/auth/setup") {
+    requireMinLength(form, issues, "username", "Username", 3);
+    requireMinLength(form, issues, "password", "Password", 10);
+    validateOptionalEmail(form, issues, "recovery_email", "Recovery Email");
+  }
+
+  if (workflowKey === "/api/auth/login") {
+    requireMinLength(form, issues, "username", "Username", 3);
+  }
+
+  if (workflowKey === "/api/account/profile") {
+    validateOptionalEmail(form, issues, "recovery_email", "Recovery Email");
+  }
+
+  if (workflowKey === "/api/temple/create") {
+    requireText(form, issues, "name", "Temple Name");
+    const templeId = valueOf(form, "temple_id");
+    if (templeId && !TEMPLE_ID_RE.test(templeId)) {
+      issues.push({
+        field: "temple_id",
+        label: "Temple ID",
+        message: "Use 3-40 lowercase letters, numbers, hyphens, or underscores.",
+      });
+    }
+  }
+
+  if (workflowKey === "/api/income") {
+    requirePositiveMoney(form, issues, "amount", "Amount");
+    requireText(form, issues, "source", "Source");
+    const currency = valueOf(form, "currency").toUpperCase() || "GBP";
+    const gbp = valueOf(form, "gbp_equivalent");
+    if (currency !== "GBP" && !gbp) {
+      issues.push({
+        field: "gbp_equivalent",
+        label: "GBP Equivalent",
+        message: "Add a GBP equivalent for non-GBP income.",
+      });
+    }
+    if (gbp) {
+      requirePositiveMoney(form, issues, "gbp_equivalent", "GBP Equivalent");
+    }
+  }
+
+  if (workflowKey === "/api/quota") {
+    requirePositiveMoney(form, issues, "amount", "Target");
+  }
+
+  if (workflowKey === "/api/exception") {
+    requireText(form, issues, "reason", "Reason");
+    requireDate(form, issues, "until", "Until");
+    const until = valueOf(form, "until");
+    if (until && isPastDate(until)) {
+      issues.push({ field: "until", label: "Until", message: "Choose today or a future date." });
+    }
+  }
+
+  if (workflowKey === "/api/approval/draft") {
+    validateApprovalDraft(form, issues);
+  }
+
+  if (workflowKey === "import") {
+    const file = fileOf(form, "file");
+    if (!file) {
+      issues.push({ field: "file", label: "CSV File", message: "Choose a CSV file first." });
+    } else if (!file.name.toLowerCase().endsWith(".csv") && file.type !== "text/csv") {
+      issues.push({ field: "file", label: "CSV File", message: "Use a CSV export file." });
+    }
+  }
+
+  return dedupeIssues(issues);
+}
+
+function validateApprovalDraft(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  const kind = valueOf(form, "kind");
+  if (kind === "invoice_reminder") {
+    requireText(form, issues, "target", "Target");
+    requirePositiveMoney(form, issues, "amount", "Amount");
+    requireDate(form, issues, "due", "Due");
+    requireText(form, issues, "invoice", "Invoice");
+    return;
+  }
+  if (kind === "outreach") {
+    requireText(form, issues, "target", "Target");
+    requireText(form, issues, "offer", "Offer");
+    requireText(form, issues, "goal", "Goal");
+    return;
+  }
+  if (kind === "content_prompt") {
+    requireText(form, issues, "topic", "Topic");
+    requireText(form, issues, "channel", "Channel");
+    requireText(form, issues, "goal", "Goal");
+  }
+}
+
+function nativeIssues(form: HTMLFormElement): WorkflowIssue[] {
+  return Array.from(form.elements)
+    .filter(isFormControl)
+    .filter((control) => !control.validity.valid)
+    .map((control) => ({
+      field: control.name || control.id,
+      label: labelFor(control),
+      message: control.validationMessage || "Check this field.",
+    }));
+}
+
+function dedupeIssues(issues: WorkflowIssue[]): WorkflowIssue[] {
+  const byField = new Map<string, WorkflowIssue>();
+  for (const issue of issues) {
+    byField.set(issue.field || issue.message, issue);
+  }
+  return Array.from(byField.values());
+}
+
+function requireText(form: HTMLFormElement, issues: WorkflowIssue[], field: string, label: string) {
+  if (!valueOf(form, field)) {
+    issues.push({ field, label, message: "Required." });
+  }
+}
+
+function requireMinLength(form: HTMLFormElement, issues: WorkflowIssue[], field: string, label: string, minLength: number) {
+  const value = valueOf(form, field);
+  if (value && value.length < minLength) {
+    issues.push({ field, label, message: `Use at least ${minLength} characters.` });
+  }
+}
+
+function requirePositiveMoney(form: HTMLFormElement, issues: WorkflowIssue[], field: string, label: string) {
+  const value = valueOf(form, field);
+  if (!value) {
+    issues.push({ field, label, message: "Required." });
+    return;
+  }
+  if (!MONEY_RE.test(value) || Number(value.replace(",", ".")) <= 0) {
+    issues.push({ field, label, message: "Enter a positive amount." });
+  }
+}
+
+function requireDate(form: HTMLFormElement, issues: WorkflowIssue[], field: string, label: string) {
+  const value = valueOf(form, field);
+  if (!value) {
+    issues.push({ field, label, message: "Required." });
+    return;
+  }
+  if (Number.isNaN(new Date(`${value}T00:00:00`).getTime())) {
+    issues.push({ field, label, message: "Use a valid date." });
+  }
+}
+
+function validateOptionalEmail(form: HTMLFormElement, issues: WorkflowIssue[], field: string, label: string) {
+  const value = valueOf(form, field);
+  if (value && !EMAIL_RE.test(value)) {
+    issues.push({ field, label, message: "Use an address like owner@example.com." });
+  }
+}
+
+function valueOf(form: HTMLFormElement, field: string): string {
+  const control = getControl(form, field);
+  return control?.value.trim() || "";
+}
+
+function fileOf(form: HTMLFormElement, field: string): File | null {
+  const control = getControl(form, field);
+  if (control instanceof HTMLInputElement && control.type === "file") {
+    return control.files?.[0] || null;
+  }
+  return null;
+}
+
+function getControl(form: HTMLFormElement, field: string): FormControl | null {
+  const element = form.elements.namedItem(field);
+  if (isFormControl(element)) {
+    return element;
+  }
+  return null;
+}
+
+function labelFor(control: FormControl): string {
+  const label = control.closest("label");
+  if (!label) {
+    return control.name || "Field";
+  }
+  return Array.from(label.childNodes)
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent?.trim() || "")
+    .join(" ")
+    .trim() || control.name || "Field";
+}
+
+function isPastDate(value: string): boolean {
+  const selected = new Date(`${value}T00:00:00`);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return selected < today;
+}
+
+function isFormControl(element: unknown): element is FormControl {
+  return element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement;
+}

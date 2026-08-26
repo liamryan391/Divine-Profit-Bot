@@ -1,5 +1,6 @@
 import { Activity, Coins, Gauge, Target } from "lucide-react";
 import type { FormEvent } from "react";
+import type { WorkflowFeedbackMap } from "../lib/forms";
 import type { DashboardView } from "../lib/navigation";
 import { capitalize, runningStrategyCount } from "../lib/format";
 import type { DashboardPayload, ExternalSnapshot, ImportResult, ReportPayload } from "../types";
@@ -36,6 +37,7 @@ interface DashboardViewContentProps {
   report: ReportPayload;
   importResult: ImportResult | null;
   busy: string;
+  feedback: WorkflowFeedbackMap;
   onJsonForm: JsonFormHandler;
   onImport: (event: FormEvent<HTMLFormElement>) => void;
   onReviewApproval: (id: number, decision: string) => Promise<void>;
@@ -104,12 +106,12 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
   );
 }
 
-function TemplesView({ dashboard, busy, onJsonForm }: DashboardViewContentProps) {
+function TemplesView({ dashboard, busy, feedback, onJsonForm }: DashboardViewContentProps) {
   return (
     <DashboardGrid>
-      <TempleSwitchboardPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
-      <QuotaControlPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
-      <MercyExceptionPanel busy={busy} onSubmit={onJsonForm} />
+      <TempleSwitchboardPanel dashboard={dashboard} busy={busy} feedback={feedback["/api/temple/create"]} onSubmit={onJsonForm} />
+      <QuotaControlPanel dashboard={dashboard} busy={busy} feedback={feedback} onSubmit={onJsonForm} />
+      <MercyExceptionPanel busy={busy} feedback={feedback["/api/exception"]} onSubmit={onJsonForm} />
       <ConfigPanel dashboard={dashboard} />
       <RecentIncomePanel dashboard={dashboard} />
     </DashboardGrid>
@@ -130,43 +132,43 @@ function StrategiesView({ dashboard }: DashboardViewContentProps) {
   );
 }
 
-function ImportsView({ dashboard, external, importResult, busy, onJsonForm, onImport, onRefreshExternal }: DashboardViewContentProps) {
+function ImportsView({ dashboard, external, importResult, busy, feedback, onJsonForm, onImport, onRefreshExternal }: DashboardViewContentProps) {
   return (
     <DashboardGrid>
-      <CommandAltarPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
-      <ImportAltarPanel dashboard={dashboard} busy={busy} importResult={importResult} onImport={onImport} />
+      <CommandAltarPanel dashboard={dashboard} busy={busy} feedback={feedback["/api/income"]} onSubmit={onJsonForm} />
+      <ImportAltarPanel dashboard={dashboard} busy={busy} feedback={feedback.import} importResult={importResult} onImport={onImport} />
       <ExternalSignalsPanel external={external} busy={busy} onRefresh={onRefreshExternal} />
       <RecentIncomePanel dashboard={dashboard} />
     </DashboardGrid>
   );
 }
 
-function ApprovalsView({ dashboard, busy, onJsonForm, onReviewApproval, onPulseWorker }: DashboardViewContentProps) {
+function ApprovalsView({ dashboard, busy, feedback, onJsonForm, onReviewApproval, onPulseWorker }: DashboardViewContentProps) {
   return (
     <DashboardGrid>
-      <ApprovalQueuePanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} onReview={onReviewApproval} />
+      <ApprovalQueuePanel dashboard={dashboard} busy={busy} feedback={feedback["/api/approval/draft"]} onSubmit={onJsonForm} onReview={onReviewApproval} />
       <TempleLogPanel dashboard={dashboard} busy={busy} onPulse={onPulseWorker} />
     </DashboardGrid>
   );
 }
 
-function ReportsView({ dashboard, report, busy, onGenerateReport, onDownloadReport }: DashboardViewContentProps) {
+function ReportsView({ dashboard, report, busy, feedback, onGenerateReport, onDownloadReport }: DashboardViewContentProps) {
   return (
     <DashboardGrid>
-      <ReportForgePanel report={report} busy={busy} onGenerate={onGenerateReport} onDownload={onDownloadReport} />
+      <ReportForgePanel report={report} busy={busy} feedback={feedback.report} onGenerate={onGenerateReport} onDownload={onDownloadReport} />
       <StrategyRoiPanel dashboard={dashboard} />
       <UpgradePathPanel dashboard={dashboard} />
     </DashboardGrid>
   );
 }
 
-function SettingsView({ dashboard, external, busy, onJsonForm, onPulseWorker, onRefreshExternal }: DashboardViewContentProps) {
+function SettingsView({ dashboard, external, busy, feedback, onJsonForm, onPulseWorker, onRefreshExternal }: DashboardViewContentProps) {
   return (
     <DashboardGrid>
       <ConfigPanel dashboard={dashboard} />
-      <AccountRecoveryPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
-      <QuotaControlPanel dashboard={dashboard} busy={busy} onSubmit={onJsonForm} />
-      <MercyExceptionPanel busy={busy} onSubmit={onJsonForm} />
+      <AccountRecoveryPanel dashboard={dashboard} busy={busy} feedback={feedback["/api/account/profile"]} onSubmit={onJsonForm} />
+      <QuotaControlPanel dashboard={dashboard} busy={busy} feedback={feedback} onSubmit={onJsonForm} />
+      <MercyExceptionPanel busy={busy} feedback={feedback["/api/exception"]} onSubmit={onJsonForm} />
       <ExternalSignalsPanel external={external} busy={busy} onRefresh={onRefreshExternal} />
       <TempleLogPanel dashboard={dashboard} busy={busy} onPulse={onPulseWorker} />
     </DashboardGrid>

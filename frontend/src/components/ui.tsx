@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ChangeEventHandler, InputHTMLAttributes, ReactNode } from "react";
 import type { DashboardPayload, WorkerStatus } from "../types";
 import { capitalize, cx, slugify } from "../lib/format";
+import type { WorkflowFeedback, WorkflowFeedbackTone } from "../lib/forms";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost";
 export type Accent = "gold" | "green" | "blue" | "violet" | "red";
@@ -26,6 +27,13 @@ const accentBorder: Record<Accent, string> = {
   blue: "border-l-temple-blue",
   violet: "border-l-temple-violet",
   red: "border-l-temple-red",
+};
+
+const noticeToneClasses: Record<WorkflowFeedbackTone, string> = {
+  info: "border-l-temple-blue text-temple-blue",
+  success: "border-l-temple-green text-temple-green",
+  warning: "border-l-temple-gold text-temple-gold",
+  error: "border-l-temple-red text-temple-red",
 };
 
 export function Button({
@@ -157,6 +165,30 @@ export function EmptyRow({ children }: { children: ReactNode }) {
   );
 }
 
+export function FormNotice({ feedback }: { feedback?: WorkflowFeedback }) {
+  if (!feedback) {
+    return null;
+  }
+  return (
+    <div
+      className={cx("temple-row grid gap-2 border-l-4 text-sm", noticeToneClasses[feedback.tone])}
+      role={feedback.tone === "error" || feedback.tone === "warning" ? "alert" : "status"}
+      aria-live="polite"
+    >
+      <strong>{feedback.message}</strong>
+      {feedback.details?.length ? (
+        <ul className="grid gap-1 pl-4 text-temple-muted">
+          {feedback.details.map((detail) => (
+            <li key={detail} className="list-disc">
+              {detail}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function Field({
   label,
   className,
@@ -165,7 +197,7 @@ export function Field({
   return (
     <label className={cx("field-label", className)}>
       {label}
-      <input className="temple-input" {...props} />
+      <input className="temple-input aria-[invalid=true]:border-temple-red aria-[invalid=true]:ring-4 aria-[invalid=true]:ring-temple-red/20" {...props} />
     </label>
   );
 }
@@ -194,7 +226,7 @@ export function SelectField({
   const select = (
     <select
       id={id}
-      className={cx("temple-input", className)}
+      className={cx("temple-input aria-[invalid=true]:border-temple-red aria-[invalid=true]:ring-4 aria-[invalid=true]:ring-temple-red/20", className)}
       name={name}
       defaultValue={defaultValue}
       value={value}

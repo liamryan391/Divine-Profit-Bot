@@ -1,17 +1,20 @@
 import type { FormEvent } from "react";
 import { KeyRound, Landmark, Mail, ShieldCheck, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { WorkflowFeedbackMap } from "../lib/forms";
 import type { AuthStatus } from "../types";
 import { BrandLockup } from "./brand";
-import { Button, Field } from "./ui";
+import { Button, Field, FormNotice } from "./ui";
 
 export function AuthGate({
   auth,
   busy,
+  feedback,
   onSubmit,
 }: {
   auth: AuthStatus;
   busy: string;
+  feedback: WorkflowFeedbackMap;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => Promise<void>;
 }) {
   return (
@@ -19,23 +22,25 @@ export function AuthGate({
       <article className="temple-panel grid gap-6">
         <BrandLockup />
         {auth.setup_required ? (
-          <form className="grid gap-3" onSubmit={(event) => void onSubmit(event, "/api/auth/setup", "Owner account created")}>
+          <form noValidate className="grid gap-3" onSubmit={(event) => void onSubmit(event, "/api/auth/setup", "Owner account created")}>
             <h2 className="text-xl font-black text-temple-gold">Owner Setup</h2>
             <Field label="Username" name="username" autoComplete="username" required />
             <Field label="Display Name" name="display_name" autoComplete="name" placeholder="Creator" />
             <Field label="Recovery Email" name="recovery_email" type="email" autoComplete="email" placeholder="owner@example.com" />
             <Field label="Password" name="password" type="password" autoComplete="new-password" minLength={10} required />
+            <FormNotice feedback={feedback["/api/auth/setup"]} />
             <Button icon={ShieldCheck} disabled={busy === "/api/auth/setup"} type="submit">
-              Create Owner
+              {busy === "/api/auth/setup" ? "Creating..." : "Create Owner"}
             </Button>
           </form>
         ) : (
-          <form className="grid gap-3" onSubmit={(event) => void onSubmit(event, "/api/auth/login", "Signed in")}>
+          <form noValidate className="grid gap-3" onSubmit={(event) => void onSubmit(event, "/api/auth/login", "Signed in")}>
             <h2 className="text-xl font-black text-temple-gold">Owner Login</h2>
             <Field label="Username" name="username" autoComplete="username" required />
             <Field label="Password" name="password" type="password" autoComplete="current-password" required />
+            <FormNotice feedback={feedback["/api/auth/login"]} />
             <Button icon={Landmark} disabled={busy === "/api/auth/login"} type="submit">
-              Enter Temple
+              {busy === "/api/auth/login" ? "Entering..." : "Enter Temple"}
             </Button>
           </form>
         )}

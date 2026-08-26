@@ -16,11 +16,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.3.2`: shared React component system and layout shell for the dashboard.
 - `v2.3.3`: primary navigation and information architecture across focused dashboard views.
 - `v2.3.4`: auth UX and account recovery readiness.
+- `v2.3.5`: workflow form validation, inline feedback, and safer actions.
 - `v2.4.0` or later: growth operations such as leads, conversion tracking, and revenue pipelines.
 
 ## Current Status
 
-Current version: `v2.3.4`.
+Current version: `v2.3.5`.
 
 Completed:
 
@@ -64,6 +65,7 @@ Completed:
 - Roadmap 2.0 Stage 2.0.2: split the dashboard into reusable React components and a stronger layout shell.
 - Roadmap 2.0 Stage 2.0.3: added primary navigation, focused dashboard views, and refresh-safe hash view state.
 - Roadmap 2.0 Stage 2.0.4: added recovery-aware auth screens, recovery email metadata, and Settings recovery commands.
+- Roadmap 2.0 Stage 2.0.5: added workflow validation, inline notices, progress states, import confirmation, and approval safeguards.
 
 ## Phase 0: Foundation
 
@@ -483,7 +485,7 @@ Release status: shipped.
 
 ### Stage 2.0.5: Workflow Forms And Feedback
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -495,7 +497,9 @@ Deliverables:
 
 Release target:
 
-- `v2.3.5` or later.
+- `v2.3.5`.
+
+Release status: shipped.
 
 ### Stage 2.0.6: Responsive Design And Accessibility
 
@@ -619,11 +623,11 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Build Roadmap 2.0, Stage 2.0.5 next:
+Build Roadmap 2.0, Stage 2.0.6 next:
 
-- Add stronger client-side validation for core workflow forms.
-- Improve loading, success, warning, and failure states.
-- Preserve long form state and add inline field errors where useful.
+- Run a mobile, tablet, and desktop layout pass.
+- Improve keyboard navigation, focus states, and live status regions.
+- Check contrast and text wrapping for dense workflow content.
 - Finish Roadmap 2.0 before starting Phase 5, Stage 5.1.
 
 Backend Roadmap 3.0 should wait until after Phase 5, Stage 5.1 unless the lead pipeline exposes a real backend blocker. The next best revenue move after Roadmap 2.0 is still the lead pipeline.

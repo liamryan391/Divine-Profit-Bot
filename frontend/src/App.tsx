@@ -4,6 +4,16 @@ import { AuthGate } from "./components/auth";
 import { DashboardViewContent } from "./components/dashboard-views";
 import { DashboardShell, LoadingPanel, ScreenFrame } from "./components/layout";
 import { Toast } from "./components/ui";
+import {
+  applyWorkflowIssues,
+  clearWorkflowFieldError,
+  clearWorkflowFormValidity,
+  focusFirstWorkflowIssue,
+  summarizeWorkflowIssues,
+  validateWorkflowForm,
+  type WorkflowFeedback,
+  type WorkflowFeedbackMap,
+} from "./lib/forms";
 import { actionPastTense, authFromPayload, canLoadDashboard, formPayload, slugify } from "./lib/format";
 import { defaultDashboardView, type DashboardView, viewFromHash } from "./lib/navigation";
 import type {
@@ -16,6 +26,13 @@ import type {
   ReportPayload,
 } from "./types";
 
+function errorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+  return error instanceof Error ? error.message : "Unexpected request failure";
+}
+
 function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
@@ -27,6 +44,7 @@ function App() {
   );
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState("");
+  const [formFeedback, setFormFeedback] = useState<WorkflowFeedbackMap>({});
   const toastTimer = useRef<number | undefined>(undefined);
 
   const showToast = useCallback((message: string) => {
@@ -35,6 +53,10 @@ function App() {
       window.clearTimeout(toastTimer.current);
     }
     toastTimer.current = window.setTimeout(() => setToast(""), 2800);
+  }, []);
+
+  const setWorkflowFeedback = useCallback((key: string, feedback: WorkflowFeedback) => {
+    setFormFeedback((current) => ({ ...current, [key]: feedback }));
   }, []);
 
   const applyDashboard = useCallback((payload: DashboardPayload) => {
@@ -53,15 +75,34 @@ function App() {
           return;
         }
         if (announce) {
-          showToast(error.message);
+          showToast(errorMessage(error));
         }
         return;
       }
       if (announce) {
-        showToast(error instanceof Error ? error.message : "Unexpected request failure");
+        showToast(errorMessage(error));
       }
     },
     [showToast],
+  );
+
+  const validateBeforeSubmit = useCallback(
+    (form: HTMLFormElement, workflowKey: string, pendingMessage: string) => {
+      clearWorkflowFormValidity(form);
+      const issues = validateWorkflowForm(form, workflowKey);
+      if (issues.length) {
+        const feedback = summarizeWorkflowIssues(issues);
+        applyWorkflowIssues(form, issues);
+        setWorkflowFeedback(workflowKey, feedback);
+        showToast(feedback.message);
+        form.reportValidity();
+        focusFirstWorkflowIssue(form, issues);
+        return false;
+      }
+      setWorkflowFeedback(workflowKey, { tone: "info", message: pendingMessage });
+      return true;
+    },
+    [setWorkflowFeedback, showToast],
   );
 
   const refreshDashboard = useCallback(
@@ -118,6 +159,16 @@ function App() {
   }, [boot]);
 
   useEffect(() => {
+    const clearField = (event: Event) => clearWorkflowFieldError(event.target);
+    document.addEventListener("input", clearField, true);
+    document.addEventListener("change", clearField, true);
+    return () => {
+      document.removeEventListener("input", clearField, true);
+      document.removeEventListener("change", clearField, true);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/${defaultDashboardView}`);
     }
@@ -150,6 +201,9 @@ function App() {
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>, path: string, success: string) {
     event.preventDefault();
     const form = event.currentTarget;
+    if (!validateBeforeSubmit(form, path, path === "/api/auth/login" ? "Signing in..." : "Creating owner account...")) {
+      return;
+    }
     setBusy(path);
     try {
       const payload = await apiRequest<{ ok: boolean; auth: AuthStatus; state: DashboardPayload }>(path, {
@@ -159,9 +213,11 @@ function App() {
       setAuth(payload.auth);
       applyDashboard(payload.state);
       form.reset();
+      setWorkflowFeedback(path, { tone: "success", message: success });
       showToast(success);
       await refreshExternalConnections(false);
     } catch (error) {
+      setWorkflowFeedback(path, { tone: "error", message: errorMessage(error) });
       handleApiError(error);
     } finally {
       setBusy("");
@@ -171,6 +227,9 @@ function App() {
   async function handleJsonForm(event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm = true) {
     event.preventDefault();
     const form = event.currentTarget;
+    if (!validateBeforeSubmit(form, path, "Saving changes...")) {
+      return;
+    }
     setBusy(path);
     try {
       const payload = await apiRequest<{ ok: boolean; state: DashboardPayload }>(path, {
@@ -181,8 +240,10 @@ function App() {
       if (resetForm) {
         form.reset();
       }
+      setWorkflowFeedback(path, { tone: "success", message: success });
       showToast(success);
     } catch (error) {
+      setWorkflowFeedback(path, { tone: "error", message: errorMessage(error) });
       handleApiError(error);
     } finally {
       setBusy("");
@@ -247,15 +308,21 @@ function App() {
   async function importCsv(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
+    if (!validateBeforeSubmit(form, "import", "Reading CSV import...")) {
+      return;
+    }
     const fileInput = form.elements.namedItem("file") as HTMLInputElement | null;
     const file = fileInput?.files?.[0];
     if (!file) {
-      showToast("Choose a CSV file first");
       return;
     }
     const sourceType = form.elements.namedItem("source_type") as HTMLSelectElement | null;
     const defaultStrategy = form.elements.namedItem("default_strategy") as HTMLSelectElement | null;
     const dryRun = form.elements.namedItem("dry_run") as HTMLInputElement | null;
+    if (!dryRun?.checked && !window.confirm("Import these CSV rows into the ledger now? Run a dry run first if you are unsure.")) {
+      setWorkflowFeedback("import", { tone: "warning", message: "CSV import cancelled." });
+      return;
+    }
     setBusy("import");
     try {
       const payload = await apiRequest<{ ok: boolean; import_result: ImportResult; state: DashboardPayload }>(
@@ -273,8 +340,18 @@ function App() {
       );
       applyDashboard(payload.state);
       setImportResult(payload.import_result);
+      setWorkflowFeedback("import", {
+        tone: "success",
+        message: dryRun?.checked ? "Dry run complete." : "CSV import complete.",
+        details: [
+          `${payload.import_result.imported_count} imported`,
+          `${payload.import_result.duplicate_count} duplicate`,
+          `${payload.import_result.skipped_count} skipped`,
+        ],
+      });
       showToast(dryRun?.checked ? "Import dry run complete" : "CSV import complete");
     } catch (error) {
+      setWorkflowFeedback("import", { tone: "error", message: errorMessage(error) });
       handleApiError(error);
     } finally {
       setBusy("");
@@ -284,11 +361,14 @@ function App() {
   async function generateReport() {
     const period = document.querySelector<HTMLSelectElement>("#reportPeriod")?.value || "week";
     setBusy("report");
+    setWorkflowFeedback("report", { tone: "info", message: "Generating report..." });
     try {
       const payload = await apiRequest<{ report: ReportPayload }>(`/api/report?period=${encodeURIComponent(period)}`);
       setReport(payload.report);
+      setWorkflowFeedback("report", { tone: "success", message: "Report generated." });
       showToast("Report generated");
     } catch (error) {
+      setWorkflowFeedback("report", { tone: "error", message: errorMessage(error) });
       handleApiError(error);
     } finally {
       setBusy("");
@@ -298,6 +378,7 @@ function App() {
   function downloadReport() {
     const currentReport = report ?? dashboard?.report;
     if (!currentReport) {
+      setWorkflowFeedback("report", { tone: "warning", message: "Generate a report before downloading." });
       showToast("Generate a report first");
       return;
     }
@@ -313,7 +394,14 @@ function App() {
   }
 
   async function reviewApproval(id: number, decision: string) {
+    if (decision === "reject" && !window.confirm("Reject this approval draft?")) {
+      return;
+    }
+    if (decision === "complete" && !window.confirm("Mark this approved action complete?")) {
+      return;
+    }
     setBusy(`approval-${id}-${decision}`);
+    setWorkflowFeedback("/api/approval/draft", { tone: "info", message: "Updating approval..." });
     try {
       const payload = await apiRequest<{ ok: boolean; approval: ApprovalAction; state: DashboardPayload }>(
         "/api/approval/review",
@@ -323,8 +411,10 @@ function App() {
         },
       );
       applyDashboard(payload.state);
+      setWorkflowFeedback("/api/approval/draft", { tone: "success", message: actionPastTense(decision) });
       showToast(actionPastTense(decision));
     } catch (error) {
+      setWorkflowFeedback("/api/approval/draft", { tone: "error", message: errorMessage(error) });
       handleApiError(error);
     } finally {
       setBusy("");
@@ -343,7 +433,7 @@ function App() {
   if (needsGate) {
     return (
       <ScreenFrame>
-        <AuthGate auth={auth} busy={busy} onSubmit={handleAuthSubmit} />
+        <AuthGate auth={auth} busy={busy} feedback={formFeedback} onSubmit={handleAuthSubmit} />
         <Toast message={toast} />
       </ScreenFrame>
     );
@@ -381,6 +471,7 @@ function App() {
         report={reportView}
         importResult={importResult}
         busy={busy}
+        feedback={formFeedback}
         onJsonForm={(event, path, success, resetForm) => void handleJsonForm(event, path, success, resetForm)}
         onImport={(event) => void importCsv(event)}
         onReviewApproval={reviewApproval}

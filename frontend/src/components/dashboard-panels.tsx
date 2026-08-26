@@ -46,7 +46,8 @@ import {
   slugify,
   titleCase,
 } from "../lib/format";
-import { ActionLink, Badge, Button, EmptyRow, Field, MiniMetric, MoodSelect, Panel, SelectField, StrategySelect, Toolbar } from "./ui";
+import type { WorkflowFeedback, WorkflowFeedbackMap } from "../lib/forms";
+import { ActionLink, Badge, Button, EmptyRow, Field, FormNotice, MiniMetric, MoodSelect, Panel, SelectField, StrategySelect, Toolbar } from "./ui";
 
 export function QuotaProgressPanel({ dashboard }: { dashboard: DashboardPayload }) {
   return (
@@ -100,10 +101,12 @@ export function TopOffering({ item }: { item: Opportunity | null }) {
 export function TempleSwitchboardPanel({
   dashboard,
   busy,
+  feedback,
   onSubmit,
 }: {
   dashboard: DashboardPayload;
   busy: string;
+  feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
 }) {
   return (
@@ -115,6 +118,7 @@ export function TempleSwitchboardPanel({
     >
       <TempleSummaryList summary={dashboard.temples} />
       <form
+        noValidate
         className="mt-4 grid gap-3 border-t border-temple-line pt-4 md:grid-cols-3"
         onSubmit={(event) => onSubmit(event, "/api/temple/create", "Temple created")}
       >
@@ -131,9 +135,12 @@ export function TempleSwitchboardPanel({
           name="description"
           placeholder="What this temple is trying to earn from"
         />
+        <div className="md:col-span-3">
+          <FormNotice feedback={feedback} />
+        </div>
         <div className="flex items-end">
           <Button icon={Plus} disabled={busy === "/api/temple/create"} type="submit">
-            Create Temple
+            {busy === "/api/temple/create" ? "Creating..." : "Create Temple"}
           </Button>
         </div>
       </form>
@@ -185,10 +192,12 @@ export function ConfigPanel({ dashboard }: { dashboard: DashboardPayload }) {
 export function AccountRecoveryPanel({
   dashboard,
   busy,
+  feedback,
   onSubmit,
 }: {
   dashboard: DashboardPayload;
   busy: string;
+  feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm?: boolean) => void;
 }) {
   const account = dashboard.auth.account;
@@ -208,6 +217,7 @@ export function AccountRecoveryPanel({
         <MiniMetric label="Recovery Email" value={recoveryEmail || "Not set"} />
       </div>
       <form
+        noValidate
         key={`account-${account?.id || "local"}-${displayName}-${recoveryEmail}`}
         className="mt-4 grid gap-3 border-t border-temple-line pt-4 md:grid-cols-3"
         onSubmit={(event) => onSubmit(event, "/api/account/profile", "Recovery profile updated", false)}
@@ -223,8 +233,11 @@ export function AccountRecoveryPanel({
         />
         <div className="flex items-end">
           <Button icon={Mail} disabled={busy === "/api/account/profile"} type="submit">
-            Save Recovery
+            {busy === "/api/account/profile" ? "Saving..." : "Save Recovery"}
           </Button>
+        </div>
+        <div className="md:col-span-3">
+          <FormNotice feedback={feedback} />
         </div>
       </form>
       <div className="mt-4 grid gap-2.5">
@@ -277,11 +290,13 @@ export function ExternalSignalsPanel({
 export function ApprovalQueuePanel({
   dashboard,
   busy,
+  feedback,
   onSubmit,
   onReview,
 }: {
   dashboard: DashboardPayload;
   busy: string;
+  feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
   onReview: (id: number, decision: string) => Promise<void>;
 }) {
@@ -295,6 +310,7 @@ export function ApprovalQueuePanel({
       <ApprovalForm
         channels={dashboard.config.channels}
         busy={busy === "/api/approval/draft"}
+        feedback={feedback}
         onSubmit={(event) => onSubmit(event, "/api/approval/draft", "Draft queued for approval")}
       />
       <ApprovalList approvals={dashboard.approvals} busy={busy} onReview={onReview} />
@@ -381,15 +397,17 @@ export function TempleLogPanel({
 export function CommandAltarPanel({
   dashboard,
   busy,
+  feedback,
   onSubmit,
 }: {
   dashboard: DashboardPayload;
   busy: string;
+  feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
 }) {
   return (
     <Panel title="Command Altar" icon={Send}>
-      <form className="grid gap-3" onSubmit={(event) => onSubmit(event, "/api/income", "Income recorded")}>
+      <form noValidate className="grid gap-3" onSubmit={(event) => onSubmit(event, "/api/income", "Income recorded")}>
         <Field label="Amount" name="amount" inputMode="decimal" placeholder="75.00" required />
         <SelectField label="Currency" name="currency" defaultValue="GBP">
           <option value="GBP">GBP</option>
@@ -403,8 +421,9 @@ export function CommandAltarPanel({
         <Field label="Source" name="source" placeholder="Paid consultation" required />
         <StrategySelect label="Strategy" name="strategy" channels={dashboard.config.channels} />
         <Field label="Note" name="note" placeholder="Optional" />
+        <FormNotice feedback={feedback} />
         <Button icon={Coins} disabled={busy === "/api/income"} type="submit">
-          Record Income
+          {busy === "/api/income" ? "Recording..." : "Record Income"}
         </Button>
       </form>
     </Panel>
@@ -414,21 +433,23 @@ export function CommandAltarPanel({
 export function ImportAltarPanel({
   dashboard,
   busy,
+  feedback,
   importResult,
   onImport,
 }: {
   dashboard: DashboardPayload;
   busy: string;
+  feedback?: WorkflowFeedback;
   importResult: ImportResult | null;
   onImport: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   return (
     <Panel title="Import Altar" icon={Upload}>
-      <form className="grid gap-3" onSubmit={onImport}>
+      <form noValidate className="grid gap-3" onSubmit={onImport}>
         <label className="field-label">
           CSV File
           <input
-            className="temple-input file:mr-3 file:rounded-md file:border-0 file:bg-temple-gold file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-[#07101c]"
+            className="temple-input aria-[invalid=true]:border-temple-red aria-[invalid=true]:ring-4 aria-[invalid=true]:ring-temple-red/20 file:mr-3 file:rounded-md file:border-0 file:bg-temple-gold file:px-3 file:py-1.5 file:text-sm file:font-bold file:text-[#07101c]"
             name="file"
             type="file"
             accept=".csv,text/csv"
@@ -450,8 +471,9 @@ export function ImportAltarPanel({
           <input className="h-5 w-5 accent-temple-gold" name="dry_run" type="checkbox" defaultChecked />
           Dry run first
         </label>
+        <FormNotice feedback={feedback} />
         <Button icon={Upload} disabled={busy === "import"} type="submit">
-          Import CSV
+          {busy === "import" ? "Importing..." : "Import CSV"}
         </Button>
       </form>
       <ImportResultView result={importResult} />
@@ -462,15 +484,18 @@ export function ImportAltarPanel({
 export function QuotaControlPanel({
   dashboard,
   busy,
+  feedback,
   onSubmit,
 }: {
   dashboard: DashboardPayload;
   busy: string;
+  feedback: WorkflowFeedbackMap;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
 }) {
   return (
     <Panel title="Quota Control" icon={Target}>
       <form
+        noValidate
         key={`quota-${dashboard.config.active_mood}`}
         className="grid gap-3"
         onSubmit={(event) => onSubmit(event, "/api/quota", "Quota updated")}
@@ -481,18 +506,21 @@ export function QuotaControlPanel({
           <option value="week">Week</option>
           <option value="month">Month</option>
         </SelectField>
+        <FormNotice feedback={feedback["/api/quota"]} />
         <Button icon={Target} disabled={busy === "/api/quota"} type="submit">
-          Set Quota
+          {busy === "/api/quota" ? "Saving..." : "Set Quota"}
         </Button>
       </form>
       <form
+        noValidate
         key={`mood-${dashboard.config.active_mood}`}
         className="mt-4 grid gap-3 border-t border-temple-line pt-4"
         onSubmit={(event) => onSubmit(event, "/api/mood", "Mood updated")}
       >
         <MoodSelect label="Active Mood" name="mood" moods={dashboard.config.moods} defaultValue={dashboard.config.active_mood} />
+        <FormNotice feedback={feedback["/api/mood"]} />
         <Button icon={Gauge} variant="secondary" disabled={busy === "/api/mood"} type="submit">
-          Set Mood
+          {busy === "/api/mood" ? "Saving..." : "Set Mood"}
         </Button>
       </form>
     </Panel>
@@ -501,18 +529,21 @@ export function QuotaControlPanel({
 
 export function MercyExceptionPanel({
   busy,
+  feedback,
   onSubmit,
 }: {
   busy: string;
+  feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
 }) {
   return (
     <Panel title="Mercy Exception" icon={ShieldCheck}>
-      <form className="grid gap-3" onSubmit={(event) => onSubmit(event, "/api/exception", "Exception added")}>
+      <form noValidate className="grid gap-3" onSubmit={(event) => onSubmit(event, "/api/exception", "Exception added")}>
         <Field label="Reason" name="reason" placeholder="Payment processor outage" required />
         <Field label="Until" name="until" type="date" required />
+        <FormNotice feedback={feedback} />
         <Button icon={ShieldCheck} variant="secondary" disabled={busy === "/api/exception"} type="submit">
-          Add Exception
+          {busy === "/api/exception" ? "Adding..." : "Add Exception"}
         </Button>
       </form>
     </Panel>
@@ -538,11 +569,13 @@ export function UpgradePathPanel({ dashboard }: { dashboard: DashboardPayload })
 export function ReportForgePanel({
   report,
   busy,
+  feedback,
   onGenerate,
   onDownload,
 }: {
   report: ReportPayload;
   busy: string;
+  feedback?: WorkflowFeedback;
   onGenerate: () => void;
   onDownload: () => void;
 }) {
@@ -558,7 +591,7 @@ export function ReportForgePanel({
             <option value="month">Monthly</option>
           </SelectField>
           <Button icon={FileText} variant="secondary" disabled={busy === "report"} onClick={onGenerate}>
-            Generate
+            {busy === "report" ? "Generating..." : "Generate"}
           </Button>
           <Button icon={Download} onClick={onDownload}>
             Download
@@ -571,6 +604,9 @@ export function ReportForgePanel({
         <span className="text-temple-muted">
           {report.period.start} to {report.period.end} - {report.earned} earned of {report.quota}
         </span>
+      </div>
+      <div className="mb-3">
+        <FormNotice feedback={feedback} />
       </div>
       <pre className="max-h-[520px] min-h-[320px] overflow-auto rounded-lg border border-temple-line bg-[#091020] p-4 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap">
         {report.markdown}
@@ -755,14 +791,16 @@ function ExternalList({ snapshot }: { snapshot: ExternalSnapshot | null }) {
 function ApprovalForm({
   channels,
   busy,
+  feedback,
   onSubmit,
 }: {
   channels: DashboardPayload["config"]["channels"];
   busy: boolean;
+  feedback?: WorkflowFeedback;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   return (
-    <form className="grid gap-3 md:grid-cols-3" onSubmit={onSubmit}>
+    <form noValidate className="grid gap-3 md:grid-cols-3" onSubmit={onSubmit}>
       <SelectField label="Draft Type" name="kind" defaultValue="invoice_reminder">
         <option value="invoice_reminder">Invoice Reminder</option>
         <option value="outreach">Outreach Message</option>
@@ -778,9 +816,12 @@ function ApprovalForm({
       <Field label="Channel" name="channel" placeholder="Email, LinkedIn, blog" />
       <StrategySelect label="Strategy" name="strategy" channels={channels} />
       <Field className="md:col-span-2" label="Context" name="context" placeholder="Useful background" />
+      <div className="md:col-span-3">
+        <FormNotice feedback={feedback} />
+      </div>
       <div className="flex items-end">
         <Button icon={Send} disabled={busy} type="submit">
-          Queue Draft
+          {busy ? "Queuing..." : "Queue Draft"}
         </Button>
       </div>
     </form>
