@@ -20,11 +20,12 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.3.6`: responsive design, accessibility, keyboard focus, and overflow hardening.
 - `v2.3.7`: visual QA readiness, static frontend checks, and Lead Pipeline route/API planning.
 - `v2.4.0`: Lead Pipeline with temple-scoped lead records, scoring, board UI, intake, and follow-up queues.
-- `v2.5.0` or later: conversion tracking and deeper revenue pipeline improvements.
+- `v2.5.0`: conversion tracking with linked lead income, rate summaries, average deal size, and lost opportunity notes.
+- `v2.6.0` or later: safe revenue rules and deeper pipeline automation.
 
 ## Current Status
 
-Current version: `v2.4.0`.
+Current version: `v2.5.0`.
 
 Completed:
 
@@ -72,6 +73,7 @@ Completed:
 - Roadmap 2.0 Stage 2.0.6: added responsive layout hardening, skip navigation, visible focus states, live status semantics, reduced-motion support, and overflow-safe dense content.
 - Roadmap 2.0 Stage 2.0.7: added a repeatable static frontend QA routine, reserved the `#/leads` Lead Pipeline route, and documented the Phase 5 UI slots and API contract.
 - Phase 5 Stage 5.1: shipped the Lead Pipeline with temple-scoped persistence, API endpoints, lead scoring, intake form, board, due follow-ups, and stage movement.
+- Phase 5 Stage 5.2: shipped Conversion Tracking with linked lead income, conversion summaries, strategy evidence, report output, and lost opportunity notes.
 
 ## Phase 0: Foundation
 
@@ -585,7 +587,7 @@ Release status: shipped.
 
 ### Stage 5.2: Conversion Tracking
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
@@ -593,10 +595,15 @@ Deliverables:
 - Conversion rate summaries.
 - Average deal size by temple and strategy.
 - Lost-opportunity notes.
+- Conversion Tracking panel on the Lead Pipeline route.
+- Generated reports include booked leads, linked revenue, open weighted pipeline, and lost value.
+- API endpoints for conversion summary, conversion recording, and linking existing income.
 
 Release target:
 
-- `v2.5.0` or later.
+- `v2.5.0`.
+
+Release status: shipped.
 
 ### Stage 5.3: Revenue Rules
 
@@ -637,14 +644,15 @@ The tool is fully operational for protected local use when the Creator can:
 - Keep separate ledgers and approval queues per temple.
 - Review aggregate quota progress across all temples.
 - Track active leads, due follow-ups, and expected pipeline value per temple.
+- Record qualified, proposal, or won leads as linked income and review conversion performance.
 
 ## Recommended Next Build Step
 
-Build Phase 5, Stage 5.2: Conversion Tracking next:
+Build Phase 5, Stage 5.3: Revenue Rules next:
 
-- Link won leads to income entries.
-- Add conversion rates by temple, stage, and strategy.
-- Show average deal size and lost-opportunity notes.
-- Feed conversion evidence back into strategy ROI and priority calls.
+- Add configurable safe automation rules.
+- Keep human approval gates on external actions.
+- Store rule run logs and outcomes per temple.
+- Add disable switches for each rule before it can run unattended.
 
-Backend Roadmap 3.0 should wait until Phase 5 exposes a larger backend bottleneck. The next best revenue move is Phase 5, Stage 5.2 because it closes the loop between leads and booked income.
+Backend Roadmap 3.0 should wait until Phase 5 exposes a larger backend bottleneck. The next best revenue move is Phase 5, Stage 5.3 because it turns conversion evidence into safer, repeatable operating rules.

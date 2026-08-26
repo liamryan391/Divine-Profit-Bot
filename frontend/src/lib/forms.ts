@@ -132,6 +132,10 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateLead(form, issues);
   }
 
+  if (workflowKey === "/api/conversions/record") {
+    validateConversion(form, issues);
+  }
+
   if (workflowKey === "import") {
     const file = fileOf(form, "file");
     if (!file) {
@@ -154,6 +158,27 @@ function validateLead(form: HTMLFormElement, issues: WorkflowIssue[]) {
   const followUp = valueOf(form, "follow_up_on");
   if (followUp && Number.isNaN(new Date(`${followUp}T00:00:00`).getTime())) {
     issues.push({ field: "follow_up_on", label: "Follow Up", message: "Use a valid date." });
+  }
+}
+
+function validateConversion(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "lead_id", "Lead");
+  requirePositiveMoney(form, issues, "amount", "Amount");
+  const currency = valueOf(form, "currency").toUpperCase() || "GBP";
+  const gbp = valueOf(form, "gbp_equivalent");
+  if (currency !== "GBP" && !gbp) {
+    issues.push({
+      field: "gbp_equivalent",
+      label: "GBP Equivalent",
+      message: "Add a GBP equivalent for non-GBP income.",
+    });
+  }
+  if (gbp) {
+    requirePositiveMoney(form, issues, "gbp_equivalent", "GBP Equivalent");
+  }
+  const conversionDate = valueOf(form, "date");
+  if (conversionDate && Number.isNaN(new Date(`${conversionDate}T00:00:00`).getTime())) {
+    issues.push({ field: "date", label: "Date", message: "Use a valid date." });
   }
 }
 

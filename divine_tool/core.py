@@ -255,6 +255,7 @@ def ensure_state(data_dir: Path) -> None:
                 amount_minor INTEGER NOT NULL,
                 currency TEXT NOT NULL,
                 gbp_minor INTEGER NOT NULL,
+                lead_id INTEGER,
                 strategy TEXT NOT NULL DEFAULT '',
                 import_fingerprint TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL,
@@ -265,9 +266,11 @@ def ensure_state(data_dir: Path) -> None:
             """
         )
         ensure_column(conn, "income", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+        ensure_column(conn, "income", "lead_id", "INTEGER")
         ensure_column(conn, "income", "strategy", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "income", "import_fingerprint", "TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_period ON income(temple_id, occurred_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_lead ON income(temple_id, lead_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_income_import_fingerprint ON income(import_fingerprint)")
         conn.execute(
             """
@@ -1049,6 +1052,7 @@ def add_income(
     import_fingerprint: str = "",
     occurred_on: date | None = None,
     temple_id: str | None = None,
+    lead_id: int | None = None,
 ) -> int:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
@@ -1060,6 +1064,20 @@ def add_income(
     occurred = (occurred_on or date.today()).isoformat()
     created = now_iso()
     with db(data_dir) as conn:
+        linked_lead: sqlite3.Row | None = None
+        if lead_id is not None:
+            linked_lead = conn.execute(
+                "SELECT * FROM leads WHERE id = ? AND temple_id = ?",
+                (lead_id, scoped_temple_id),
+            ).fetchone()
+            if linked_lead is None:
+                raise DivineToolError(f"Lead #{lead_id} was not found.")
+            if str(linked_lead["stage"]) == "lost":
+                raise DivineToolError("Lost leads must be reopened before recording a conversion.")
+            if linked_lead["converted_income_id"]:
+                raise DivineToolError(f"Lead #{lead_id} is already linked to income #{linked_lead['converted_income_id']}.")
+            if not strategy and linked_lead["strategy"]:
+                strategy = str(linked_lead["strategy"])
         if import_fingerprint:
             existing = conn.execute(
                 """
@@ -1073,15 +1091,39 @@ def add_income(
                 raise DivineToolError(f"Duplicate imported income row already exists as #{existing['id']}.")
         cur = conn.execute(
             """
-            INSERT INTO income (temple_id, amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO income
+                (temple_id, amount_minor, currency, gbp_minor, lead_id, strategy, import_fingerprint, source, note, occurred_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (scoped_temple_id, amount_minor, currency, gbp_minor, strategy, import_fingerprint, source, note, occurred, created),
+            (scoped_temple_id, amount_minor, currency, gbp_minor, lead_id, strategy, import_fingerprint, source, note, occurred, created),
         )
-        conn.commit()
         income_id = int(cur.lastrowid)
+        if linked_lead is not None:
+            conn.execute(
+                """
+                UPDATE leads
+                SET converted_income_id = ?, stage = 'won', updated_at = ?, closed_at = CASE WHEN closed_at = '' THEN ? ELSE closed_at END
+                WHERE id = ? AND temple_id = ?
+                """,
+                (income_id, created, created, lead_id, scoped_temple_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO lead_notes (lead_id, temple_id, note, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    lead_id,
+                    scoped_temple_id,
+                    f"Converted into income #{income_id}: {format_money(gbp_minor)} from {source}",
+                    created,
+                ),
+            )
+        conn.commit()
     strategy_suffix = f" [{strategy}]" if strategy else ""
     log_event(data_dir, f"Income recorded: {format_money(gbp_minor)} from {source}{strategy_suffix}", "income", temple_id=scoped_temple_id)
+    if lead_id is not None:
+        log_event(data_dir, f"Lead #{lead_id} converted into income #{income_id}", "conversion", temple_id=scoped_temple_id)
     return income_id
 
 
@@ -2285,6 +2327,14 @@ def update_lead(
         row = conn.execute("SELECT id FROM leads WHERE id = ? AND temple_id = ?", (lead_id, scoped_temple_id)).fetchone()
         if row is None:
             raise DivineToolError(f"Lead #{lead_id} was not found.")
+        linked_income_id = cleaned.get("converted_income_id")
+        if linked_income_id is not None:
+            income = conn.execute(
+                "SELECT id FROM income WHERE id = ? AND temple_id = ?",
+                (linked_income_id, scoped_temple_id),
+            ).fetchone()
+            if income is None:
+                raise DivineToolError(f"Income #{linked_income_id} was not found for this temple.")
         conn.execute(f"UPDATE leads SET {assignments} WHERE id = ? AND temple_id = ?", values)
         conn.commit()
     log_event(data_dir, f"Lead updated: #{lead_id}", "lead", temple_id=scoped_temple_id)
@@ -2427,6 +2477,210 @@ def lead_pipeline_summary(data_dir: Path, limit: int = 60, temple_id: str | None
         "rows": leads,
         "top": top,
         "due": due,
+    }
+
+
+def record_lead_conversion(
+    data_dir: Path,
+    lead_id: int,
+    amount_minor: int,
+    currency: str = "GBP",
+    gbp_minor: int | None = None,
+    source: str = "",
+    note: str = "",
+    occurred_on: date | None = None,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    lead = get_lead(data_dir, lead_id, temple_id=scoped_temple_id)
+    if str(lead["stage"]) == "lost":
+        raise DivineToolError("Lost leads must be reopened before recording a conversion.")
+    source_text = source.strip() or f"Lead conversion: {lead['title']}"
+    note_text = note.strip() or f"Converted from lead #{lead_id}"
+    income_id = add_income(
+        data_dir,
+        amount_minor=amount_minor,
+        currency=currency,
+        gbp_minor=gbp_minor,
+        source=source_text,
+        note=note_text,
+        strategy=str(lead.get("strategy") or ""),
+        occurred_on=occurred_on,
+        temple_id=scoped_temple_id,
+        lead_id=lead_id,
+    )
+    return {
+        "income_id": income_id,
+        "lead": get_lead(data_dir, lead_id, temple_id=scoped_temple_id),
+        "summary": lead_conversion_summary(data_dir, temple_id=scoped_temple_id),
+    }
+
+
+def link_income_to_lead(
+    data_dir: Path,
+    lead_id: int,
+    income_id: int,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    updated = now_iso()
+    with db(data_dir) as conn:
+        lead = conn.execute("SELECT * FROM leads WHERE id = ? AND temple_id = ?", (lead_id, scoped_temple_id)).fetchone()
+        if lead is None:
+            raise DivineToolError(f"Lead #{lead_id} was not found.")
+        if str(lead["stage"]) == "lost":
+            raise DivineToolError("Lost leads must be reopened before recording a conversion.")
+        if lead["converted_income_id"] and int(lead["converted_income_id"]) != income_id:
+            raise DivineToolError(f"Lead #{lead_id} is already linked to income #{lead['converted_income_id']}.")
+        income = conn.execute("SELECT * FROM income WHERE id = ? AND temple_id = ?", (income_id, scoped_temple_id)).fetchone()
+        if income is None:
+            raise DivineToolError(f"Income #{income_id} was not found for this temple.")
+        if income["lead_id"] and int(income["lead_id"]) != lead_id:
+            raise DivineToolError(f"Income #{income_id} is already linked to lead #{income['lead_id']}.")
+        conn.execute(
+            "UPDATE income SET lead_id = ?, strategy = CASE WHEN strategy = '' THEN ? ELSE strategy END WHERE id = ? AND temple_id = ?",
+            (lead_id, lead["strategy"], income_id, scoped_temple_id),
+        )
+        conn.execute(
+            """
+            UPDATE leads
+            SET converted_income_id = ?, stage = 'won', updated_at = ?, closed_at = CASE WHEN closed_at = '' THEN ? ELSE closed_at END
+            WHERE id = ? AND temple_id = ?
+            """,
+            (income_id, updated, updated, lead_id, scoped_temple_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO lead_notes (lead_id, temple_id, note, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (lead_id, scoped_temple_id, f"Linked to existing income #{income_id}: {format_money(int(income['gbp_minor']))}", updated),
+        )
+        conn.commit()
+    log_event(data_dir, f"Lead #{lead_id} linked to income #{income_id}", "conversion", temple_id=scoped_temple_id)
+    return get_lead(data_dir, lead_id, temple_id=scoped_temple_id)
+
+
+def lead_conversion_summary(data_dir: Path, limit: int = 6, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    config = load_config(data_dir)
+    temple = active_temple_config(config, scoped_temple_id)
+    strategy_names = {
+        str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(channel.get("name", "Revenue channel"))
+        for channel in temple.get("channels", [])
+    }
+    context = lead_scoring_context(data_dir, scoped_temple_id)
+    with db(data_dir) as conn:
+        rows = list(
+            conn.execute(
+                """
+                SELECT
+                    l.*,
+                    i.gbp_minor AS converted_gbp_minor,
+                    i.occurred_at AS converted_at,
+                    i.source AS converted_source
+                FROM leads l
+                LEFT JOIN income i ON i.id = l.converted_income_id AND i.temple_id = l.temple_id
+                WHERE l.temple_id = ?
+                ORDER BY l.updated_at DESC, l.id DESC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+
+    leads = [lead_to_dict(row, context) for row in rows]
+    converted = [lead for lead in leads if lead.get("converted_income_id") and lead.get("converted_gbp_minor") is not None]
+    won = [lead for lead in leads if lead["stage"] == "won"]
+    lost = [lead for lead in leads if lead["stage"] == "lost"]
+    open_leads = [lead for lead in leads if lead["stage"] in OPEN_LEAD_STAGES]
+    closed_count = len(won) + len(lost)
+    linked_revenue_minor = sum(int(lead.get("converted_gbp_minor") or 0) for lead in converted)
+    average_deal_minor = round(linked_revenue_minor / len(converted)) if converted else 0
+    lost_value_minor = sum(int(lead.get("estimated_value_minor") or 0) for lead in lost)
+    open_value_minor = sum(int(lead.get("weighted_value_minor") or 0) for lead in open_leads)
+
+    strategy_rows: dict[str, dict[str, Any]] = {}
+    for lead in leads:
+        strategy_id = str(lead.get("strategy") or "unassigned")
+        bucket = strategy_rows.setdefault(
+            strategy_id,
+            {
+                "id": strategy_id,
+                "name": strategy_names.get(strategy_id, "Unassigned" if strategy_id == "unassigned" else title_case_from_key(strategy_id)),
+                "lead_count": 0,
+                "open_count": 0,
+                "won_count": 0,
+                "lost_count": 0,
+                "converted_count": 0,
+                "linked_revenue_minor": 0,
+                "estimated_value_minor": 0,
+            },
+        )
+        bucket["lead_count"] += 1
+        bucket["estimated_value_minor"] += int(lead.get("estimated_value_minor") or 0)
+        if lead["stage"] in OPEN_LEAD_STAGES:
+            bucket["open_count"] += 1
+        if lead["stage"] == "won":
+            bucket["won_count"] += 1
+        if lead["stage"] == "lost":
+            bucket["lost_count"] += 1
+        if lead.get("converted_income_id") and lead.get("converted_gbp_minor") is not None:
+            bucket["converted_count"] += 1
+            bucket["linked_revenue_minor"] += int(lead.get("converted_gbp_minor") or 0)
+
+    by_strategy = []
+    for bucket in strategy_rows.values():
+        converted_count = int(bucket["converted_count"])
+        lead_count = int(bucket["lead_count"])
+        linked_minor = int(bucket["linked_revenue_minor"])
+        average_minor = round(linked_minor / converted_count) if converted_count else 0
+        by_strategy.append(
+            {
+                **bucket,
+                "conversion_rate_pct": round(converted_count / lead_count * 100, 1) if lead_count else 0.0,
+                "linked_revenue": format_money(linked_minor),
+                "estimated_value": format_money(int(bucket["estimated_value_minor"])),
+                "average_deal": format_money(average_minor),
+                "average_deal_minor": average_minor,
+            }
+        )
+    by_strategy.sort(key=lambda row: (row["linked_revenue_minor"], row["conversion_rate_pct"], row["lead_count"]), reverse=True)
+
+    recent = sorted(
+        converted,
+        key=lambda lead: (str(lead.get("converted_at") or ""), str(lead.get("updated_at") or ""), int(lead["id"])),
+        reverse=True,
+    )[:limit]
+    lost_notes = sorted(
+        lost,
+        key=lambda lead: (str(lead.get("closed_at") or ""), str(lead.get("updated_at") or ""), int(lead["id"])),
+        reverse=True,
+    )[:limit]
+
+    return {
+        "temple_id": scoped_temple_id,
+        "total_leads": len(leads),
+        "open_count": len(open_leads),
+        "won_count": len(won),
+        "lost_count": len(lost),
+        "closed_count": closed_count,
+        "converted_count": len(converted),
+        "conversion_rate_pct": round(len(converted) / len(leads) * 100, 1) if leads else 0.0,
+        "win_rate_pct": round(len(won) / closed_count * 100, 1) if closed_count else 0.0,
+        "linked_revenue": format_money(linked_revenue_minor),
+        "linked_revenue_minor": linked_revenue_minor,
+        "average_deal": format_money(average_deal_minor),
+        "average_deal_minor": average_deal_minor,
+        "open_weighted_value": format_money(open_value_minor),
+        "open_weighted_value_minor": open_value_minor,
+        "lost_value": format_money(lost_value_minor),
+        "lost_value_minor": lost_value_minor,
+        "by_strategy": by_strategy,
+        "recent": recent,
+        "lost_notes": lost_notes,
     }
 
 
@@ -3145,6 +3399,7 @@ def generate_report(
     exception = active_exception(data_dir, today, temple_id=scoped_temple_id)
     income_rows = income_rows_for_period(data_dir, period, limit=25, temple_id=scoped_temple_id)
     roi = strategy_roi_summary(data_dir, today=today, period_name=period_name, temple_id=scoped_temple_id)
+    conversions = lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
     opportunities = generate_opportunities(data_dir, today, temple_id=scoped_temple_id)[:5]
     upgrades = generate_upgrades(data_dir, today, temple_id=scoped_temple_id)
     missed_review = missed_quota_review(
@@ -3177,6 +3432,7 @@ def generate_report(
         "missed_quota_review": missed_review,
         "income": serialize_income_rows_for_report(income_rows),
         "strategy_roi": roi,
+        "conversions": conversions,
         "opportunities": opportunities,
         "upgrade_recommendations": upgrades,
     }
@@ -3282,6 +3538,24 @@ def format_report_markdown(report: dict[str, Any]) -> str:
             f"{row['delta']} delta, {row['trend']}; {row['recommendation']}."
         )
 
+    conversions = report["conversions"]
+    lines.extend(["", "## Lead Conversion Tracking", ""])
+    lines.append(
+        f"- Booked conversions: {conversions['converted_count']} of {conversions['total_leads']} leads "
+        f"({conversions['conversion_rate_pct']}%)."
+    )
+    lines.append(
+        f"- Linked revenue: {conversions['linked_revenue']} with {conversions['average_deal']} average deal size."
+    )
+    lines.append(
+        f"- Open weighted pipeline: {conversions['open_weighted_value']}; lost value to review: {conversions['lost_value']}."
+    )
+    for row in conversions["by_strategy"][:5]:
+        lines.append(
+            f"- {row['name']}: {row['converted_count']}/{row['lead_count']} booked, "
+            f"{row['linked_revenue']} linked, {row['conversion_rate_pct']}% conversion."
+        )
+
     lines.extend(["", "## Priority Opportunities", ""])
     for item in report["opportunities"][:5]:
         lines.append(f"- #{item['rank']} {item['name']} ({item['score']}/100): {item['next_action']}")
@@ -3334,6 +3608,7 @@ def process_command(data_dir: Path, command: dict[str, Any]) -> str:
             strategy=command.get("strategy", ""),
             occurred_on=parse_date(command.get("date")) if command.get("date") else None,
             temple_id=temple_id,
+            lead_id=int(command["lead_id"]) if command.get("lead_id") else None,
         )
         return f"added income #{income_id}"
     if action == "set_mood":

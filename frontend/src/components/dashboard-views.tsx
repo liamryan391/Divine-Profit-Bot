@@ -95,7 +95,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.4 growth track"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.6 revenue rules"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
@@ -142,7 +142,7 @@ function LeadsView({ dashboard, busy, feedback, onJsonForm, onAdvanceLead }: Das
         <LeadPipelinePanel
           dashboard={dashboard}
           busy={busy}
-          feedback={feedback["/api/leads"]}
+          feedback={feedback}
           onSubmit={onJsonForm}
           onAdvance={onAdvanceLead}
         />

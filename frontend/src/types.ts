@@ -141,6 +141,7 @@ export interface StrategyRoi {
 
 export interface IncomeEntry {
   id: number;
+  lead_id?: number | null;
   amount: string;
   counted: string;
   currency: string;
@@ -204,12 +205,19 @@ export interface LeadEntry {
   probability_pct: number;
   stage: string;
   stage_label: string;
+  converted_income_id?: number | null;
+  converted_gbp_minor?: number | null;
+  converted_at?: string | null;
+  converted_source?: string | null;
   strategy?: string;
   next_action?: string;
   follow_up_on?: string;
   follow_up_state: string;
   days_until_follow_up: number | null;
   notes?: string;
+  created_at?: string;
+  updated_at?: string;
+  closed_at?: string;
   priority_score: number;
   priority_label: string;
   priority_components: Record<string, number>;
@@ -228,6 +236,46 @@ export interface LeadPipelineSummary {
   rows: LeadEntry[];
   top: LeadEntry[];
   due: LeadEntry[];
+}
+
+export interface ConversionStrategyRow {
+  id: string;
+  name: string;
+  lead_count: number;
+  open_count: number;
+  won_count: number;
+  lost_count: number;
+  converted_count: number;
+  conversion_rate_pct: number;
+  linked_revenue: string;
+  linked_revenue_minor: number;
+  estimated_value: string;
+  estimated_value_minor: number;
+  average_deal: string;
+  average_deal_minor: number;
+}
+
+export interface ConversionSummary {
+  temple_id: string;
+  total_leads: number;
+  open_count: number;
+  won_count: number;
+  lost_count: number;
+  closed_count: number;
+  converted_count: number;
+  conversion_rate_pct: number;
+  win_rate_pct: number;
+  linked_revenue: string;
+  linked_revenue_minor: number;
+  average_deal: string;
+  average_deal_minor: number;
+  open_weighted_value: string;
+  open_weighted_value_minor: number;
+  lost_value: string;
+  lost_value_minor: number;
+  by_strategy: ConversionStrategyRow[];
+  recent: LeadEntry[];
+  lost_notes: LeadEntry[];
 }
 
 export interface ExternalConnection {
@@ -276,6 +324,7 @@ export interface DashboardPayload {
   upgrades: string[];
   approvals: ApprovalSummary;
   leads: LeadPipelineSummary;
+  conversions: ConversionSummary;
   temples: TempleSummary;
   auth: AuthStatus;
   worker: WorkerStatus;

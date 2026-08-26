@@ -33,6 +33,7 @@ from .core import (
     generate_report,
     generate_upgrades,
     import_income_csv,
+    lead_conversion_summary,
     list_approval_actions,
     list_events,
     list_exceptions,
@@ -40,10 +41,12 @@ from .core import (
     lead_pipeline_summary,
     list_leads,
     list_temples,
+    link_income_to_lead,
     load_config,
     parse_date,
     parse_money_to_minor,
     process_command_inbox,
+    record_lead_conversion,
     record_heartbeat,
     review_approval_action,
     row_to_dict,
@@ -147,6 +150,9 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 if parsed.path == "/api/strategy-roi":
                     self.send_json({"strategy_roi": strategy_roi_summary(data_dir)})
+                    return
+                if parsed.path == "/api/conversions/summary":
+                    self.send_json({"conversions": lead_conversion_summary(data_dir)})
                     return
                 if parsed.path == "/api/report":
                     query = parse_qs(parsed.query)
@@ -254,8 +260,36 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         note=str(payload.get("note", "")),
                         strategy=str(payload.get("strategy", "")),
                         occurred_on=parse_date(payload["date"]) if payload.get("date") else None,
+                        lead_id=int(payload["lead_id"]) if payload.get("lead_id") else None,
                     )
                     self.send_json({"ok": True, "id": income_id, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/conversions/record":
+                    result = record_lead_conversion(
+                        data_dir,
+                        lead_id=int(payload["lead_id"]),
+                        amount_minor=parse_money_to_minor(payload["amount"]),
+                        currency=str(payload.get("currency", "GBP")),
+                        gbp_minor=parse_money_to_minor(payload["gbp_equivalent"])
+                        if payload.get("gbp_equivalent")
+                        else None,
+                        source=str(payload.get("source", "")),
+                        note=str(payload.get("note", "")),
+                        occurred_on=parse_date(payload["date"]) if payload.get("date") else None,
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "income_id": result["income_id"],
+                            "lead": result["lead"],
+                            "conversions": result["summary"],
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
+                    return
+                if parsed.path == "/api/conversions/link":
+                    lead = link_income_to_lead(data_dir, lead_id=int(payload["lead_id"]), income_id=int(payload["income_id"]))
+                    self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/quota":
                     set_quota(
@@ -306,6 +340,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         command["gbp_equivalent"] = payload["gbp_equivalent"]
                     if payload.get("date"):
                         command["date"] = payload["date"]
+                    if payload.get("lead_id"):
+                        command["lead_id"] = payload["lead_id"]
                     enqueue_command(data_dir, command)
                     self.send_json({"ok": True, "state": dashboard_payload(data_dir, account)})
                     return
@@ -526,6 +562,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "upgrades": generate_upgrades(data_dir),
         "approvals": approval_queue_summary(data_dir),
         "leads": lead_pipeline_summary(data_dir),
+        "conversions": lead_conversion_summary(data_dir),
         "temples": temple_summary(data_dir),
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
         "worker": worker_status(data_dir),

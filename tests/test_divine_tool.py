@@ -29,6 +29,7 @@ from divine_tool.core import (
     generate_opportunities,
     generate_report,
     import_income_csv,
+    lead_conversion_summary,
     lead_pipeline_summary,
     list_approval_actions,
     list_leads,
@@ -38,6 +39,7 @@ from divine_tool.core import (
     load_config,
     parse_money_to_minor,
     process_command_inbox,
+    record_lead_conversion,
     record_heartbeat,
     reset_account_password,
     save_config,
@@ -139,8 +141,10 @@ class DivineToolTests(unittest.TestCase):
                     js_body = response.read()
                     self.assertIn(b"Opening the temple", js_body)
                     self.assertIn(b"Lead Pipeline", js_body)
+                    self.assertIn(b"Conversion Tracking", js_body)
                     self.assertIn(b"Create Lead", js_body)
                     self.assertIn(b"/api/leads", js_body)
+                    self.assertIn(b"/api/conversions/record", js_body)
 
                 try:
                     urlopen(f"{base_url}/api/status")
@@ -278,6 +282,41 @@ class DivineToolTests(unittest.TestCase):
                 self.assertEqual(advance_payload["lead"]["stage"], "contacted")
                 self.assertEqual(advance_payload["state"]["leads"]["counts"]["contacted"], 1)
 
+                proposal_body = json.dumps({"stage": "proposal", "note": "Proposal accepted"}).encode("utf-8")
+                proposal_request = Request(
+                    f"{base_url}/api/leads/{lead_payload['id']}/advance",
+                    data=proposal_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(proposal_request) as response:
+                    proposal_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(proposal_payload["lead"]["stage"], "proposal")
+
+                conversion_body = json.dumps(
+                    {
+                        "lead_id": lead_payload["id"],
+                        "amount": "700",
+                        "source": "Acme paid invoice",
+                        "note": "Retainer booked",
+                    }
+                ).encode("utf-8")
+                conversion_request = Request(
+                    f"{base_url}/api/conversions/record",
+                    data=conversion_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(conversion_request) as response:
+                    conversion_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(conversion_payload["ok"])
+                self.assertEqual(conversion_payload["lead"]["stage"], "won")
+                self.assertEqual(conversion_payload["state"]["conversions"]["converted_count"], 1)
+                self.assertEqual(conversion_payload["state"]["conversions"]["linked_revenue_minor"], 70000)
+                self.assertEqual(conversion_payload["state"]["income"][0]["lead_id"], lead_payload["id"])
+
                 draft_body = json.dumps(
                     {
                         "kind": "outreach",
@@ -356,7 +395,7 @@ class DivineToolTests(unittest.TestCase):
                     side_income_payload = json.loads(response.read().decode("utf-8"))
 
                 self.assertEqual(side_income_payload["state"]["status"]["earned_minor"], 1000)
-                self.assertEqual(side_income_payload["state"]["temples"]["total_earned_minor"], 5500)
+                self.assertEqual(side_income_payload["state"]["temples"]["total_earned_minor"], 75500)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -419,6 +458,75 @@ class DivineToolTests(unittest.TestCase):
             closed_summary = lead_pipeline_summary(data_dir)
             self.assertEqual(closed_summary["open_count"], 0)
             self.assertEqual(closed_summary["counts"]["won"], 1)
+
+    def test_lead_conversion_links_income_and_reports_rates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("1000"), "week")
+            set_mood(data_dir, "watchful")
+
+            lead_id = create_lead(
+                data_dir,
+                title="Conversion Prospect",
+                contact="Buyer Ltd",
+                source="Referral",
+                offer="Automation project",
+                estimated_value_minor=parse_money_to_minor("900"),
+                probability=0.75,
+                stage="proposal",
+                strategy="freelance_services",
+                next_action="Send invoice",
+                follow_up_on=date.today(),
+            )
+            lost_id = create_lead(
+                data_dir,
+                title="Lost Prospect",
+                contact="Old Buyer Ltd",
+                source="Marketplace",
+                offer="Audit sprint",
+                estimated_value_minor=parse_money_to_minor("300"),
+                probability=0.25,
+                stage="lost",
+                strategy="freelance_services",
+                next_action="Review reason",
+                notes="Price mismatch",
+            )
+
+            result = record_lead_conversion(
+                data_dir,
+                lead_id=lead_id,
+                amount_minor=parse_money_to_minor("850"),
+                currency="GBP",
+                gbp_minor=None,
+                source="Paid invoice",
+                note="Converted through proposal follow-up",
+                occurred_on=date(2026, 8, 20),
+            )
+            rows = list_income(data_dir)
+            summary = lead_conversion_summary(data_dir)
+            report = generate_report(data_dir, period_name="week", today=date(2026, 8, 20))
+
+            self.assertEqual(result["lead"]["stage"], "won")
+            self.assertEqual(rows[0]["lead_id"], lead_id)
+            self.assertEqual(rows[0]["strategy"], "freelance_services")
+            self.assertEqual(summary["converted_count"], 1)
+            self.assertEqual(summary["lost_count"], 1)
+            self.assertEqual(summary["linked_revenue_minor"], 85000)
+            self.assertEqual(summary["lost_value_minor"], 30000)
+            self.assertEqual(summary["by_strategy"][0]["conversion_rate_pct"], 50.0)
+            self.assertEqual(summary["lost_notes"][0]["id"], lost_id)
+            self.assertIn("## Lead Conversion Tracking", report["markdown"])
+            self.assertIn("Booked conversions: 1 of 2 leads", report["markdown"])
+
+            with self.assertRaises(DivineToolError):
+                record_lead_conversion(
+                    data_dir,
+                    lead_id=lead_id,
+                    amount_minor=parse_money_to_minor("25"),
+                    currency="GBP",
+                    gbp_minor=None,
+                    source="duplicate invoice",
+                )
 
     def test_config_migration_adds_strategy_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

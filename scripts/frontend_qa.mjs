@@ -40,8 +40,10 @@ const requiredJs = [
   "Opening the temple",
   "Skip to dashboard content",
   "Lead Pipeline",
+  "Conversion Tracking",
   "Create Lead",
   "/api/leads",
+  "/api/conversions/record",
   "Lead intake",
   "due follow-ups",
 ];

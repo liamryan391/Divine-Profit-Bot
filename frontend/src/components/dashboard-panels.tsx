@@ -208,7 +208,7 @@ export function LeadPipelinePanel({
 }: {
   dashboard: DashboardPayload;
   busy: string;
-  feedback?: WorkflowFeedback;
+  feedback: WorkflowFeedbackMap;
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
   onAdvance: (id: number, stage: string) => Promise<void>;
 }) {
@@ -219,7 +219,13 @@ export function LeadPipelinePanel({
         <MiniMetric label="Weighted Value" value={dashboard.leads.weighted_value} />
         <MiniMetric label="Due Now" value={String(dashboard.leads.due_count)} />
       </div>
-      <LeadIntakeForm dashboard={dashboard} busy={busy === "/api/leads"} feedback={feedback} onSubmit={onSubmit} />
+      <LeadIntakeForm dashboard={dashboard} busy={busy === "/api/leads"} feedback={feedback["/api/leads"]} onSubmit={onSubmit} />
+      <ConversionTrackingPanel
+        dashboard={dashboard}
+        busy={busy}
+        feedback={feedback["/api/conversions/record"]}
+        onSubmit={onSubmit}
+      />
       <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.45fr)]">
         <LeadBoard leads={dashboard.leads.rows} stages={dashboard.leads.stages} busy={busy} onAdvance={onAdvance} />
         <div className="grid content-start gap-3">
@@ -229,6 +235,144 @@ export function LeadPipelinePanel({
       </div>
     </Panel>
   );
+}
+
+function ConversionTrackingPanel({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  feedback?: WorkflowFeedback;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+}) {
+  const conversions = dashboard.conversions;
+  const convertibleLeads = dashboard.leads.rows.filter((lead) => isConvertibleLead(lead));
+  return (
+    <section className="mt-4 grid gap-3 rounded-lg border border-temple-line bg-[#10192a] p-3">
+      <div className="section-heading">
+        <h3 className="flex items-center gap-2 text-base font-black">
+          <Check aria-hidden="true" className="text-temple-green" size={18} />
+          Conversion Tracking
+        </h3>
+        <Badge>{conversions.conversion_rate_pct}% booked</Badge>
+      </div>
+      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-5">
+        <MiniMetric label="Booked Leads" value={String(conversions.converted_count)} />
+        <MiniMetric label="Linked Revenue" value={conversions.linked_revenue} />
+        <MiniMetric label="Average Deal" value={conversions.average_deal} />
+        <MiniMetric label="Win Rate" value={`${conversions.win_rate_pct}%`} />
+        <MiniMetric label="Lost Value" value={conversions.lost_value} />
+      </div>
+      {convertibleLeads.length ? (
+        <form
+          noValidate
+          className="grid gap-3 border-t border-temple-line pt-4 md:grid-cols-4"
+          onSubmit={(event) => onSubmit(event, "/api/conversions/record", "Conversion recorded")}
+        >
+          <SelectField label="Lead" name="lead_id" defaultValue="">
+            <option value="">Choose lead</option>
+            {convertibleLeads.map((lead) => (
+              <option key={lead.id} value={lead.id}>
+                #{lead.id} {lead.title} - {lead.estimated_value}
+              </option>
+            ))}
+          </SelectField>
+          <Field label="Amount" name="amount" inputMode="decimal" placeholder="Booked amount" required />
+          <SelectField label="Currency" name="currency" defaultValue="GBP">
+            <option value="GBP">GBP</option>
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="BTC">BTC</option>
+            <option value="LTC">LTC</option>
+            <option value="XMR">XMR</option>
+          </SelectField>
+          <Field label="GBP Equivalent" name="gbp_equivalent" inputMode="decimal" placeholder="Required outside GBP" />
+          <Field label="Date" name="date" type="date" />
+          <Field className="md:col-span-2" label="Source" name="source" placeholder="Defaults to selected lead" />
+          <Field label="Note" name="note" placeholder="Outcome note" />
+          <div className="md:col-span-4">
+            <FormNotice feedback={feedback} />
+          </div>
+          <div className="md:col-span-4">
+            <Button icon={Coins} disabled={busy === "/api/conversions/record"} type="submit">
+              {busy === "/api/conversions/record" ? "Recording..." : "Record Conversion"}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <EmptyRow>Move a lead to qualified, proposal, or won before recording booked income.</EmptyRow>
+      )}
+      <div className="grid gap-3 xl:grid-cols-2">
+        <ConversionStrategyList dashboard={dashboard} />
+        <ConversionEvidenceList dashboard={dashboard} />
+      </div>
+    </section>
+  );
+}
+
+function ConversionStrategyList({ dashboard }: { dashboard: DashboardPayload }) {
+  const rows = dashboard.conversions.by_strategy.slice(0, 5);
+  if (!rows.length) {
+    return <EmptyRow>No strategy conversion evidence yet.</EmptyRow>;
+  }
+  return (
+    <section className="grid content-start gap-2">
+      <h4 className="text-xs font-black uppercase text-temple-muted">Strategy Conversion</h4>
+      {rows.map((row) => (
+        <div key={row.id} className="temple-row grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <strong className="break-words">{row.name}</strong>
+            <b className="text-xs font-black uppercase text-temple-green">{row.conversion_rate_pct}%</b>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-[#172238]" aria-hidden="true">
+            <span className="block h-full rounded-full bg-temple-green" style={{ width: `${Math.min(row.conversion_rate_pct, 100)}%` }} />
+          </div>
+          <span className="text-sm text-temple-muted">
+            {row.converted_count}/{row.lead_count} booked - {row.linked_revenue} linked - {row.average_deal} avg
+          </span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ConversionEvidenceList({ dashboard }: { dashboard: DashboardPayload }) {
+  const recent = dashboard.conversions.recent.slice(0, 3);
+  const lost = dashboard.conversions.lost_notes.slice(0, 3);
+  return (
+    <section className="grid content-start gap-2">
+      <h4 className="text-xs font-black uppercase text-temple-muted">Evidence Notes</h4>
+      {recent.length ? (
+        recent.map((lead) => (
+          <div key={`conversion-${lead.id}`} className="temple-row grid gap-1 border-l-4 border-l-temple-green">
+            <strong className="break-words">Won: {lead.title}</strong>
+            <span className="text-sm text-temple-muted">
+              {lead.converted_at || lead.closed_at || "Booked"} - {lead.converted_source || lead.source || "lead conversion"}
+            </span>
+          </div>
+        ))
+      ) : (
+        <EmptyRow>No booked lead conversions yet.</EmptyRow>
+      )}
+      {lost.length ? (
+        lost.map((lead) => (
+          <div key={`lost-${lead.id}`} className="temple-row grid gap-1 border-l-4 border-l-temple-gold">
+            <strong className="break-words">Lost: {lead.title}</strong>
+            <span className="text-sm text-temple-muted">
+              {lead.estimated_value} at risk - {lead.notes || lead.next_action || "Capture a reason before retrying."}
+            </span>
+          </div>
+        ))
+      ) : null}
+    </section>
+  );
+}
+
+function isConvertibleLead(lead: LeadEntry) {
+  return !lead.converted_income_id && ["qualified", "proposal", "won"].includes(lead.stage);
 }
 
 function LeadIntakeForm({

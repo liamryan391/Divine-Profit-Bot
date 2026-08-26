@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.4.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.5.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -127,6 +127,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
+- Conversion Tracking for booking leads into linked income, conversion rates, average deal size, strategy conversion evidence, and lost opportunity notes.
 
 Run it with:
 
@@ -159,7 +160,7 @@ The QA check verifies the generated HTML, CSS, and JS asset references, the resp
 
 ## Lead Pipeline
 
-Phase 5, Stage 5.1 ships the `#/leads` workflow for turning legitimate opportunities into tracked revenue. Leads are scoped to the active temple and scored against quota pressure, expected value, probability, follow-up urgency, stage, and strategy evidence.
+Phase 5 ships the `#/leads` workflow for turning legitimate opportunities into tracked revenue. Leads are scoped to the active temple and scored against quota pressure, expected value, probability, follow-up urgency, stage, and strategy evidence.
 
 Current pipeline tools:
 
@@ -169,6 +170,9 @@ Current pipeline tools:
 - Due follow-up queue.
 - One-click stage movement for active leads.
 - Weighted value and open-lead metrics.
+- Conversion Tracking panel for recording qualified, proposal, or won leads as booked income.
+- Linked income rows with lead IDs, conversion rate, win rate, linked revenue, average deal size, and lost value.
+- Strategy conversion evidence and recent won/lost notes for the next prioritization pass.
 
 Lead API shape:
 
@@ -178,6 +182,9 @@ Lead API shape:
 - `POST /api/leads/{id}/note`
 - `POST /api/leads/{id}/advance`
 - `GET /api/leads/summary`
+- `GET /api/conversions/summary`
+- `POST /api/conversions/record`
+- `POST /api/conversions/link`
 
 ## Accounts And Authentication
 
