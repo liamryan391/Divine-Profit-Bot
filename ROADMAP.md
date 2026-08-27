@@ -33,7 +33,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.6.0`.
+Current version: `v2.6.1`.
 
 Completed:
 
@@ -85,6 +85,7 @@ Completed:
 - Patch `v2.5.1`: added a Leads view fallback so mixed old-server/new-frontend sessions show a restart notice instead of an empty screen.
 - Phase 5 Stage 5.3: shipped temple-scoped Revenue Rules with live evidence evaluation, approval gates, pause/retire controls, daemon run logs, dashboard workflow, and report output.
 - Phase 5 operational review: completed with Backend Roadmap 3.0 required before Phase 6.
+- Backend Roadmap 3.0 Stage 3.0.1: corrected full-dataset lead and revenue-rule aggregates, added lead pagination metadata, and covered former row-limit ceilings with regression tests.
 
 ## Phase 0: Foundation
 
@@ -667,7 +668,7 @@ Goal: make the shipped growth workflows correct at scale, efficient under pollin
 
 ### Stage 3.0.1: Correct Aggregates And Pagination
 
-Status: next.
+Status: complete.
 
 Deliverables:
 
@@ -678,9 +679,11 @@ Deliverables:
 
 Release target: `v2.6.1`.
 
+Release status: shipped.
+
 ### Stage 3.0.2: SQLite Concurrency And Versioned Migrations
 
-Status: planned.
+Status: next.
 
 Deliverables:
 
@@ -787,9 +790,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Begin Backend Roadmap 3.0, Stage 3.0.1: Correct Aggregates And Pagination.
+Begin Backend Roadmap 3.0, Stage 3.0.2: SQLite Concurrency And Versioned Migrations.
 
-- Fix totals that currently depend on display row limits.
-- Add lead API pagination metadata.
-- Lock the correction with regression tests above the current thresholds.
+- Enable WAL, busy timeout, and foreign-key enforcement.
+- Introduce explicit, versioned, idempotent schema migrations.
+- Add concurrent web and daemon write tests plus lock-recovery coverage.
 - Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.

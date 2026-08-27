@@ -2452,76 +2452,149 @@ def list_leads(
     data_dir: Path,
     stage: str = "all",
     limit: int = 50,
+    offset: int = 0,
     temple_id: str | None = None,
 ) -> list[dict[str, Any]]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
-    stage = stage.strip().lower()
-    limit = max(min(limit, 200), 1)
+    page_limit, page_offset = normalize_lead_pagination(limit, offset)
+    return load_leads(data_dir, scoped_temple_id, stage, page_limit, page_offset)
+
+
+def list_leads_page(
+    data_dir: Path,
+    stage: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_stage = stage.strip().lower()
+    page_limit, page_offset = normalize_lead_pagination(limit, offset)
+    rows = load_leads(data_dir, scoped_temple_id, normalized_stage, page_limit, page_offset)
     with db(data_dir) as conn:
-        if stage == "all":
-            rows = list(
-                conn.execute(
-                    """
-                    SELECT *
-                    FROM leads
-                    WHERE temple_id = ?
-                    ORDER BY
-                        CASE stage
-                            WHEN 'new' THEN 1
-                            WHEN 'contacted' THEN 2
-                            WHEN 'qualified' THEN 3
-                            WHEN 'proposal' THEN 4
-                            WHEN 'won' THEN 5
-                            WHEN 'lost' THEN 6
-                            ELSE 7
-                        END,
-                        follow_up_on = '',
-                        follow_up_on ASC,
-                        id DESC
-                    LIMIT ?
-                    """,
-                    (scoped_temple_id, limit),
-                )
-            )
+        if normalized_stage == "all":
+            total = int(conn.execute("SELECT COUNT(*) FROM leads WHERE temple_id = ?", (scoped_temple_id,)).fetchone()[0])
         else:
-            normalized_stage = normalize_lead_stage(stage)
-            rows = list(
+            normalized_stage = normalize_lead_stage(normalized_stage)
+            total = int(
                 conn.execute(
-                    """
-                    SELECT *
-                    FROM leads
-                    WHERE temple_id = ? AND stage = ?
-                    ORDER BY follow_up_on = '', follow_up_on ASC, id DESC
-                    LIMIT ?
-                    """,
-                    (scoped_temple_id, normalized_stage, limit),
-                )
+                    "SELECT COUNT(*) FROM leads WHERE temple_id = ? AND stage = ?",
+                    (scoped_temple_id, normalized_stage),
+                ).fetchone()[0]
             )
+    return {"items": rows, "pagination": lead_pagination(total, page_limit, page_offset, len(rows))}
+
+
+def load_leads(
+    data_dir: Path,
+    scoped_temple_id: str,
+    stage: str,
+    limit: int | None,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    normalized_stage = stage.strip().lower()
+    with db(data_dir) as conn:
+        if normalized_stage == "all":
+            sql = """
+                SELECT *
+                FROM leads
+                WHERE temple_id = ?
+                ORDER BY
+                    CASE stage
+                        WHEN 'new' THEN 1
+                        WHEN 'contacted' THEN 2
+                        WHEN 'qualified' THEN 3
+                        WHEN 'proposal' THEN 4
+                        WHEN 'won' THEN 5
+                        WHEN 'lost' THEN 6
+                        ELSE 7
+                    END,
+                    follow_up_on = '',
+                    follow_up_on ASC,
+                    id DESC
+            """
+            params: list[Any] = [scoped_temple_id]
+        else:
+            normalized_stage = normalize_lead_stage(normalized_stage)
+            sql = """
+                SELECT *
+                FROM leads
+                WHERE temple_id = ? AND stage = ?
+                ORDER BY follow_up_on = '', follow_up_on ASC, id DESC
+            """
+            params = [scoped_temple_id, normalized_stage]
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        rows = list(conn.execute(sql, params))
     context = lead_scoring_context(data_dir, scoped_temple_id)
     leads = [lead_to_dict(row, context) for row in rows]
     leads.sort(key=lambda item: (item["stage_order"], -item["priority_score"], item["follow_up_sort"], -item["id"]))
     return leads
 
 
-def lead_pipeline_summary(data_dir: Path, limit: int = 60, temple_id: str | None = None) -> dict[str, Any]:
+def normalize_lead_pagination(limit: int, offset: int) -> tuple[int, int]:
+    return max(min(int(limit), 200), 1), max(int(offset), 0)
+
+
+def lead_pagination(total: int, limit: int, offset: int, returned: int) -> dict[str, Any]:
+    next_offset = offset + returned
+    has_more = next_offset < total
+    has_previous = offset > 0
+    return {
+        "limit": limit,
+        "offset": offset,
+        "returned": returned,
+        "total": total,
+        "has_more": has_more,
+        "has_previous": has_previous,
+        "next_offset": next_offset if has_more else None,
+        "previous_offset": max(offset - limit, 0) if has_previous else None,
+    }
+
+
+def lead_pipeline_summary(
+    data_dir: Path,
+    limit: int = 60,
+    offset: int = 0,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
-    leads = list_leads(data_dir, "all", limit=limit, temple_id=scoped_temple_id)
+    page_limit, page_offset = normalize_lead_pagination(limit, offset)
+    leads = load_leads(data_dir, scoped_temple_id, "all", None)
+    rows = leads[page_offset : page_offset + page_limit]
     counts = {stage: 0 for stage in LEAD_STAGES}
     value_by_stage = {stage: 0 for stage in LEAD_STAGES}
     weighted_by_stage = {stage: 0 for stage in LEAD_STAGES}
+    strategy_metrics: dict[str, dict[str, int]] = {}
     for lead in leads:
         stage = str(lead["stage"])
         counts[stage] = counts.get(stage, 0) + 1
         value_by_stage[stage] = value_by_stage.get(stage, 0) + int(lead["estimated_value_minor"])
         weighted_by_stage[stage] = weighted_by_stage.get(stage, 0) + int(lead["weighted_value_minor"])
+        strategy = str(lead.get("strategy") or "unassigned")
+        metrics = strategy_metrics.setdefault(
+            strategy,
+            {"open_count": 0, "due_count": 0, "open_weighted_value_minor": 0, "lost_value_minor": 0},
+        )
+        if stage in OPEN_LEAD_STAGES:
+            metrics["open_count"] += 1
+            metrics["open_weighted_value_minor"] += int(lead["weighted_value_minor"])
+            if lead["follow_up_state"] in {"overdue", "due_today"}:
+                metrics["due_count"] += 1
+        elif stage == "lost":
+            metrics["lost_value_minor"] += int(lead["estimated_value_minor"])
     open_leads = [lead for lead in leads if lead["stage"] in OPEN_LEAD_STAGES]
+    lost_leads = [lead for lead in leads if lead["stage"] == "lost"]
     due_all = [lead for lead in open_leads if lead["follow_up_state"] in {"overdue", "due_today"}]
     due = due_all[:6]
     top = sorted(open_leads, key=lambda item: (item["priority_score"], item["weighted_value_minor"]), reverse=True)[:5]
     total_estimated = sum(int(lead["estimated_value_minor"]) for lead in open_leads)
     total_weighted = sum(int(lead["weighted_value_minor"]) for lead in open_leads)
+    lost_value = sum(int(lead["estimated_value_minor"]) for lead in lost_leads)
     return {
         "stages": [{"id": stage, "label": title_case_from_key(stage), "count": counts.get(stage, 0), "value": format_money(value_by_stage.get(stage, 0))} for stage in LEAD_STAGES],
         "counts": counts,
@@ -2532,7 +2605,11 @@ def lead_pipeline_summary(data_dir: Path, limit: int = 60, temple_id: str | None
         "total_estimated_value_minor": total_estimated,
         "weighted_value": format_money(total_weighted),
         "weighted_value_minor": total_weighted,
-        "rows": leads,
+        "lost_value": format_money(lost_value),
+        "lost_value_minor": lost_value,
+        "strategy_metrics": strategy_metrics,
+        "pagination": lead_pagination(len(leads), page_limit, page_offset, len(rows)),
+        "rows": rows,
         "top": top,
         "due": due,
     }
@@ -2912,11 +2989,30 @@ def list_revenue_rules(
     return [revenue_rule_to_dict(row, strategy_names) for row in rows]
 
 
-def revenue_rules_summary(data_dir: Path, limit: int = 60, temple_id: str | None = None) -> dict[str, Any]:
+def list_all_revenue_rules(data_dir: Path, temple_id: str | None = None) -> list[dict[str, Any]]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
-    rules = list_revenue_rules(data_dir, "all", limit=limit, temple_id=scoped_temple_id)
-    leads = lead_pipeline_summary(data_dir, limit=200, temple_id=scoped_temple_id)
+    with db(data_dir) as conn:
+        rows = list(
+            conn.execute(
+                """
+                SELECT *
+                FROM revenue_rules
+                WHERE temple_id = ?
+                ORDER BY status = 'retired', status = 'paused', id DESC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+    strategy_names = strategy_names_for_temple(data_dir, scoped_temple_id)
+    return [revenue_rule_to_dict(row, strategy_names) for row in rows]
+
+
+def revenue_rules_summary(data_dir: Path, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    rules = list_all_revenue_rules(data_dir, temple_id=scoped_temple_id)
+    leads = lead_pipeline_summary(data_dir, limit=1, temple_id=scoped_temple_id)
     conversions = lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
     opportunities = generate_opportunities(data_dir, temple_id=scoped_temple_id)
     evaluated = [
@@ -3089,17 +3185,11 @@ def revenue_rule_metric_value(
     opportunities: list[dict[str, Any]],
 ) -> float:
     strategy = strategy.strip()
-    scoped_leads = [
-        lead
-        for lead in leads.get("rows", [])
-        if not strategy or str(lead.get("strategy") or "") == strategy
-    ]
-    open_leads = [lead for lead in scoped_leads if lead.get("stage") in OPEN_LEAD_STAGES]
-    lost_leads = [lead for lead in scoped_leads if lead.get("stage") == "lost"]
     strategy_rows = {str(row.get("id") or ""): row for row in conversions.get("by_strategy", [])}
     conversion_row = strategy_rows.get(strategy) if strategy else None
+    lead_metrics = leads.get("strategy_metrics", {}).get(strategy, {}) if strategy else {}
     if metric == "open_weighted_value":
-        return float(sum(int(lead.get("weighted_value_minor") or 0) for lead in open_leads))
+        return float(lead_metrics.get("open_weighted_value_minor", 0) if strategy else leads.get("weighted_value_minor", 0))
     if metric == "conversion_rate_pct":
         return float(conversion_row["conversion_rate_pct"]) if conversion_row else float(conversions.get("conversion_rate_pct") or 0)
     if metric == "win_rate_pct":
@@ -3108,11 +3198,11 @@ def revenue_rule_metric_value(
             return round(int(conversion_row.get("won_count") or 0) / closed * 100, 1) if closed else 0.0
         return float(conversions.get("win_rate_pct") or 0)
     if metric == "lost_value":
-        return float(sum(int(lead.get("estimated_value_minor") or 0) for lead in lost_leads))
+        return float(lead_metrics.get("lost_value_minor", 0) if strategy else leads.get("lost_value_minor", 0))
     if metric == "due_follow_ups":
-        return float(sum(1 for lead in open_leads if lead.get("follow_up_state") in {"overdue", "due_today"}))
+        return float(lead_metrics.get("due_count", 0) if strategy else leads.get("due_count", 0))
     if metric == "open_leads":
-        return float(len(open_leads))
+        return float(lead_metrics.get("open_count", 0) if strategy else leads.get("open_count", 0))
     if metric == "opportunity_score":
         if strategy:
             return float(next((item["score"] for item in opportunities if item["id"] == strategy), 0))

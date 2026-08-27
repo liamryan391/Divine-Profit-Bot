@@ -233,6 +233,27 @@ export interface LeadPipelineSummary {
   total_estimated_value_minor: number;
   weighted_value: string;
   weighted_value_minor: number;
+  lost_value?: string;
+  lost_value_minor?: number;
+  strategy_metrics?: Record<
+    string,
+    {
+      open_count: number;
+      due_count: number;
+      open_weighted_value_minor: number;
+      lost_value_minor: number;
+    }
+  >;
+  pagination?: {
+    limit: number;
+    offset: number;
+    returned: number;
+    total: number;
+    has_more: boolean;
+    has_previous: boolean;
+    next_offset: number | null;
+    previous_offset: number | null;
+  };
   rows: LeadEntry[];
   top: LeadEntry[];
   due: LeadEntry[];

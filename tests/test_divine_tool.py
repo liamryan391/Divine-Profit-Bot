@@ -34,6 +34,7 @@ from divine_tool.core import (
     lead_pipeline_summary,
     list_approval_actions,
     list_leads,
+    list_leads_page,
     list_accounts,
     list_income,
     list_temples,
@@ -277,6 +278,14 @@ class DivineToolTests(unittest.TestCase):
                 self.assertEqual(lead_payload["state"]["leads"]["open_count"], 1)
                 self.assertEqual(lead_payload["state"]["leads"]["top"][0]["title"], "Acme Retainer")
 
+                with urlopen(Request(f"{base_url}/api/leads?limit=1&offset=0", headers=auth_headers)) as response:
+                    lead_page_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(len(lead_page_payload["leads"]), 1)
+                self.assertEqual(lead_page_payload["pagination"]["total"], 1)
+                self.assertEqual(lead_page_payload["pagination"]["returned"], 1)
+                self.assertFalse(lead_page_payload["pagination"]["has_more"])
+
                 advance_body = json.dumps({"stage": "contacted", "note": "Reached out"}).encode("utf-8")
                 advance_request = Request(
                     f"{base_url}/api/leads/{lead_payload['id']}/advance",
@@ -505,6 +514,79 @@ class DivineToolTests(unittest.TestCase):
             closed_summary = lead_pipeline_summary(data_dir)
             self.assertEqual(closed_summary["open_count"], 0)
             self.assertEqual(closed_summary["counts"]["won"], 1)
+
+    def test_lead_aggregates_and_rules_are_not_capped_by_page_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("5000"), "week")
+            set_mood(data_dir, "watchful")
+
+            for index in range(205):
+                create_lead(
+                    data_dir,
+                    title=f"Scale Prospect {index + 1}",
+                    contact="Pipeline Buyer",
+                    source="Regression fixture",
+                    offer="Revenue operations package",
+                    estimated_value_minor=parse_money_to_minor("10"),
+                    probability=0.5,
+                    stage="proposal",
+                    strategy="freelance_services",
+                    next_action="Review the proposal",
+                    follow_up_on=date.today(),
+                )
+
+            summary = lead_pipeline_summary(data_dir)
+            middle_page = list_leads_page(data_dir, limit=60, offset=60)
+            final_page = list_leads_page(data_dir, limit=60, offset=200)
+
+            self.assertEqual(summary["total_count"], 205)
+            self.assertEqual(summary["open_count"], 205)
+            self.assertEqual(summary["counts"]["proposal"], 205)
+            self.assertEqual(summary["due_count"], 205)
+            self.assertEqual(summary["weighted_value_minor"], 102500)
+            self.assertEqual(len(summary["rows"]), 60)
+            self.assertEqual(summary["pagination"]["total"], 205)
+            self.assertTrue(summary["pagination"]["has_more"])
+            self.assertEqual(summary["pagination"]["next_offset"], 60)
+            self.assertEqual(summary["strategy_metrics"]["freelance_services"]["open_count"], 205)
+            self.assertEqual(middle_page["pagination"]["offset"], 60)
+            self.assertEqual(len(middle_page["items"]), 60)
+            self.assertEqual(final_page["pagination"]["offset"], 200)
+            self.assertEqual(len(final_page["items"]), 5)
+            self.assertFalse(final_page["pagination"]["has_more"])
+
+            rule_id = create_revenue_rule(
+                data_dir,
+                name="Recognise the full service pipeline",
+                rule_type="promote",
+                metric="open_leads",
+                operator="gte",
+                threshold_value="205",
+                action="Prioritise the complete service pipeline",
+                strategy="freelance_services",
+                approval_required=False,
+            )
+            for index in range(64):
+                create_revenue_rule(
+                    data_dir,
+                    name=f"Scale pipeline rule {index + 2}",
+                    rule_type="promote",
+                    metric="open_leads",
+                    operator="gte",
+                    threshold_value="205",
+                    action="Prioritise the complete service pipeline",
+                    strategy="freelance_services",
+                    approval_required=False,
+                )
+            rule_summary = revenue_rules_summary(data_dir)
+            evaluated_rule = next(rule for rule in rule_summary["rows"] if rule["id"] == rule_id)
+
+            self.assertEqual(rule_summary["total_count"], 65)
+            self.assertEqual(rule_summary["triggered_count"], 65)
+            self.assertEqual(len(rule_summary["rows"]), 65)
+            self.assertEqual(evaluated_rule["evaluation"]["metric_value"], 205.0)
+            self.assertTrue(evaluated_rule["evaluation"]["triggered"])
 
     def test_lead_conversion_links_income_and_reports_rates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

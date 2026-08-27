@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.6.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.6.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -175,15 +175,17 @@ Current pipeline tools:
 - Conversion Tracking panel for recording qualified, proposal, or won leads as booked income.
 - Linked income rows with lead IDs, conversion rate, win rate, linked revenue, average deal size, and lost value.
 - Strategy conversion evidence and recent won/lost notes for the next prioritization pass.
+- Complete lead, stage, value, due-follow-up, and revenue-rule aggregates even when the dashboard displays only the first page of rows.
+- Pagination metadata with total, returned, next, and previous offsets for bounded lead API pages.
 
 Lead API shape:
 
-- `GET /api/leads?stage=&limit=`
+- `GET /api/leads?stage=&limit=&offset=`
 - `POST /api/leads`
 - `PATCH /api/leads/{id}`
 - `POST /api/leads/{id}/note`
 - `POST /api/leads/{id}/advance`
-- `GET /api/leads/summary`
+- `GET /api/leads/summary?limit=&offset=`
 - `GET /api/conversions/summary`
 - `POST /api/conversions/record`
 - `POST /api/conversions/link`

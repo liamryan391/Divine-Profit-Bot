@@ -40,7 +40,7 @@ from .core import (
     list_exceptions,
     list_income,
     lead_pipeline_summary,
-    list_leads,
+    list_leads_page,
     list_revenue_rules,
     list_temples,
     link_income_to_lead,
@@ -182,13 +182,18 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     self.send_json({"approvals": serialize_approval_actions(list_approval_actions(data_dir, status=status, limit=limit))})
                     return
                 if parsed.path == "/api/leads/summary":
-                    self.send_json({"leads": lead_pipeline_summary(data_dir)})
+                    query = parse_qs(parsed.query)
+                    limit = int(query.get("limit", ["60"])[0])
+                    offset = int(query.get("offset", ["0"])[0])
+                    self.send_json({"leads": lead_pipeline_summary(data_dir, limit=limit, offset=offset)})
                     return
                 if parsed.path == "/api/leads":
                     query = parse_qs(parsed.query)
                     stage = query.get("stage", ["all"])[0]
                     limit = int(query.get("limit", ["50"])[0])
-                    self.send_json({"leads": list_leads(data_dir, stage=stage, limit=limit)})
+                    offset = int(query.get("offset", ["0"])[0])
+                    page = list_leads_page(data_dir, stage=stage, limit=limit, offset=offset)
+                    self.send_json({"leads": page["items"], "pagination": page["pagination"]})
                     return
                 if parsed.path == "/api/temples":
                     self.send_json({"temples": temple_summary(data_dir), "items": list_temples(data_dir)})

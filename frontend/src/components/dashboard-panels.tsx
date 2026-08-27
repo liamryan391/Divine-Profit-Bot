@@ -219,8 +219,16 @@ export function LeadPipelinePanel({
   onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
   onAdvance: (id: number, stage: string) => Promise<void>;
 }) {
+  const loadedCount = dashboard.leads.rows.length;
+  const totalCount = dashboard.leads.pagination?.total ?? dashboard.leads.total_count;
+  const loadedLabel = loadedCount < totalCount ? ` - ${loadedCount} of ${totalCount} loaded` : "";
   return (
-    <Panel title="Lead Pipeline" icon={Target} wide meta={`${dashboard.leads.open_count} open - ${dashboard.leads.weighted_value} weighted`}>
+    <Panel
+      title="Lead Pipeline"
+      icon={Target}
+      wide
+      meta={`${dashboard.leads.open_count} open - ${dashboard.leads.weighted_value} weighted${loadedLabel}`}
+    >
       <div className="grid gap-2.5 md:grid-cols-3">
         <MiniMetric label="Open Leads" value={String(dashboard.leads.open_count)} />
         <MiniMetric label="Weighted Value" value={dashboard.leads.weighted_value} />
