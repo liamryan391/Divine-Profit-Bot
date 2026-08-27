@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.6.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.7.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -79,7 +79,7 @@ Start-Process python -ArgumentList "-m divine_tool daemon --interval 300" -Windo
 By default, state lives in `.divine_tool/`:
 
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
-- `divine_tool.sqlite3`: income ledger and exceptions.
+- `divine_tool.sqlite3`: income, leads, rules, accounts, events, and other durable application state.
 - `commands.jsonl`: daemon command inbox.
 - `commands.processed.jsonl`: processed daemon commands.
 - `commands.failed.jsonl`: failed daemon commands.
@@ -138,6 +138,21 @@ python -m divine_tool web --port 8765
 ```
 
 The dashboard and API share the same `.divine_tool/` state as the CLI and daemon.
+
+## Database Reliability
+
+Every application connection uses SQLite WAL mode, enforces foreign keys, and waits up to 10 seconds for a contested write lock. This lets the threaded web server and daemon share the same state database without failing immediately during short overlapping writes.
+
+The schema is upgraded through ordered, transactional migrations. Applied versions are recorded in `schema_migrations` and mirrored in SQLite's `user_version`; ordinary requests check the version without replaying table setup. A failed migration rolls back its schema and data changes and does not advance the recorded version.
+
+The hosted preflight verifies WAL, the busy timeout, foreign-key integrity, and the current schema version. Back up the state before upgrading a hosted instance:
+
+```powershell
+python -m divine_tool deploy backup
+python -m divine_tool deploy preflight
+```
+
+The backup command reads existing state without initializing or migrating its schema, so it can safely capture a pre-upgrade database first.
 
 For frontend development, run the Python web app for the API and use the Vite dev server for the browser UI:
 

@@ -33,7 +33,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.6.1`.
+Current version: `v2.7.0`.
 
 Completed:
 
@@ -86,6 +86,7 @@ Completed:
 - Phase 5 Stage 5.3: shipped temple-scoped Revenue Rules with live evidence evaluation, approval gates, pause/retire controls, daemon run logs, dashboard workflow, and report output.
 - Phase 5 operational review: completed with Backend Roadmap 3.0 required before Phase 6.
 - Backend Roadmap 3.0 Stage 3.0.1: corrected full-dataset lead and revenue-rule aggregates, added lead pagination metadata, and covered former row-limit ceilings with regression tests.
+- Backend Roadmap 3.0 Stage 3.0.2: enabled WAL, busy timeout, and foreign keys; replaced repeated schema setup with transactional versioned migrations; and verified legacy-state preservation, rollback, concurrent access, and lock recovery.
 
 ## Phase 0: Foundation
 
@@ -683,7 +684,7 @@ Release status: shipped.
 
 ### Stage 3.0.2: SQLite Concurrency And Versioned Migrations
 
-Status: next.
+Status: complete.
 
 Deliverables:
 
@@ -694,9 +695,11 @@ Deliverables:
 
 Release target: `v2.7.0`.
 
+Release status: shipped.
+
 ### Stage 3.0.3: Dashboard Query Efficiency
 
-Status: planned.
+Status: next.
 
 Deliverables:
 
@@ -790,9 +793,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Begin Backend Roadmap 3.0, Stage 3.0.2: SQLite Concurrency And Versioned Migrations.
+Begin Backend Roadmap 3.0, Stage 3.0.3: Dashboard Query Efficiency.
 
-- Enable WAL, busy timeout, and foreign-key enforcement.
-- Introduce explicit, versioned, idempotent schema migrations.
-- Add concurrent web and daemon write tests plus lock-recovery coverage.
+- Build one consistent dashboard snapshot without repeated nested summaries.
+- Move worker polling to a lightweight status endpoint.
+- Add representative response-time benchmarks and budgets.
 - Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.

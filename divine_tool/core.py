@@ -247,9 +247,346 @@ REVENUE_RULE_METRICS = {
     "opportunity_score": {"label": "Opportunity Score", "kind": "score"},
 }
 
+SQLITE_BUSY_TIMEOUT_MS = 10_000
+SQLITE_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1_000
+
+
+@dataclass(frozen=True)
+class SchemaMigration:
+    version: int
+    name: str
+    apply: Callable[[sqlite3.Connection], None]
+
 
 def default_data_dir() -> Path:
     return Path.cwd() / ".divine_tool"
+
+
+def connect(data_dir: Path) -> sqlite3.Connection:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(data_dir / "divine_tool.sqlite3", timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA foreign_keys = ON")
+        journal_mode = str(conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]).lower()
+        if journal_mode != "wal":
+            raise DivineToolError(f"SQLite WAL mode could not be enabled (reported {journal_mode!r}).")
+        busy_timeout_ms = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+        if busy_timeout_ms < SQLITE_BUSY_TIMEOUT_MS:
+            raise DivineToolError(
+                f"SQLite busy timeout could not be configured (reported {busy_timeout_ms} ms)."
+            )
+        if int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) != 1:
+            raise DivineToolError("SQLite foreign-key enforcement could not be enabled.")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def migrate_core_ledger(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS income (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            amount_minor INTEGER NOT NULL,
+            currency TEXT NOT NULL,
+            gbp_minor INTEGER NOT NULL,
+            lead_id INTEGER,
+            strategy TEXT NOT NULL DEFAULT '',
+            import_fingerprint TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    ensure_column(conn, "income", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+    ensure_column(conn, "income", "lead_id", "INTEGER")
+    ensure_column(conn, "income", "strategy", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "income", "import_fingerprint", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_period ON income(temple_id, occurred_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_lead ON income(temple_id, lead_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_income_import_fingerprint ON income(import_fingerprint)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS exceptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            reason TEXT NOT NULL,
+            starts_on TEXT NOT NULL,
+            ends_on TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    ensure_column(conn, "exceptions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_exceptions_temple_dates ON exceptions(temple_id, starts_on, ends_on)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            level TEXT NOT NULL,
+            category TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    ensure_column(conn, "events", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_temple_created ON events(temple_id, created_at)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_heartbeat (
+            worker_name TEXT PRIMARY KEY,
+            last_seen_at TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+
+
+def migrate_approval_actions(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approval_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            target TEXT NOT NULL DEFAULT '',
+            strategy TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            reviewed_at TEXT NOT NULL DEFAULT '',
+            decision_note TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    ensure_column(conn, "approval_actions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_status ON approval_actions(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_temple_status ON approval_actions(temple_id, status)")
+
+
+def migrate_lead_pipeline(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            title TEXT NOT NULL,
+            contact TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            offer TEXT NOT NULL DEFAULT '',
+            estimated_value_minor INTEGER NOT NULL DEFAULT 0,
+            probability REAL NOT NULL DEFAULT 0.5,
+            stage TEXT NOT NULL DEFAULT 'new',
+            strategy TEXT NOT NULL DEFAULT '',
+            next_action TEXT NOT NULL DEFAULT '',
+            follow_up_on TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            converted_income_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    ensure_column(conn, "leads", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
+    ensure_column(conn, "leads", "stage", "TEXT NOT NULL DEFAULT 'new'")
+    ensure_column(conn, "leads", "strategy", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "leads", "next_action", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "leads", "follow_up_on", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "leads", "closed_at", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_temple_stage ON leads(temple_id, stage)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_temple_follow_up ON leads(temple_id, follow_up_on)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lead_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            note TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(lead_id) REFERENCES leads(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_lead_notes_lead ON lead_notes(lead_id, created_at)")
+
+
+def migrate_authentication(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'owner',
+            recovery_email TEXT NOT NULL DEFAULT '',
+            password_salt TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_login_at TEXT NOT NULL DEFAULT '',
+            disabled INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    ensure_column(conn, "accounts", "recovery_email", "TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            token_hash TEXT PRIMARY KEY,
+            account_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            user_agent TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY(account_id) REFERENCES accounts(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_account ON auth_sessions(account_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)")
+
+
+def migrate_revenue_rules(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS revenue_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            name TEXT NOT NULL,
+            strategy TEXT NOT NULL DEFAULT '',
+            rule_type TEXT NOT NULL DEFAULT 'require_approval',
+            metric TEXT NOT NULL DEFAULT 'open_weighted_value',
+            operator TEXT NOT NULL DEFAULT 'gte',
+            threshold_value REAL NOT NULL DEFAULT 0,
+            action TEXT NOT NULL,
+            approval_required INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_rules_temple_status ON revenue_rules(temple_id, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_rules_temple_strategy ON revenue_rules(temple_id, strategy)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS revenue_rule_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            rule_id INTEGER NOT NULL,
+            rule_name TEXT NOT NULL,
+            strategy TEXT NOT NULL DEFAULT '',
+            decision TEXT NOT NULL,
+            triggered INTEGER NOT NULL DEFAULT 0,
+            metric TEXT NOT NULL,
+            metric_value REAL NOT NULL DEFAULT 0,
+            threshold_value REAL NOT NULL DEFAULT 0,
+            message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_revenue_rule_runs_temple_created ON revenue_rule_runs(temple_id, created_at DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_revenue_rule_runs_rule_created ON revenue_rule_runs(rule_id, created_at DESC, id DESC)"
+    )
+
+
+SCHEMA_MIGRATIONS = (
+    SchemaMigration(1, "core_ledger", migrate_core_ledger),
+    SchemaMigration(2, "approval_actions", migrate_approval_actions),
+    SchemaMigration(3, "lead_pipeline", migrate_lead_pipeline),
+    SchemaMigration(4, "authentication", migrate_authentication),
+    SchemaMigration(5, "revenue_rules", migrate_revenue_rules),
+)
+LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    pragma_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    migration_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone()
+    if migration_table is None:
+        if pragma_version != 0:
+            raise DivineToolError(
+                f"SQLite schema metadata is inconsistent: user_version={pragma_version}, migration ledger is missing."
+            )
+        return 0
+    recorded_versions = [int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
+    recorded_version = recorded_versions[-1] if recorded_versions else 0
+    if recorded_versions != list(range(1, recorded_version + 1)):
+        raise DivineToolError(f"SQLite migration ledger contains a version gap: {recorded_versions}.")
+    if pragma_version != recorded_version:
+        raise DivineToolError(
+            f"SQLite schema metadata is inconsistent: user_version={pragma_version}, recorded={recorded_version}."
+        )
+    return recorded_version
+
+
+def run_migrations(
+    conn: sqlite3.Connection,
+    migrations: tuple[SchemaMigration, ...] = SCHEMA_MIGRATIONS,
+) -> int:
+    versions = [migration.version for migration in migrations]
+    if versions != list(range(1, len(versions) + 1)):
+        raise ValueError("Schema migration versions must be contiguous and ordered from 1.")
+    target_version = versions[-1] if versions else 0
+    current_version = schema_version(conn)
+    if current_version > target_version:
+        raise DivineToolError(
+            f"Database schema v{current_version} is newer than this application supports (v{target_version})."
+        )
+    if current_version == target_version:
+        return current_version
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        current_version = schema_version(conn)
+        for migration in migrations:
+            if migration.version <= current_version:
+                continue
+            migration.apply(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (migration.version, migration.name, datetime.now().isoformat(timespec="seconds")),
+            )
+            conn.execute(f"PRAGMA user_version = {migration.version}")
+            current_version = migration.version
+        conn.commit()
+        return current_version
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def ensure_state(data_dir: Path) -> None:
@@ -259,224 +596,7 @@ def ensure_state(data_dir: Path) -> None:
         save_config(data_dir, DEFAULT_CONFIG)
 
     with db(data_dir) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS income (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                amount_minor INTEGER NOT NULL,
-                currency TEXT NOT NULL,
-                gbp_minor INTEGER NOT NULL,
-                lead_id INTEGER,
-                strategy TEXT NOT NULL DEFAULT '',
-                import_fingerprint TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL,
-                note TEXT NOT NULL DEFAULT '',
-                occurred_at TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        ensure_column(conn, "income", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
-        ensure_column(conn, "income", "lead_id", "INTEGER")
-        ensure_column(conn, "income", "strategy", "TEXT NOT NULL DEFAULT ''")
-        ensure_column(conn, "income", "import_fingerprint", "TEXT NOT NULL DEFAULT ''")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_period ON income(temple_id, occurred_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_temple_lead ON income(temple_id, lead_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_income_import_fingerprint ON income(import_fingerprint)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS exceptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                reason TEXT NOT NULL,
-                starts_on TEXT NOT NULL,
-                ends_on TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        ensure_column(conn, "exceptions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_exceptions_temple_dates ON exceptions(temple_id, starts_on, ends_on)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                level TEXT NOT NULL,
-                category TEXT NOT NULL,
-                message TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        ensure_column(conn, "events", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_temple_created ON events(temple_id, created_at)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS worker_heartbeat (
-                worker_name TEXT PRIMARY KEY,
-                last_seen_at TEXT NOT NULL,
-                detail TEXT NOT NULL DEFAULT ''
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS approval_actions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                kind TEXT NOT NULL,
-                title TEXT NOT NULL,
-                target TEXT NOT NULL DEFAULT '',
-                strategy TEXT NOT NULL DEFAULT '',
-                body TEXT NOT NULL,
-                metadata_json TEXT NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                reviewed_at TEXT NOT NULL DEFAULT '',
-                decision_note TEXT NOT NULL DEFAULT ''
-            )
-            """
-        )
-        ensure_column(conn, "approval_actions", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_status ON approval_actions(status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_actions_temple_status ON approval_actions(temple_id, status)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                title TEXT NOT NULL,
-                contact TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT '',
-                offer TEXT NOT NULL DEFAULT '',
-                estimated_value_minor INTEGER NOT NULL DEFAULT 0,
-                probability REAL NOT NULL DEFAULT 0.5,
-                stage TEXT NOT NULL DEFAULT 'new',
-                strategy TEXT NOT NULL DEFAULT '',
-                next_action TEXT NOT NULL DEFAULT '',
-                follow_up_on TEXT NOT NULL DEFAULT '',
-                notes TEXT NOT NULL DEFAULT '',
-                converted_income_id INTEGER,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                closed_at TEXT NOT NULL DEFAULT ''
-            )
-            """
-        )
-        ensure_column(conn, "leads", "temple_id", "TEXT NOT NULL DEFAULT 'main'")
-        ensure_column(conn, "leads", "stage", "TEXT NOT NULL DEFAULT 'new'")
-        ensure_column(conn, "leads", "strategy", "TEXT NOT NULL DEFAULT ''")
-        ensure_column(conn, "leads", "next_action", "TEXT NOT NULL DEFAULT ''")
-        ensure_column(conn, "leads", "follow_up_on", "TEXT NOT NULL DEFAULT ''")
-        ensure_column(conn, "leads", "closed_at", "TEXT NOT NULL DEFAULT ''")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_temple_stage ON leads(temple_id, stage)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_leads_temple_follow_up ON leads(temple_id, follow_up_on)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS lead_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                lead_id INTEGER NOT NULL,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                note TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(lead_id) REFERENCES leads(id)
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_lead_notes_lead ON lead_notes(lead_id, created_at)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS revenue_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                name TEXT NOT NULL,
-                strategy TEXT NOT NULL DEFAULT '',
-                rule_type TEXT NOT NULL DEFAULT 'require_approval',
-                metric TEXT NOT NULL DEFAULT 'open_weighted_value',
-                operator TEXT NOT NULL DEFAULT 'gte',
-                threshold_value REAL NOT NULL DEFAULT 0,
-                action TEXT NOT NULL,
-                approval_required INTEGER NOT NULL DEFAULT 1,
-                status TEXT NOT NULL DEFAULT 'active',
-                notes TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_rules_temple_status ON revenue_rules(temple_id, status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_rules_temple_strategy ON revenue_rules(temple_id, strategy)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS revenue_rule_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temple_id TEXT NOT NULL DEFAULT 'main',
-                rule_id INTEGER NOT NULL,
-                rule_name TEXT NOT NULL,
-                strategy TEXT NOT NULL DEFAULT '',
-                decision TEXT NOT NULL,
-                triggered INTEGER NOT NULL DEFAULT 0,
-                metric TEXT NOT NULL,
-                metric_value REAL NOT NULL DEFAULT 0,
-                threshold_value REAL NOT NULL DEFAULT 0,
-                message TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_revenue_rule_runs_temple_created ON revenue_rule_runs(temple_id, created_at DESC, id DESC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_revenue_rule_runs_rule_created ON revenue_rule_runs(rule_id, created_at DESC, id DESC)"
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                display_name TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT 'owner',
-                recovery_email TEXT NOT NULL DEFAULT '',
-                password_salt TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_login_at TEXT NOT NULL DEFAULT '',
-                disabled INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-        ensure_column(conn, "accounts", "recovery_email", "TEXT NOT NULL DEFAULT ''")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                token_hash TEXT PRIMARY KEY,
-                account_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                user_agent TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY(account_id) REFERENCES accounts(id)
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_account ON auth_sessions(account_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)")
-        conn.commit()
-
-
-def connect(data_dir: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(data_dir / "divine_tool.sqlite3")
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    columns = [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
-    if column not in columns:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        run_migrations(conn)
 
 
 @contextmanager
@@ -486,6 +606,30 @@ def db(data_dir: Path):
         yield conn
     finally:
         conn.close()
+
+
+def database_status(data_dir: Path) -> dict[str, Any]:
+    ensure_state(data_dir)
+    with db(data_dir) as conn:
+        migrations = [dict(row) for row in conn.execute("SELECT version, name, applied_at FROM schema_migrations ORDER BY version")]
+        foreign_key_violations = list(conn.execute("PRAGMA foreign_key_check"))
+        status = {
+            "journal_mode": str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower(),
+            "busy_timeout_ms": int(conn.execute("PRAGMA busy_timeout").fetchone()[0]),
+            "foreign_keys": bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]),
+            "schema_version": schema_version(conn),
+            "latest_schema_version": LATEST_SCHEMA_VERSION,
+            "migrations": migrations,
+            "foreign_key_violations": len(foreign_key_violations),
+        }
+    status["ready"] = (
+        status["journal_mode"] == "wal"
+        and status["busy_timeout_ms"] >= SQLITE_BUSY_TIMEOUT_MS
+        and status["foreign_keys"]
+        and status["schema_version"] == status["latest_schema_version"]
+        and status["foreign_key_violations"] == 0
+    )
+    return status
 
 
 def now_iso() -> str:

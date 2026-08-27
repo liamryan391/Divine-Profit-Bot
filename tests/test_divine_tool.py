@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
+from contextlib import closing
 from datetime import date
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +16,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from divine_tool.core import (
+    LATEST_SCHEMA_VERSION,
+    SCHEMA_MIGRATIONS,
+    SchemaMigration,
     DivineToolError,
     add_income,
     approval_queue_summary,
@@ -24,8 +30,11 @@ from divine_tool.core import (
     create_revenue_rule,
     create_session,
     create_temple,
+    connect,
+    database_status,
     destroy_session,
     enqueue_command,
+    ensure_state,
     external_connections_snapshot,
     generate_opportunities,
     generate_report,
@@ -46,6 +55,7 @@ from divine_tool.core import (
     record_revenue_rule_runs,
     reset_account_password,
     revenue_rules_summary,
+    run_migrations,
     save_config,
     review_approval_action,
     set_mood,
@@ -762,6 +772,196 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(config["channels"][0]["repeatability"], "medium")
             self.assertTrue(config["auth"]["enabled"])
             self.assertTrue(config["deployment"]["backup"]["enabled"])
+
+    def test_sqlite_runtime_settings_and_versioned_migrations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            status = database_status(data_dir)
+
+            self.assertTrue(status["ready"])
+            self.assertEqual(status["journal_mode"], "wal")
+            self.assertTrue(status["foreign_keys"])
+            self.assertGreaterEqual(status["busy_timeout_ms"], 10_000)
+            self.assertEqual(status["schema_version"], LATEST_SCHEMA_VERSION)
+            self.assertEqual([row["version"] for row in status["migrations"]], list(range(1, LATEST_SCHEMA_VERSION + 1)))
+
+            with closing(connect(data_dir)) as conn:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    conn.execute(
+                        """
+                        INSERT INTO auth_sessions
+                            (token_hash, account_id, created_at, expires_at, last_seen_at, user_agent)
+                        VALUES ('missing-account', 999, 'now', 'later', 'now', 'test')
+                        """
+                    )
+
+    def test_legacy_sqlite_state_is_preserved_and_migrations_are_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            legacy = sqlite3.connect(data_dir / "divine_tool.sqlite3")
+            try:
+                legacy.execute(
+                    """
+                    CREATE TABLE income (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        amount_minor INTEGER NOT NULL,
+                        currency TEXT NOT NULL,
+                        gbp_minor INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        note TEXT NOT NULL DEFAULT '',
+                        occurred_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                legacy.execute(
+                    """
+                    INSERT INTO income
+                        (amount_minor, currency, gbp_minor, source, note, occurred_at, created_at)
+                    VALUES (4200, 'GBP', 4200, 'legacy invoice', 'preserve me', '2026-08-20', '2026-08-20T09:00:00')
+                    """
+                )
+                legacy.commit()
+            finally:
+                legacy.close()
+
+            pre_migration_backup = create_backup(data_dir, data_dir / "backups")
+            backup_check = data_dir / "backup-check"
+            with zipfile.ZipFile(pre_migration_backup["archive"]) as archive:
+                archive.extract("divine_tool.sqlite3", backup_check)
+            backup_conn = sqlite3.connect(backup_check / "divine_tool.sqlite3")
+            try:
+                self.assertEqual(int(backup_conn.execute("PRAGMA user_version").fetchone()[0]), 0)
+                self.assertIsNone(
+                    backup_conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+                    ).fetchone()
+                )
+            finally:
+                backup_conn.close()
+
+            ensure_state(data_dir)
+            first_status = database_status(data_dir)
+            ensure_state(data_dir)
+            second_status = database_status(data_dir)
+
+            self.assertEqual(first_status["schema_version"], LATEST_SCHEMA_VERSION)
+            self.assertEqual(first_status["migrations"], second_status["migrations"])
+            with closing(connect(data_dir)) as conn:
+                row = conn.execute("SELECT * FROM income WHERE source = 'legacy invoice'").fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row["gbp_minor"], 4200)
+                self.assertEqual(row["temple_id"], "main")
+                self.assertEqual(row["strategy"], "")
+
+    def test_failed_schema_migration_rolls_back_without_advancing_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            ensure_state(data_dir)
+
+            def fail_after_schema_change(conn: sqlite3.Connection) -> None:
+                conn.execute("CREATE TABLE migration_must_rollback (id INTEGER PRIMARY KEY)")
+                conn.execute("INSERT INTO migration_must_rollback (id) VALUES (1)")
+                raise RuntimeError("deliberate migration failure")
+
+            with closing(connect(data_dir)) as conn:
+                with self.assertRaisesRegex(RuntimeError, "deliberate migration failure"):
+                    run_migrations(
+                        conn,
+                        SCHEMA_MIGRATIONS
+                        + (SchemaMigration(LATEST_SCHEMA_VERSION + 1, "deliberate_failure", fail_after_schema_change),),
+                    )
+                self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), LATEST_SCHEMA_VERSION)
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'migration_must_rollback'"
+                    ).fetchone()
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT 1 FROM schema_migrations WHERE version = ?",
+                        (LATEST_SCHEMA_VERSION + 1,),
+                    ).fetchone()
+                )
+
+    def test_concurrent_web_and_daemon_activity_and_lock_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            ensure_state(data_dir)
+            start = threading.Barrier(3)
+            failures: list[BaseException] = []
+
+            def web_writer() -> None:
+                try:
+                    start.wait()
+                    for index in range(12):
+                        add_income(data_dir, 100 + index, "GBP", None, f"concurrent web {index}")
+                except BaseException as exc:
+                    failures.append(exc)
+
+            def daemon_writer() -> None:
+                try:
+                    start.wait()
+                    for index in range(24):
+                        record_heartbeat(data_dir, detail=f"concurrent daemon {index}")
+                except BaseException as exc:
+                    failures.append(exc)
+
+            def dashboard_reader() -> None:
+                try:
+                    start.wait()
+                    for _ in range(12):
+                        status_report(data_dir)
+                except BaseException as exc:
+                    failures.append(exc)
+
+            threads = [
+                threading.Thread(target=web_writer),
+                threading.Thread(target=daemon_writer),
+                threading.Thread(target=dashboard_reader),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=15)
+
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(failures, [])
+            self.assertEqual(len(list_income(data_dir, limit=20)), 12)
+
+            holder = connect(data_dir)
+            holder.execute("BEGIN IMMEDIATE")
+            holder.execute(
+                "INSERT INTO events (temple_id, level, category, message, created_at) VALUES ('main', 'info', 'test', 'held lock', 'now')"
+            )
+            lock_failure: list[BaseException] = []
+            elapsed: list[float] = []
+
+            def waiting_writer() -> None:
+                started = time.monotonic()
+                try:
+                    record_heartbeat(data_dir, worker_name="lock-recovery", detail="recovered")
+                except BaseException as exc:
+                    lock_failure.append(exc)
+                finally:
+                    elapsed.append(time.monotonic() - started)
+
+            waiter = threading.Thread(target=waiting_writer)
+            waiter.start()
+            time.sleep(0.2)
+            holder.commit()
+            holder.close()
+            waiter.join(timeout=5)
+
+            self.assertFalse(waiter.is_alive())
+            self.assertEqual(lock_failure, [])
+            self.assertGreaterEqual(elapsed[0], 0.15)
+            with closing(connect(data_dir)) as conn:
+                recovered = conn.execute(
+                    "SELECT detail FROM worker_heartbeat WHERE worker_name = 'lock-recovery'"
+                ).fetchone()
+            self.assertEqual(recovered["detail"], "recovered")
 
     def test_owner_account_and_session_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

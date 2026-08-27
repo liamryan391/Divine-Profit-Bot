@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from . import __version__
-from .core import DivineToolError, auth_status, ensure_state, list_accounts, load_config, worker_status
+from .core import (
+    DivineToolError,
+    auth_status,
+    connect,
+    database_status,
+    ensure_state,
+    list_accounts,
+    load_config,
+    worker_status,
+)
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -100,14 +109,19 @@ def deployment_preflight(
         checks.append(check("writable_state", "fail", f"State directory is not writable: {exc}"))
 
     try:
-        conn = sqlite3.connect(data_dir / "divine_tool.sqlite3")
-        try:
-            conn.execute("SELECT 1").fetchone()
-        finally:
-            conn.close()
-        checks.append(check("database", "pass", "SQLite state database is reachable."))
+        sqlite_status = database_status(data_dir)
+        if not sqlite_status["ready"]:
+            raise DivineToolError("SQLite runtime guarantees are incomplete.")
+        checks.append(
+            check(
+                "database",
+                "pass",
+                "SQLite is ready with WAL, foreign keys, "
+                f"a {sqlite_status['busy_timeout_ms']} ms busy timeout, and schema v{sqlite_status['schema_version']}.",
+            )
+        )
     except Exception as exc:
-        checks.append(check("database", "fail", f"SQLite state database is not reachable: {exc}"))
+        checks.append(check("database", "fail", f"SQLite state database is not ready: {exc}"))
 
     try:
         config = load_config(data_dir)
@@ -214,7 +228,17 @@ def format_preflight(result: dict[str, Any]) -> str:
 
 
 def create_backup(data_dir: Path, output_dir: Path | None = None) -> dict[str, Any]:
-    ensure_state(data_dir)
+    if not data_dir.exists():
+        raise DivineToolError(f"State directory does not exist: {data_dir}")
+    state_names = (
+        "config.json",
+        "divine_tool.sqlite3",
+        "commands.jsonl",
+        "commands.processed.jsonl",
+        "commands.failed.jsonl",
+    )
+    if not any((data_dir / name).exists() for name in state_names):
+        raise DivineToolError(f"No Divine Tool state was found in: {data_dir}")
     backup_dir = output_dir or data_dir / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -230,7 +254,7 @@ def create_backup(data_dir: Path, output_dir: Path | None = None) -> dict[str, A
 
         db_path = data_dir / "divine_tool.sqlite3"
         if db_path.exists():
-            source = sqlite3.connect(db_path)
+            source = connect(data_dir)
             target = sqlite3.connect(staging / "divine_tool.sqlite3")
             try:
                 source.backup(target)
