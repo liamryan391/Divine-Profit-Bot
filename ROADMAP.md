@@ -23,6 +23,13 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.5.0`: conversion tracking with linked lead income, rate summaries, average deal size, and lost opportunity notes.
 - `v2.5.1`: Leads view compatibility fallback when an old server process serves the new frontend bundle.
 - `v2.6.0`: temple-scoped revenue rules, approval gates, disable controls, daemon evaluation logs, and report output.
+- `v2.6.1`: correct lead and revenue-rule aggregates independently of dashboard row limits.
+- `v2.7.0`: versioned database migrations and safer concurrent web/daemon access.
+- `v2.7.1`: efficient dashboard snapshots and lightweight health polling.
+- `v2.8.0`: hosted API and authentication hardening.
+- `v2.9.0`: worker-cycle parity, recovery, and operational observability.
+- `v2.9.1`: tested backup restore and failure drills.
+- `v3.0.0`: Backend Roadmap 3.0 completion gate.
 
 ## Current Status
 
@@ -77,6 +84,7 @@ Completed:
 - Phase 5 Stage 5.2: shipped Conversion Tracking with linked lead income, conversion summaries, strategy evidence, report output, and lost opportunity notes.
 - Patch `v2.5.1`: added a Leads view fallback so mixed old-server/new-frontend sessions show a restart notice instead of an empty screen.
 - Phase 5 Stage 5.3: shipped temple-scoped Revenue Rules with live evidence evaluation, approval gates, pause/retire controls, daemon run logs, dashboard workflow, and report output.
+- Phase 5 operational review: completed with Backend Roadmap 3.0 required before Phase 6.
 
 ## Phase 0: Foundation
 
@@ -415,9 +423,9 @@ Rationale:
 Sequencing rule:
 
 - Roadmap 2.0 does not renumber the product roadmap.
-- Phase 5, Stage 5.1 remains the next product-growth phase.
-- Phase 5 stays paused until Roadmap 2.0 reaches its completion gate.
-- Backend Roadmap 3.0 waits unless a Roadmap 2.0 or Phase 5 feature exposes a real backend blocker.
+- Roadmap 2.0 reached its completion gate before Phase 5 resumed.
+- Phase 5 Stages 5.1 through 5.3 are now shipped.
+- The Phase 5 operational review exposed concrete backend correctness and reliability blockers, so Backend Roadmap 3.0 now precedes Phase 6.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -566,7 +574,7 @@ Roadmap 2.0 is complete when:
 
 Goal: help each temple convert legitimate opportunities into tracked revenue.
 
-Status: implementation complete; operational review pending.
+Status: implementation complete; operational review complete with backend hardening required before Phase 6.
 
 ### Stage 5.1: Lead Pipeline
 
@@ -629,6 +637,126 @@ Release target:
 
 Release status: shipped.
 
+### Phase 5 Operational Review
+
+Status: complete.
+
+Evidence collected on 27 August 2026:
+
+- All 19 automated tests pass.
+- The React production build and static frontend QA pass.
+- Docker Compose configuration validation passes.
+- Hosted preflight reports ready with warnings for the expected local bind and a stale daemon heartbeat.
+- Every primary route renders at desktop and 390px mobile widths without horizontal page overflow or browser console errors.
+- An isolated 120-lead, 12-conversion, and 24-rule run completes, with dashboard snapshots averaging about 0.34 seconds locally.
+- The same run exposes a correctness blocker: the dashboard reports only 60 leads because aggregate totals are calculated from the limited display page. Revenue-rule evidence has a similar 200-lead ceiling.
+- Dashboard refreshes repeat report, conversion, rule, and opportunity aggregation work every 10 seconds.
+- The threaded web service and daemon share SQLite without explicit WAL, busy timeout, foreign-key enforcement, or versioned migrations.
+- The browser `Pulse Worker` action does not execute the same revenue-rule evaluation and audit cycle as the daemon command.
+- Hosted API hardening still needs bounded request bodies, authentication throttling, safer internal-error responses, and an explicit origin/CSRF policy.
+
+Decision:
+
+- Phase 5 features are complete and usable for protected low-volume local operation.
+- Phase 6 remains queued.
+- Backend Roadmap 3.0 is required next because the review found confirmed correctness, concurrency, performance, security, worker-parity, and recovery work.
+
+## Backend Roadmap 3.0: Operational Core
+
+Goal: make the shipped growth workflows correct at scale, efficient under polling, resilient with concurrent web and daemon processes, and safer for hosted use before adding Phase 6 features.
+
+### Stage 3.0.1: Correct Aggregates And Pagination
+
+Status: next.
+
+Deliverables:
+
+- Calculate lead counts, stage totals, weighted value, due follow-ups, conversion evidence, and revenue-rule metrics across the full temple dataset.
+- Keep row limits and pagination separate from aggregate queries.
+- Return explicit pagination metadata from lead APIs.
+- Add regression coverage above the current 60-lead and 200-lead thresholds.
+
+Release target: `v2.6.1`.
+
+### Stage 3.0.2: SQLite Concurrency And Versioned Migrations
+
+Status: planned.
+
+Deliverables:
+
+- Enable and verify WAL, busy timeout, and foreign-key enforcement on database connections.
+- Replace repeated schema setup with explicit, versioned, idempotent migrations.
+- Add concurrent web/daemon read-write tests and lock-recovery behavior.
+- Preserve existing state through migration and rollback checks.
+
+Release target: `v2.7.0`.
+
+### Stage 3.0.3: Dashboard Query Efficiency
+
+Status: planned.
+
+Deliverables:
+
+- Build one consistent dashboard snapshot without recomputing the same summaries through nested report calls.
+- Move the 10-second worker pulse to a lightweight status endpoint.
+- Generate full reports only on demand or on their intended schedule.
+- Add representative data benchmarks and documented response-time budgets.
+
+Release target: `v2.7.1`.
+
+### Stage 3.0.4: API And Authentication Hardening
+
+Status: planned.
+
+Deliverables:
+
+- Bound JSON and CSV request sizes before reading request bodies.
+- Add login throttling and auditable failed-attempt handling.
+- Return safe public server errors while retaining useful internal logs.
+- Define and test the hosted origin, CSRF, cookie, proxy, and secure-transport policy.
+
+Release target: `v2.8.0`.
+
+### Stage 3.0.5: Worker Parity And Observability
+
+Status: planned.
+
+Deliverables:
+
+- Use one worker-cycle implementation for the daemon, CLI run-once command, and browser pulse.
+- Record structured cycle outcomes for commands, rules, approvals, duration, and failures.
+- Separate liveness, readiness, and stale-worker health signals.
+- Document restart behavior and recovery from interrupted cycles.
+
+Release target: `v2.9.0`.
+
+### Stage 3.0.6: Backup Restore And Failure Drills
+
+Status: planned.
+
+Deliverables:
+
+- Add a verified restore workflow for portable backups.
+- Test container restart persistence, interrupted writes, migration failure, and stale-worker recovery.
+- Add integrity checks and a concise operator recovery runbook.
+
+Release target: `v2.9.1`.
+
+### Stage 3.0.7: Operational Release Gate
+
+Status: planned.
+
+Backend Roadmap 3.0 is complete when:
+
+- Aggregate metrics remain correct beyond display-page limits.
+- Concurrent web and daemon workloads pass without database lock failures or state loss.
+- Dashboard and health polling meet the documented response-time budgets.
+- Hosted security checks and recovery drills pass.
+- Worker behavior is identical across daemon, CLI, and browser entry points.
+- Desktop and mobile workflows pass final end-to-end verification.
+
+Release target: `v3.0.0`.
+
 ## Operational Definition
 
 The tool is fully operational for protected local use when the Creator can:
@@ -659,9 +787,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Run the Phase 5 completion review next:
+Begin Backend Roadmap 3.0, Stage 3.0.1: Correct Aggregates And Pagination.
 
-- Verify the lead-to-conversion-to-rule flow with real operating data.
-- Review daemon and hosted-service performance with rule evaluation enabled.
-- Decide whether the next value is a focused Phase 6 growth feature or a Roadmap 3.0 backend hardening programme.
-- Open Roadmap 3.0 only when the review identifies concrete reliability, scaling, or integration bottlenecks.
+- Fix totals that currently depend on display row limits.
+- Add lead API pagination metadata.
+- Lock the correction with regression tests above the current thresholds.
+- Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.
