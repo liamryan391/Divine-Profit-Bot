@@ -64,7 +64,6 @@ function App() {
   const applyDashboard = useCallback((payload: DashboardPayload) => {
     setDashboard(payload);
     setAuth(payload.auth);
-    setReport((current) => current ?? payload.report);
   }, []);
 
   const handleApiError = useCallback(
@@ -107,17 +106,14 @@ function App() {
     [setWorkflowFeedback, showToast],
   );
 
-  const refreshDashboard = useCallback(
-    async (announceErrors = true) => {
-      try {
-        const payload = await apiRequest<DashboardPayload>("/api/status");
-        applyDashboard(payload);
-      } catch (error) {
-        handleApiError(error, announceErrors);
-      }
-    },
-    [applyDashboard, handleApiError],
-  );
+  const refreshWorker = useCallback(async () => {
+    try {
+      const payload = await apiRequest<{ worker: DashboardPayload["worker"] }>("/api/worker/status");
+      setDashboard((current) => (current ? { ...current, worker: payload.worker } : current));
+    } catch (error) {
+      handleApiError(error, false);
+    }
+  }, [handleApiError]);
 
   const refreshExternalConnections = useCallback(
     async (announce = true) => {
@@ -187,10 +183,10 @@ function App() {
       return undefined;
     }
     const interval = window.setInterval(() => {
-      void refreshDashboard(false);
+      void refreshWorker();
     }, 10000);
     return () => window.clearInterval(interval);
-  }, [auth, needsGate, refreshDashboard]);
+  }, [auth, needsGate, refreshWorker]);
 
   useEffect(() => {
     return () => {
@@ -298,6 +294,7 @@ function App() {
         },
       );
       applyDashboard(payload.state);
+      setReport(null);
       await refreshExternalConnections(false);
       showToast(`Temple switched to ${payload.temple.name}`);
     } catch (error) {
@@ -378,8 +375,8 @@ function App() {
   }
 
   function downloadReport() {
-    const currentReport = report ?? dashboard?.report;
-    if (!currentReport) {
+    const currentReport = report;
+    if (!currentReport?.markdown || currentReport.generated === false) {
       setWorkflowFeedback("report", { tone: "warning", message: "Generate a report before downloading." });
       showToast("Generate a report first");
       return;

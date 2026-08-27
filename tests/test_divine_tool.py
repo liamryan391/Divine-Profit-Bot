@@ -9,13 +9,15 @@ import time
 import unittest
 import zipfile
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from divine_tool.core import (
+    DASHBOARD_SNAPSHOT_BUDGET_MS,
     LATEST_SCHEMA_VERSION,
     SCHEMA_MIGRATIONS,
     SchemaMigration,
@@ -68,7 +70,62 @@ from divine_tool.core import (
     update_revenue_rule,
 )
 from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
-from divine_tool.web import make_handler
+from divine_tool.web import dashboard_payload, make_handler
+
+
+def seed_representative_dashboard(data_dir: Path) -> None:
+    ensure_state(data_dir)
+    created_at = datetime.now().isoformat(timespec="seconds")
+    occurred_at = date.today().isoformat()
+    strategies = ("freelance_services", "digital_product", "affiliate_referral")
+    stages = ("new", "contacted", "qualified", "proposal", "won", "lost")
+    with closing(connect(data_dir)) as conn:
+        conn.executemany(
+            """
+            INSERT INTO income
+                (temple_id, amount_minor, currency, gbp_minor, strategy, source, note, occurred_at, created_at)
+            VALUES ('main', ?, 'GBP', ?, ?, ?, '', ?, ?)
+            """,
+            [
+                (1000 + index, 1000 + index, strategies[index % 3], f"benchmark income {index}", occurred_at, created_at)
+                for index in range(180)
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO leads
+                (temple_id, title, contact, source, offer, estimated_value_minor, probability, stage, strategy,
+                 next_action, follow_up_on, notes, created_at, updated_at, closed_at)
+            VALUES ('main', ?, '', 'benchmark', 'offer', ?, ?, ?, ?, 'follow up', ?, '', ?, ?, ?)
+            """,
+            [
+                (
+                    f"Lead {index}",
+                    5000 + index * 50,
+                    0.25 + (index % 4) * 0.15,
+                    stages[index % 6],
+                    strategies[index % 3],
+                    occurred_at if index % 5 == 0 else "",
+                    created_at,
+                    created_at,
+                    created_at if stages[index % 6] in {"won", "lost"} else "",
+                )
+                for index in range(120)
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO revenue_rules
+                (temple_id, name, strategy, rule_type, metric, operator, threshold_value, action,
+                 approval_required, status, notes, created_at, updated_at)
+            VALUES ('main', ?, ?, 'require_approval', 'open_weighted_value', 'gte', ?, 'review', 1, 'active', '', ?, ?)
+            """,
+            [
+                (f"Rule {index}", strategies[index % 3], 1000 + index * 100, created_at, created_at)
+                for index in range(24)
+            ],
+        )
+        conn.commit()
 
 
 class DivineToolTests(unittest.TestCase):
@@ -164,6 +221,7 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"/api/leads", js_body)
                     self.assertIn(b"/api/conversions/record", js_body)
                     self.assertIn(b"/api/revenue-rules", js_body)
+                    self.assertIn(b"/api/worker/status", js_body)
 
                 try:
                     urlopen(f"{base_url}/api/status")
@@ -194,9 +252,19 @@ class DivineToolTests(unittest.TestCase):
                 self.assertTrue(setup_payload["auth"]["authenticated"])
                 self.assertEqual(setup_payload["auth"]["account"]["role"], "owner")
                 self.assertEqual(setup_payload["auth"]["account"]["recovery_email"], "creator@example.com")
+                self.assertTrue(setup_payload["state"]["snapshot"]["within_budget"])
+                self.assertFalse(setup_payload["state"]["report"]["generated"])
 
                 json_headers = {"Content-Type": "application/json", "Cookie": cookie}
                 auth_headers = {"Cookie": cookie}
+
+                with urlopen(Request(f"{base_url}/api/worker/status", headers=auth_headers)) as response:
+                    worker_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertIn("worker", worker_payload)
+                self.assertTrue(worker_payload["within_budget"])
+                self.assertNotIn("status", worker_payload)
+                self.assertNotIn("report", worker_payload)
 
                 profile_body = json.dumps(
                     {"display_name": "Prime Creator", "recovery_email": "prime@example.com"}
@@ -233,6 +301,7 @@ class DivineToolTests(unittest.TestCase):
 
                 self.assertIn("report", report_payload)
                 self.assertIn("markdown", report_payload["report"])
+                self.assertTrue(report_payload["report"]["generated"])
                 self.assertIn("Missed-Quota Review", report_payload["report"]["markdown"])
 
                 import_body = json.dumps(
@@ -466,6 +535,42 @@ class DivineToolTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
+
+    def test_dashboard_snapshot_reuses_request_scoped_summaries_and_defers_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with (
+                patch("divine_tool.core.status_report", wraps=status_report) as status_spy,
+                patch("divine_tool.core.generate_opportunities", wraps=generate_opportunities) as opportunities_spy,
+                patch("divine_tool.web.generate_report", side_effect=AssertionError("dashboard generated a full report")),
+            ):
+                payload = dashboard_payload(data_dir)
+
+            self.assertEqual(status_spy.call_count, 1)
+            self.assertEqual(opportunities_spy.call_count, 1)
+            self.assertFalse(payload["report"]["generated"])
+            self.assertEqual(payload["report"]["markdown"], "")
+            self.assertEqual(payload["leads"]["total_count"], payload["conversions"]["total_leads"])
+            self.assertTrue(payload["snapshot"]["within_budget"])
+
+    def test_representative_dashboard_snapshot_meets_response_time_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            seed_representative_dashboard(data_dir)
+            elapsed_samples = []
+            snapshots = []
+
+            for _ in range(5):
+                started = time.perf_counter()
+                payload = dashboard_payload(data_dir)
+                elapsed_samples.append((time.perf_counter() - started) * 1000)
+                snapshots.append(payload["snapshot"])
+
+            median_ms = sorted(elapsed_samples)[len(elapsed_samples) // 2]
+            self.assertEqual(payload["leads"]["total_count"], 120)
+            self.assertEqual(payload["revenue_rules"]["total_count"], 24)
+            self.assertLessEqual(median_ms, DASHBOARD_SNAPSHOT_BUDGET_MS)
+            self.assertTrue(all(snapshot["within_budget"] for snapshot in snapshots))
 
     def test_opportunity_scoring_uses_strategy_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

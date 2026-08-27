@@ -11,6 +11,7 @@ import os
 import secrets
 import shutil
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
@@ -249,6 +250,8 @@ REVENUE_RULE_METRICS = {
 
 SQLITE_BUSY_TIMEOUT_MS = 10_000
 SQLITE_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1_000
+DASHBOARD_SNAPSHOT_BUDGET_MS = 250.0
+WORKER_STATUS_BUDGET_MS = 50.0
 
 
 @dataclass(frozen=True)
@@ -954,8 +957,17 @@ def temple_to_dict(temple: dict[str, Any], active: bool) -> dict[str, Any]:
     }
 
 
-def temple_summary(data_dir: Path, today: date | None = None) -> dict[str, Any]:
-    config = load_config(data_dir)
+def temple_summary(
+    data_dir: Path,
+    today: date | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+    statuses: dict[str, dict[str, Any]] | None = None,
+    opportunities: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    config = config if config is not None else load_config(data_dir)
+    statuses = statuses if statuses is not None else {}
+    opportunities = opportunities if opportunities is not None else {}
     active_id = str(active_temple_config(config)["id"])
     rows = []
     total_quota_minor = 0
@@ -964,8 +976,13 @@ def temple_summary(data_dir: Path, today: date | None = None) -> dict[str, Any]:
     risk_count = 0
 
     for temple in config.get("temples", []):
-        report = status_report(data_dir, today=today, temple_id=str(temple["id"]))
-        top = generate_opportunities(data_dir, today=today, temple_id=str(temple["id"]))
+        temple_id = str(temple["id"])
+        report = statuses.get(temple_id)
+        if report is None:
+            report = status_report(data_dir, today=today, temple_id=temple_id, config=config)
+        top = opportunities.get(temple_id)
+        if top is None:
+            top = generate_opportunities(data_dir, today=today, temple_id=temple_id, config=config, report=report)
         quota_minor = int(report["quota_minor"])
         earned_minor = int(report["earned_minor"])
         total_quota_minor += quota_minor
@@ -2637,6 +2654,8 @@ def load_leads(
     stage: str,
     limit: int | None,
     offset: int = 0,
+    *,
+    context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     normalized_stage = stage.strip().lower()
     with db(data_dir) as conn:
@@ -2673,7 +2692,7 @@ def load_leads(
             sql += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
         rows = list(conn.execute(sql, params))
-    context = lead_scoring_context(data_dir, scoped_temple_id)
+    context = context if context is not None else lead_scoring_context(data_dir, scoped_temple_id)
     leads = [lead_to_dict(row, context) for row in rows]
     leads.sort(key=lambda item: (item["stage_order"], -item["priority_score"], item["follow_up_sort"], -item["id"]))
     return leads
@@ -2704,11 +2723,13 @@ def lead_pipeline_summary(
     limit: int = 60,
     offset: int = 0,
     temple_id: str | None = None,
+    *,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     page_limit, page_offset = normalize_lead_pagination(limit, offset)
-    leads = load_leads(data_dir, scoped_temple_id, "all", None)
+    leads = load_leads(data_dir, scoped_temple_id, "all", None, context=context)
     rows = leads[page_offset : page_offset + page_limit]
     counts = {stage: 0 for stage in LEAD_STAGES}
     value_by_stage = {stage: 0 for stage in LEAD_STAGES}
@@ -2842,16 +2863,23 @@ def link_income_to_lead(
     return get_lead(data_dir, lead_id, temple_id=scoped_temple_id)
 
 
-def lead_conversion_summary(data_dir: Path, limit: int = 6, temple_id: str | None = None) -> dict[str, Any]:
+def lead_conversion_summary(
+    data_dir: Path,
+    limit: int = 6,
+    temple_id: str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
-    config = load_config(data_dir)
+    config = config if config is not None else load_config(data_dir)
     temple = active_temple_config(config, scoped_temple_id)
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(channel.get("name", "Revenue channel"))
         for channel in temple.get("channels", [])
     }
-    context = lead_scoring_context(data_dir, scoped_temple_id)
+    context = context if context is not None else lead_scoring_context(data_dir, scoped_temple_id)
     with db(data_dir) as conn:
         rows = list(
             conn.execute(
@@ -3133,7 +3161,12 @@ def list_revenue_rules(
     return [revenue_rule_to_dict(row, strategy_names) for row in rows]
 
 
-def list_all_revenue_rules(data_dir: Path, temple_id: str | None = None) -> list[dict[str, Any]]:
+def list_all_revenue_rules(
+    data_dir: Path,
+    temple_id: str | None = None,
+    *,
+    strategy_names: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
@@ -3148,17 +3181,25 @@ def list_all_revenue_rules(data_dir: Path, temple_id: str | None = None) -> list
                 (scoped_temple_id,),
             )
         )
-    strategy_names = strategy_names_for_temple(data_dir, scoped_temple_id)
+    strategy_names = strategy_names if strategy_names is not None else strategy_names_for_temple(data_dir, scoped_temple_id)
     return [revenue_rule_to_dict(row, strategy_names) for row in rows]
 
 
-def revenue_rules_summary(data_dir: Path, temple_id: str | None = None) -> dict[str, Any]:
+def revenue_rules_summary(
+    data_dir: Path,
+    temple_id: str | None = None,
+    *,
+    leads: dict[str, Any] | None = None,
+    conversions: dict[str, Any] | None = None,
+    opportunities: list[dict[str, Any]] | None = None,
+    strategy_names: dict[str, str] | None = None,
+) -> dict[str, Any]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
-    rules = list_all_revenue_rules(data_dir, temple_id=scoped_temple_id)
-    leads = lead_pipeline_summary(data_dir, limit=1, temple_id=scoped_temple_id)
-    conversions = lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
-    opportunities = generate_opportunities(data_dir, temple_id=scoped_temple_id)
+    rules = list_all_revenue_rules(data_dir, temple_id=scoped_temple_id, strategy_names=strategy_names)
+    leads = leads if leads is not None else lead_pipeline_summary(data_dir, limit=1, temple_id=scoped_temple_id)
+    conversions = conversions if conversions is not None else lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
+    opportunities = opportunities if opportunities is not None else generate_opportunities(data_dir, temple_id=scoped_temple_id)
     evaluated = [
         {**rule, "evaluation": evaluate_revenue_rule(rule, leads, conversions, opportunities)}
         for rule in rules
@@ -3477,10 +3518,23 @@ def bool_from_payload(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def lead_scoring_context(data_dir: Path, temple_id: str) -> dict[str, Any]:
-    report = status_report(data_dir, temple_id=temple_id)
-    opportunity_scores = {item["id"]: int(item["score"]) for item in generate_opportunities(data_dir, temple_id=temple_id)}
-    return {"report": report, "opportunity_scores": opportunity_scores, "today": date.today()}
+def lead_scoring_context(
+    data_dir: Path,
+    temple_id: str,
+    *,
+    today: date | None = None,
+    report: dict[str, Any] | None = None,
+    opportunities: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    snapshot_date = today or date.today()
+    report = report if report is not None else status_report(data_dir, today=snapshot_date, temple_id=temple_id)
+    opportunities = (
+        opportunities
+        if opportunities is not None
+        else generate_opportunities(data_dir, today=snapshot_date, temple_id=temple_id, report=report)
+    )
+    opportunity_scores = {item["id"]: int(item["score"]) for item in opportunities}
+    return {"report": report, "opportunity_scores": opportunity_scores, "today": snapshot_date}
 
 
 def lead_to_dict(row: sqlite3.Row, context: dict[str, Any]) -> dict[str, Any]:
@@ -3742,18 +3796,30 @@ def strategy_roi_summary(
     today: date | None = None,
     period_name: str | None = None,
     temple_id: str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+    report: dict[str, Any] | None = None,
+    opportunities: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    report = status_report(data_dir, today, temple_id=temple_id)
-    config = load_config(data_dir)
+    config = config if config is not None else load_config(data_dir)
     temple = active_temple_config(config, temple_id)
     scoped_temple_id = str(temple["id"])
-    period = period_for(period_name, today) if period_name else report["period"]
+    if period_name:
+        period = period_for(period_name, today)
+    else:
+        report = report if report is not None else status_report(data_dir, today, temple_id=scoped_temple_id, config=config)
+        period = report["period"]
     previous = previous_period(period)
     current_totals = strategy_period_totals(data_dir, period, temple_id=scoped_temple_id)
     previous_totals = strategy_period_totals(data_dir, previous, temple_id=scoped_temple_id)
     all_totals = strategy_income_totals(data_dir, period, temple_id=scoped_temple_id)
     notes = strategy_recent_notes(data_dir, temple_id=scoped_temple_id)
-    opportunities_by_id = {item["id"]: item for item in generate_opportunities(data_dir, today, temple_id=scoped_temple_id)}
+    opportunities = (
+        opportunities
+        if opportunities is not None
+        else generate_opportunities(data_dir, today, temple_id=scoped_temple_id, config=config, report=report)
+    )
+    opportunities_by_id = {item["id"]: item for item in opportunities}
     rows: list[dict[str, Any]] = []
 
     for channel in temple.get("channels", []):
@@ -3974,9 +4040,15 @@ def active_exception(data_dir: Path, today: date | None = None, temple_id: str |
         ).fetchone()
 
 
-def status_report(data_dir: Path, today: date | None = None, temple_id: str | None = None) -> dict[str, Any]:
+def status_report(
+    data_dir: Path,
+    today: date | None = None,
+    temple_id: str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     ensure_state(data_dir)
-    config = load_config(data_dir)
+    config = config if config is not None else load_config(data_dir)
     temple = active_temple_config(config, temple_id)
     scoped_temple_id = str(temple["id"])
     mood = active_mood(config, scoped_temple_id)
@@ -4019,9 +4091,12 @@ def generate_opportunities(
     data_dir: Path,
     today: date | None = None,
     temple_id: str | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+    report: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    report = status_report(data_dir, today, temple_id=temple_id)
-    config = load_config(data_dir)
+    config = config if config is not None else load_config(data_dir)
+    report = report if report is not None else status_report(data_dir, today, temple_id=temple_id, config=config)
     temple = active_temple_config(config, temple_id)
     scoped_temple_id = str(temple["id"])
     period = report["period"]
@@ -4155,8 +4230,14 @@ def opportunity_rationale(
     return f"{channel.get('name', 'This strategy')} ranks here because it {', '.join(reasons)}; {urgency}."
 
 
-def generate_upgrades(data_dir: Path, today: date | None = None, temple_id: str | None = None) -> list[str]:
-    report = status_report(data_dir, today, temple_id=temple_id)
+def generate_upgrades(
+    data_dir: Path,
+    today: date | None = None,
+    temple_id: str | None = None,
+    *,
+    report: dict[str, Any] | None = None,
+) -> list[str]:
+    report = report if report is not None else status_report(data_dir, today, temple_id=temple_id)
     if report["remaining_minor"] == 0:
         return [
             "Unlock payment reminders for invoices and retainers.",
@@ -4183,6 +4264,42 @@ def generate_report(
     config = load_config(data_dir)
     temple = active_temple_config(config, temple_id)
     scoped_temple_id = str(temple["id"])
+    active_status = status_report(data_dir, today=today, temple_id=scoped_temple_id, config=config)
+    opportunities = generate_opportunities(
+        data_dir,
+        today=today,
+        temple_id=scoped_temple_id,
+        config=config,
+        report=active_status,
+    )
+    lead_context = lead_scoring_context(
+        data_dir,
+        scoped_temple_id,
+        today=today,
+        report=active_status,
+        opportunities=opportunities,
+    )
+    leads = lead_pipeline_summary(data_dir, limit=1, temple_id=scoped_temple_id, context=lead_context)
+    conversions = lead_conversion_summary(
+        data_dir,
+        temple_id=scoped_temple_id,
+        config=config,
+        context=lead_context,
+    )
+    strategy_names = {
+        str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
+            channel.get("name", "Revenue channel")
+        )
+        for channel in temple.get("channels", [])
+    }
+    revenue_rules = revenue_rules_summary(
+        data_dir,
+        temple_id=scoped_temple_id,
+        leads=leads,
+        conversions=conversions,
+        opportunities=opportunities,
+        strategy_names=strategy_names,
+    )
     period = period_for(period_name, today)
     quota_minor, quota_source = quota_for_report_period(config, period_name, temple_id=scoped_temple_id)
     earned_minor = income_total_for_period(data_dir, period, temple_id=scoped_temple_id)
@@ -4191,11 +4308,16 @@ def generate_report(
     days_left = max((period.end - today).days, 0)
     exception = active_exception(data_dir, today, temple_id=scoped_temple_id)
     income_rows = income_rows_for_period(data_dir, period, limit=25, temple_id=scoped_temple_id)
-    roi = strategy_roi_summary(data_dir, today=today, period_name=period_name, temple_id=scoped_temple_id)
-    conversions = lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
-    revenue_rules = revenue_rules_summary(data_dir, temple_id=scoped_temple_id)
-    opportunities = generate_opportunities(data_dir, today, temple_id=scoped_temple_id)[:5]
-    upgrades = generate_upgrades(data_dir, today, temple_id=scoped_temple_id)
+    roi = strategy_roi_summary(
+        data_dir,
+        today=today,
+        period_name=period_name,
+        temple_id=scoped_temple_id,
+        config=config,
+        report=active_status,
+        opportunities=opportunities,
+    )
+    upgrades = generate_upgrades(data_dir, today, temple_id=scoped_temple_id, report=active_status)
     missed_review = missed_quota_review(
         quota_minor=quota_minor,
         earned_minor=earned_minor,
@@ -4228,11 +4350,114 @@ def generate_report(
         "strategy_roi": roi,
         "conversions": conversions,
         "revenue_rules": revenue_rules,
-        "opportunities": opportunities,
+        "opportunities": opportunities[:5],
         "upgrade_recommendations": upgrades,
+        "generated": True,
     }
     report["markdown"] = format_report_markdown(report)
     return report
+
+
+def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, Any]:
+    started = time.perf_counter()
+    snapshot_date = today or date.today()
+    ensure_state(data_dir)
+    config = load_config(data_dir)
+    active_temple = active_temple_config(config)
+    active_temple_id = str(active_temple["id"])
+    statuses: dict[str, dict[str, Any]] = {}
+    opportunities_by_temple: dict[str, list[dict[str, Any]]] = {}
+
+    for temple in config.get("temples", []):
+        temple_id = str(temple["id"])
+        temple_status = status_report(data_dir, today=snapshot_date, temple_id=temple_id, config=config)
+        statuses[temple_id] = temple_status
+        opportunities_by_temple[temple_id] = generate_opportunities(
+            data_dir,
+            today=snapshot_date,
+            temple_id=temple_id,
+            config=config,
+            report=temple_status,
+        )
+
+    status = statuses[active_temple_id]
+    opportunities = opportunities_by_temple[active_temple_id]
+    lead_context = lead_scoring_context(
+        data_dir,
+        active_temple_id,
+        today=snapshot_date,
+        report=status,
+        opportunities=opportunities,
+    )
+    leads = lead_pipeline_summary(data_dir, temple_id=active_temple_id, context=lead_context)
+    conversions = lead_conversion_summary(
+        data_dir,
+        temple_id=active_temple_id,
+        config=config,
+        context=lead_context,
+    )
+    strategy_names = {
+        str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
+            channel.get("name", "Revenue channel")
+        )
+        for channel in active_temple.get("channels", [])
+    }
+    revenue_rules = revenue_rules_summary(
+        data_dir,
+        temple_id=active_temple_id,
+        leads=leads,
+        conversions=conversions,
+        opportunities=opportunities,
+        strategy_names=strategy_names,
+    )
+    strategy_roi = strategy_roi_summary(
+        data_dir,
+        today=snapshot_date,
+        temple_id=active_temple_id,
+        config=config,
+        report=status,
+        opportunities=opportunities,
+    )
+    temples = temple_summary(
+        data_dir,
+        today=snapshot_date,
+        config=config,
+        statuses=statuses,
+        opportunities=opportunities_by_temple,
+    )
+    temple_items = [
+        temple_to_dict(temple, active=str(temple["id"]) == active_temple_id)
+        for temple in config.get("temples", [])
+    ]
+    income = list_income(data_dir, limit=10, temple_id=active_temple_id)
+    exceptions = list_exceptions(data_dir, limit=10, temple_id=active_temple_id)
+    events = list_events(data_dir, limit=50, temple_id=active_temple_id)
+    upgrades = generate_upgrades(data_dir, today=snapshot_date, temple_id=active_temple_id, report=status)
+    approvals = approval_queue_summary(data_dir, temple_id=active_temple_id)
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    return {
+        "snapshot": {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "duration_ms": duration_ms,
+            "budget_ms": DASHBOARD_SNAPSHOT_BUDGET_MS,
+            "within_budget": duration_ms <= DASHBOARD_SNAPSHOT_BUDGET_MS,
+        },
+        "config": config,
+        "active_temple": active_temple,
+        "temple_items": temple_items,
+        "status": status,
+        "income": income,
+        "exceptions": exceptions,
+        "events": events,
+        "opportunities": opportunities,
+        "strategy_roi": strategy_roi,
+        "upgrades": upgrades,
+        "approvals": approvals,
+        "leads": leads,
+        "conversions": conversions,
+        "revenue_rules": revenue_rules,
+        "temples": temples,
+    }
 
 
 def quota_for_report_period(config: dict[str, Any], period_name: str, temple_id: str | None = None) -> tuple[int, str]:

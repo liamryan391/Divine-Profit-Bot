@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.7.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.7.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -153,6 +153,19 @@ python -m divine_tool deploy preflight
 ```
 
 The backup command reads existing state without initializing or migrating its schema, so it can safely capture a pre-upgrade database first.
+
+## Dashboard Performance
+
+The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
+
+The 10-second browser poll calls only `GET /api/worker/status`. Full weekly and monthly reports are generated only through `GET /api/report?period=week|month` when requested.
+
+Response-time budgets for the local reference environment:
+
+- Complete dashboard payload: median at or below 250 ms with 120 leads, 180 income rows, and 24 revenue rules.
+- Worker status poll: median at or below 50 ms over local HTTP.
+
+Benchmark recorded on 27 August 2026: the representative dashboard payload improved from about 330 ms to 61 ms median, and worker polling measured about 14 ms median over HTTP. The automated suite rebuilds the representative fixture and enforces the dashboard budget.
 
 For frontend development, run the Python web app for the API and use the Vite dev server for the browser UI:
 

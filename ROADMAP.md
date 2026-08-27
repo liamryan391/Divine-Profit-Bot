@@ -33,7 +33,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.7.0`.
+Current version: `v2.7.1`.
 
 Completed:
 
@@ -87,6 +87,7 @@ Completed:
 - Phase 5 operational review: completed with Backend Roadmap 3.0 required before Phase 6.
 - Backend Roadmap 3.0 Stage 3.0.1: corrected full-dataset lead and revenue-rule aggregates, added lead pagination metadata, and covered former row-limit ceilings with regression tests.
 - Backend Roadmap 3.0 Stage 3.0.2: enabled WAL, busy timeout, and foreign keys; replaced repeated schema setup with transactional versioned migrations; and verified legacy-state preservation, rollback, concurrent access, and lock recovery.
+- Backend Roadmap 3.0 Stage 3.0.3: shipped a request-scoped dashboard snapshot, lightweight worker polling, on-demand reports, and enforced representative response-time budgets.
 
 ## Phase 0: Foundation
 
@@ -699,7 +700,7 @@ Release status: shipped.
 
 ### Stage 3.0.3: Dashboard Query Efficiency
 
-Status: next.
+Status: complete.
 
 Deliverables:
 
@@ -710,9 +711,11 @@ Deliverables:
 
 Release target: `v2.7.1`.
 
+Release status: shipped.
+
 ### Stage 3.0.4: API And Authentication Hardening
 
-Status: planned.
+Status: next.
 
 Deliverables:
 
@@ -793,9 +796,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Begin Backend Roadmap 3.0, Stage 3.0.3: Dashboard Query Efficiency.
+Begin Backend Roadmap 3.0, Stage 3.0.4: API And Authentication Hardening.
 
-- Build one consistent dashboard snapshot without repeated nested summaries.
-- Move worker polling to a lightweight status endpoint.
-- Add representative response-time benchmarks and budgets.
+- Bound JSON and CSV request bodies before reading them.
+- Add login throttling and auditable failed-attempt handling.
+- Define safe public errors plus the hosted origin, CSRF, cookie, proxy, and transport policy.
 - Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.

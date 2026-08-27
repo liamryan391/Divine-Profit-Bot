@@ -163,10 +163,18 @@ export interface ReportPayload {
   markdown: string;
   earned: string;
   quota: string;
+  generated?: boolean;
   period: {
     start: string;
     end: string;
   };
+}
+
+export interface DashboardSnapshotMetadata {
+  generated_at: string;
+  duration_ms: number;
+  budget_ms: number;
+  within_budget: boolean;
 }
 
 export interface ApprovalAction {
@@ -401,6 +409,7 @@ export interface ImportResult {
 
 export interface DashboardPayload {
   version: string;
+  snapshot?: DashboardSnapshotMetadata;
   status: StatusReport;
   income: IncomeEntry[];
   exceptions: JsonMap[];

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import time
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,12 +13,12 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .core import (
+    WORKER_STATUS_BUDGET_MS,
     DivineToolError,
     add_exception,
     add_income,
     add_lead_note,
     advance_lead,
-    approval_queue_summary,
     auth_status,
     create_account,
     create_session,
@@ -25,6 +26,7 @@ from .core import (
     create_lead,
     create_revenue_rule,
     create_temple,
+    dashboard_snapshot,
     destroy_session,
     enqueue_command,
     ensure_state,
@@ -32,12 +34,10 @@ from .core import (
     format_money,
     generate_opportunities,
     generate_report,
-    generate_upgrades,
     import_income_csv,
     lead_conversion_summary,
     list_approval_actions,
     list_events,
-    list_exceptions,
     list_income,
     lead_pipeline_summary,
     list_leads_page,
@@ -55,7 +55,6 @@ from .core import (
     row_to_dict,
     set_mood,
     set_quota,
-    status_report,
     strategy_roi_summary,
     switch_temple,
     temple_summary,
@@ -126,6 +125,21 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     account = None
                 if parsed.path == "/api/status":
                     self.send_json(dashboard_payload(data_dir, account))
+                    return
+                if parsed.path == "/api/worker/status":
+                    started = time.perf_counter()
+                    worker = worker_status(data_dir)
+                    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                    self.send_json(
+                        {
+                            "version": __version__,
+                            "checked_at": datetime.now().isoformat(timespec="seconds"),
+                            "duration_ms": duration_ms,
+                            "budget_ms": WORKER_STATUS_BUDGET_MS,
+                            "within_budget": duration_ms <= WORKER_STATUS_BUDGET_MS,
+                            "worker": worker,
+                        }
+                    )
                     return
                 if parsed.path == "/api/health":
                     self.send_json(
@@ -586,28 +600,27 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
 
 
 def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> dict[str, Any]:
-    config = load_config(data_dir)
-    temple = config.get("temples", [{}])[0]
-    active_temple = next((item for item in config.get("temples", []) if item.get("id") == config.get("active_temple")), temple)
-    opportunities = generate_opportunities(data_dir)
-    strategy_roi = strategy_roi_summary(data_dir)
-    report = generate_report(data_dir, period_name="week")
+    snapshot = dashboard_snapshot(data_dir)
+    config = snapshot["config"]
+    active_temple = snapshot["active_temple"]
+    opportunities = snapshot["opportunities"]
     return {
         "version": __version__,
-        "status": serialize_status(status_report(data_dir)),
-        "income": serialize_income(list_income(data_dir, limit=10)),
-        "exceptions": serialize_rows(list_exceptions(data_dir, limit=10)),
-        "events": serialize_rows(list_events(data_dir, limit=50)),
+        "snapshot": snapshot["snapshot"],
+        "status": serialize_status(snapshot["status"]),
+        "income": serialize_income(snapshot["income"]),
+        "exceptions": serialize_rows(snapshot["exceptions"]),
+        "events": serialize_rows(snapshot["events"]),
         "opportunities": opportunities,
         "top_opportunity": opportunities[0] if opportunities else None,
-        "strategy_roi": strategy_roi,
-        "report": report,
-        "upgrades": generate_upgrades(data_dir),
-        "approvals": approval_queue_summary(data_dir),
-        "leads": lead_pipeline_summary(data_dir),
-        "conversions": lead_conversion_summary(data_dir),
-        "revenue_rules": revenue_rules_summary(data_dir),
-        "temples": temple_summary(data_dir),
+        "strategy_roi": snapshot["strategy_roi"],
+        "report": dashboard_report_preview(snapshot["status"]),
+        "upgrades": snapshot["upgrades"],
+        "approvals": snapshot["approvals"],
+        "leads": snapshot["leads"],
+        "conversions": snapshot["conversions"],
+        "revenue_rules": snapshot["revenue_rules"],
+        "temples": snapshot["temples"],
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
         "worker": worker_status(data_dir),
         "config": {
@@ -615,10 +628,26 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
             "active_mood": config.get("active_mood", "watchful"),
             "base_currency": config.get("base_currency", "GBP"),
             "active_temple": active_temple,
-            "temples": list_temples(data_dir),
+            "temples": snapshot["temple_items"],
             "strategy_templates": config.get("strategy_templates", {}),
             "moods": config.get("moods", {}),
             "channels": config.get("channels", []),
+        },
+    }
+
+
+def dashboard_report_preview(status: dict[str, Any]) -> dict[str, Any]:
+    period = status["period"]
+    return {
+        "title": "Generate a report",
+        "markdown": "",
+        "earned": format_money(int(status["earned_minor"])),
+        "quota": format_money(int(status["quota_minor"])),
+        "generated": False,
+        "period": {
+            "name": period.name,
+            "start": period.start.isoformat(),
+            "end": period.end.isoformat(),
         },
     }
 

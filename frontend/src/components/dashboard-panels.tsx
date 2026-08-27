@@ -1214,6 +1214,7 @@ export function ReportForgePanel({
   onGenerate: () => void;
   onDownload: () => void;
 }) {
+  const isGenerated = report.generated !== false && Boolean(report.markdown);
   return (
     <Panel
       title="Report Forge"
@@ -1228,7 +1229,7 @@ export function ReportForgePanel({
           <Button icon={FileText} variant="secondary" disabled={busy === "report"} onClick={onGenerate}>
             {busy === "report" ? "Generating..." : "Generate"}
           </Button>
-          <Button icon={Download} onClick={onDownload}>
+          <Button icon={Download} disabled={!isGenerated} onClick={onDownload}>
             Download
           </Button>
         </Toolbar>
@@ -1243,9 +1244,15 @@ export function ReportForgePanel({
       <div className="mb-3">
         <FormNotice feedback={feedback} />
       </div>
-      <pre className="max-h-[520px] min-h-[320px] overflow-auto rounded-lg border border-temple-line bg-[#091020] p-4 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap break-words">
-        {report.markdown}
-      </pre>
+      {isGenerated ? (
+        <pre className="max-h-[520px] min-h-[320px] overflow-auto rounded-lg border border-temple-line bg-[#091020] p-4 text-sm leading-6 text-[#d9e5ff] whitespace-pre-wrap break-words">
+          {report.markdown}
+        </pre>
+      ) : (
+        <div className="grid min-h-[320px] place-items-center rounded-lg border border-dashed border-temple-line bg-[#091020] p-6 text-center text-sm text-temple-muted">
+          No report has been generated for this session.
+        </div>
+      )}
     </Panel>
   );
 }

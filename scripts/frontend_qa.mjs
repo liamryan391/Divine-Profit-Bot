@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const staticDir = join(rootDir, "divine_tool", "static");
 const indexPath = join(staticDir, "index.html");
+const appSourcePath = join(rootDir, "frontend", "src", "App.tsx");
 const html = readFileSync(indexPath, "utf8");
+const appSource = readFileSync(appSourcePath, "utf8");
 
 function fail(message) {
   console.error(`frontend QA failed: ${message}`);
@@ -48,8 +50,10 @@ const requiredJs = [
   "/api/leads",
   "/api/conversions/record",
   "/api/revenue-rules",
+  "/api/worker/status",
   "Lead intake",
   "due follow-ups",
+  "No report has been generated for this session.",
 ];
 
 for (const token of requiredHtml) {
@@ -68,6 +72,14 @@ for (const token of requiredJs) {
   if (!js.includes(token)) {
     fail(`JS missing ${token}`);
   }
+}
+
+if (!appSource.includes('apiRequest<{ worker: DashboardPayload["worker"] }>("/api/worker/status")')) {
+  fail("worker polling does not use the lightweight status endpoint");
+}
+
+if (!appSource.includes("void refreshWorker();") || appSource.includes("void refreshDashboard(false);")) {
+  fail("10-second polling is not isolated to worker status");
 }
 
 console.log("frontend QA passed");
