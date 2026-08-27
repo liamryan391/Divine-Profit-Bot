@@ -22,11 +22,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.4.0`: Lead Pipeline with temple-scoped lead records, scoring, board UI, intake, and follow-up queues.
 - `v2.5.0`: conversion tracking with linked lead income, rate summaries, average deal size, and lost opportunity notes.
 - `v2.5.1`: Leads view compatibility fallback when an old server process serves the new frontend bundle.
-- `v2.6.0` or later: safe revenue rules and deeper pipeline automation.
+- `v2.6.0`: temple-scoped revenue rules, approval gates, disable controls, daemon evaluation logs, and report output.
 
 ## Current Status
 
-Current version: `v2.5.1`.
+Current version: `v2.6.0`.
 
 Completed:
 
@@ -76,6 +76,7 @@ Completed:
 - Phase 5 Stage 5.1: shipped the Lead Pipeline with temple-scoped persistence, API endpoints, lead scoring, intake form, board, due follow-ups, and stage movement.
 - Phase 5 Stage 5.2: shipped Conversion Tracking with linked lead income, conversion summaries, strategy evidence, report output, and lost opportunity notes.
 - Patch `v2.5.1`: added a Leads view fallback so mixed old-server/new-frontend sessions show a restart notice instead of an empty screen.
+- Phase 5 Stage 5.3: shipped temple-scoped Revenue Rules with live evidence evaluation, approval gates, pause/retire controls, daemon run logs, dashboard workflow, and report output.
 
 ## Phase 0: Foundation
 
@@ -565,7 +566,7 @@ Roadmap 2.0 is complete when:
 
 Goal: help each temple convert legitimate opportunities into tracked revenue.
 
-Status: in progress.
+Status: implementation complete; operational review pending.
 
 ### Stage 5.1: Lead Pipeline
 
@@ -609,18 +610,24 @@ Release status: shipped.
 
 ### Stage 5.3: Revenue Rules
 
-Status: future.
+Status: complete.
 
 Deliverables:
 
-- Configurable safe automation rules.
-- Human approval gates for any external action.
-- Rule run logs.
-- Disable switches per temple.
+- Configurable rules for open pipeline, conversion rate, win rate, lost value, due follow-ups, open leads, and opportunity score.
+- Explicit promote, pause, require-approval, and block decisions without autonomous external execution.
+- Human approval gates for any action marked as requiring review.
+- Daemon evaluation snapshots stored as temple-scoped rule run logs.
+- Pause and retire switches per rule and temple.
+- Authenticated list, summary, create, update, and status API endpoints.
+- React Revenue Rules workflow with live evidence, thresholds, decisions, and recent worker evaluations.
+- Generated reports include active, triggered, approval, block, and promote summaries.
 
 Release target:
 
-- `v2.6.0` or later.
+- `v2.6.0`.
+
+Release status: shipped.
 
 ## Operational Definition
 
@@ -647,14 +654,14 @@ The tool is fully operational for protected local use when the Creator can:
 - Review aggregate quota progress across all temples.
 - Track active leads, due follow-ups, and expected pipeline value per temple.
 - Record qualified, proposal, or won leads as linked income and review conversion performance.
+- Create, pause, retire, and review evidence-backed revenue rules per temple.
+- Audit daemon rule evaluations without allowing rules to execute financial or external actions.
 
 ## Recommended Next Build Step
 
-Build Phase 5, Stage 5.3: Revenue Rules next:
+Run the Phase 5 completion review next:
 
-- Add configurable safe automation rules.
-- Keep human approval gates on external actions.
-- Store rule run logs and outcomes per temple.
-- Add disable switches for each rule before it can run unattended.
-
-Backend Roadmap 3.0 should wait until Phase 5 exposes a larger backend bottleneck. The next best revenue move is Phase 5, Stage 5.3 because it turns conversion evidence into safer, repeatable operating rules.
+- Verify the lead-to-conversion-to-rule flow with real operating data.
+- Review daemon and hosted-service performance with rule evaluation enabled.
+- Decide whether the next value is a focused Phase 6 growth feature or a Roadmap 3.0 backend hardening programme.
+- Open Roadmap 3.0 only when the review identifies concrete reliability, scaling, or integration bottlenecks.

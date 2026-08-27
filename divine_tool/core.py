@@ -234,6 +234,18 @@ APPROVAL_STATUSES = {"pending", "approved", "rejected", "completed"}
 LEAD_STAGES = ("new", "contacted", "qualified", "proposal", "won", "lost")
 OPEN_LEAD_STAGES = {"new", "contacted", "qualified", "proposal"}
 DEFAULT_TEMPLE_ID = "main"
+REVENUE_RULE_TYPES = {"promote", "pause", "require_approval", "block"}
+REVENUE_RULE_STATUSES = {"active", "paused", "retired"}
+REVENUE_RULE_OPERATORS = {"gte", "lte"}
+REVENUE_RULE_METRICS = {
+    "open_weighted_value": {"label": "Open Weighted Pipeline", "kind": "money"},
+    "conversion_rate_pct": {"label": "Conversion Rate", "kind": "percent"},
+    "win_rate_pct": {"label": "Win Rate", "kind": "percent"},
+    "lost_value": {"label": "Lost Value", "kind": "money"},
+    "due_follow_ups": {"label": "Due Follow-ups", "kind": "count"},
+    "open_leads": {"label": "Open Leads", "kind": "count"},
+    "opportunity_score": {"label": "Opportunity Score", "kind": "score"},
+}
 
 
 def default_data_dir() -> Path:
@@ -374,6 +386,52 @@ def ensure_state(data_dir: Path) -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lead_notes_lead ON lead_notes(lead_id, created_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS revenue_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
+                name TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT '',
+                rule_type TEXT NOT NULL DEFAULT 'require_approval',
+                metric TEXT NOT NULL DEFAULT 'open_weighted_value',
+                operator TEXT NOT NULL DEFAULT 'gte',
+                threshold_value REAL NOT NULL DEFAULT 0,
+                action TEXT NOT NULL,
+                approval_required INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'active',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_rules_temple_status ON revenue_rules(temple_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_rules_temple_strategy ON revenue_rules(temple_id, strategy)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS revenue_rule_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                temple_id TEXT NOT NULL DEFAULT 'main',
+                rule_id INTEGER NOT NULL,
+                rule_name TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT '',
+                decision TEXT NOT NULL,
+                triggered INTEGER NOT NULL DEFAULT 0,
+                metric TEXT NOT NULL,
+                metric_value REAL NOT NULL DEFAULT 0,
+                threshold_value REAL NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_revenue_rule_runs_temple_created ON revenue_rule_runs(temple_id, created_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_revenue_rule_runs_rule_created ON revenue_rule_runs(rule_id, created_at DESC, id DESC)"
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS accounts (
@@ -2684,6 +2742,507 @@ def lead_conversion_summary(data_dir: Path, limit: int = 6, temple_id: str | Non
     }
 
 
+def create_revenue_rule(
+    data_dir: Path,
+    name: str,
+    rule_type: str,
+    metric: str,
+    operator: str,
+    threshold_value: Any,
+    action: str,
+    strategy: str = "",
+    approval_required: bool = True,
+    notes: str = "",
+    temple_id: str | None = None,
+) -> int:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_name = name.strip()
+    if len(cleaned_name) < 3:
+        raise DivineToolError("Revenue rule name must be at least 3 characters.")
+    cleaned_action = action.strip()
+    if len(cleaned_action) < 3:
+        raise DivineToolError("Revenue rule action must be at least 3 characters.")
+    normalized_type = normalize_revenue_rule_type(rule_type)
+    normalized_metric = normalize_revenue_rule_metric(metric)
+    normalized_operator = normalize_revenue_rule_operator(operator)
+    threshold = normalize_revenue_rule_threshold(normalized_metric, threshold_value)
+    created = now_iso()
+    with db(data_dir) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO revenue_rules
+                (temple_id, name, strategy, rule_type, metric, operator, threshold_value,
+                 action, approval_required, status, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                cleaned_name,
+                strategy.strip(),
+                normalized_type,
+                normalized_metric,
+                normalized_operator,
+                threshold,
+                cleaned_action,
+                1 if approval_required else 0,
+                notes.strip(),
+                created,
+                created,
+            ),
+        )
+        conn.commit()
+        rule_id = int(cur.lastrowid)
+    log_event(data_dir, f"Revenue rule created: {cleaned_name}", "rule", temple_id=scoped_temple_id)
+    return rule_id
+
+
+def update_revenue_rule(
+    data_dir: Path,
+    rule_id: int,
+    updates: dict[str, Any],
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM revenue_rules WHERE id = ? AND temple_id = ?",
+            (rule_id, scoped_temple_id),
+        ).fetchone()
+        if row is None:
+            raise DivineToolError(f"Revenue rule #{rule_id} was not found.")
+
+        cleaned: dict[str, Any] = {}
+        metric = str(row["metric"])
+        if "metric" in updates:
+            metric = normalize_revenue_rule_metric(str(updates["metric"]))
+            cleaned["metric"] = metric
+        if "name" in updates:
+            name = str(updates["name"]).strip()
+            if len(name) < 3:
+                raise DivineToolError("Revenue rule name must be at least 3 characters.")
+            cleaned["name"] = name
+        if "strategy" in updates:
+            cleaned["strategy"] = str(updates["strategy"]).strip()
+        if "rule_type" in updates:
+            cleaned["rule_type"] = normalize_revenue_rule_type(str(updates["rule_type"]))
+        if "operator" in updates:
+            cleaned["operator"] = normalize_revenue_rule_operator(str(updates["operator"]))
+        if "threshold_value" in updates:
+            cleaned["threshold_value"] = normalize_revenue_rule_threshold(metric, updates["threshold_value"])
+        if "threshold" in updates:
+            cleaned["threshold_value"] = normalize_revenue_rule_threshold(metric, updates["threshold"])
+        if "action" in updates:
+            action = str(updates["action"]).strip()
+            if len(action) < 3:
+                raise DivineToolError("Revenue rule action must be at least 3 characters.")
+            cleaned["action"] = action
+        if "approval_required" in updates:
+            cleaned["approval_required"] = 1 if bool_from_payload(updates["approval_required"]) else 0
+        if "status" in updates:
+            cleaned["status"] = normalize_revenue_rule_status(str(updates["status"]))
+        if "notes" in updates:
+            cleaned["notes"] = str(updates["notes"]).strip()
+
+        if cleaned:
+            cleaned["updated_at"] = now_iso()
+            assignments = ", ".join(f"{key} = ?" for key in cleaned)
+            values = list(cleaned.values()) + [rule_id, scoped_temple_id]
+            conn.execute(f"UPDATE revenue_rules SET {assignments} WHERE id = ? AND temple_id = ?", values)
+            conn.commit()
+
+    updated = get_revenue_rule(data_dir, rule_id, temple_id=scoped_temple_id)
+    log_event(data_dir, f"Revenue rule updated: #{rule_id} {updated['status']}", "rule", temple_id=scoped_temple_id)
+    return updated
+
+
+def get_revenue_rule(data_dir: Path, rule_id: int, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM revenue_rules WHERE id = ? AND temple_id = ?",
+            (rule_id, scoped_temple_id),
+        ).fetchone()
+    if row is None:
+        raise DivineToolError(f"Revenue rule #{rule_id} was not found.")
+    return revenue_rule_to_dict(row, strategy_names_for_temple(data_dir, scoped_temple_id))
+
+
+def list_revenue_rules(
+    data_dir: Path,
+    status: str = "all",
+    limit: int = 100,
+    temple_id: str | None = None,
+) -> list[dict[str, Any]]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_status = status.strip().lower()
+    limit = max(min(limit, 200), 1)
+    with db(data_dir) as conn:
+        if normalized_status == "all":
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM revenue_rules
+                    WHERE temple_id = ?
+                    ORDER BY status = 'retired', status = 'paused', id DESC
+                    LIMIT ?
+                    """,
+                    (scoped_temple_id, limit),
+                )
+            )
+        else:
+            normalized_status = normalize_revenue_rule_status(normalized_status)
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM revenue_rules
+                    WHERE temple_id = ? AND status = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (scoped_temple_id, normalized_status, limit),
+                )
+            )
+    strategy_names = strategy_names_for_temple(data_dir, scoped_temple_id)
+    return [revenue_rule_to_dict(row, strategy_names) for row in rows]
+
+
+def revenue_rules_summary(data_dir: Path, limit: int = 60, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    rules = list_revenue_rules(data_dir, "all", limit=limit, temple_id=scoped_temple_id)
+    leads = lead_pipeline_summary(data_dir, limit=200, temple_id=scoped_temple_id)
+    conversions = lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
+    opportunities = generate_opportunities(data_dir, temple_id=scoped_temple_id)
+    evaluated = [
+        {**rule, "evaluation": evaluate_revenue_rule(rule, leads, conversions, opportunities)}
+        for rule in rules
+    ]
+    triggered = [rule for rule in evaluated if rule["evaluation"]["triggered"] and rule["status"] == "active"]
+    approval_required = [
+        rule
+        for rule in triggered
+        if bool(rule["approval_required"]) or rule["rule_type"] == "require_approval"
+    ]
+    blocked = [rule for rule in triggered if rule["rule_type"] == "block"]
+    apply_rules = [rule for rule in triggered if rule["rule_type"] == "promote"]
+    paused = [rule for rule in evaluated if rule["status"] == "paused"]
+    top_actions = sorted(
+        triggered,
+        key=lambda rule: (
+            {"blocked": 4, "approval": 3, "apply": 2, "pause": 1, "watch": 0}.get(rule["evaluation"]["decision"], 0),
+            rule["evaluation"]["distance"],
+            int(rule["id"]),
+        ),
+        reverse=True,
+    )[:6]
+    return {
+        "temple_id": scoped_temple_id,
+        "total_count": len(evaluated),
+        "active_count": sum(1 for rule in evaluated if rule["status"] == "active"),
+        "paused_count": len(paused),
+        "triggered_count": len(triggered),
+        "approval_required_count": len(approval_required),
+        "blocked_count": len(blocked),
+        "apply_count": len(apply_rules),
+        "rows": evaluated,
+        "top_actions": top_actions,
+        "recent_runs": list_revenue_rule_runs(data_dir, limit=12, temple_id=scoped_temple_id),
+        "policy": [
+            "Evaluate rules as guidance, approval gates, or blocks before action.",
+            "No autonomous payments, trading, spam, scraping abuse, fraud, or evasion.",
+            "Use blocked rules to stop unsafe or poor-evidence revenue activity.",
+        ],
+    }
+
+
+def record_revenue_rule_runs(
+    data_dir: Path,
+    summary: dict[str, Any] | None = None,
+    temple_id: str | None = None,
+) -> int:
+    ensure_state(data_dir)
+    snapshot_temple_id = temple_id or str((summary or {}).get("temple_id") or "") or None
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, snapshot_temple_id)
+    evaluated = summary or revenue_rules_summary(data_dir, temple_id=scoped_temple_id)
+    active_rules = [rule for rule in evaluated.get("rows", []) if rule.get("status") == "active"]
+    if not active_rules:
+        return 0
+    created_at = now_iso()
+    with db(data_dir) as conn:
+        for rule in active_rules:
+            evaluation = rule["evaluation"]
+            conn.execute(
+                """
+                INSERT INTO revenue_rule_runs
+                    (temple_id, rule_id, rule_name, strategy, decision, triggered, metric,
+                     metric_value, threshold_value, message, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scoped_temple_id,
+                    int(rule["id"]),
+                    str(rule["name"]),
+                    str(rule.get("strategy") or ""),
+                    str(evaluation["decision"]),
+                    1 if evaluation["triggered"] else 0,
+                    str(rule["metric"]),
+                    float(evaluation["metric_value"]),
+                    float(rule["threshold_value"]),
+                    str(evaluation["message"]),
+                    created_at,
+                ),
+            )
+        conn.execute(
+            """
+            DELETE FROM revenue_rule_runs
+            WHERE temple_id = ? AND id NOT IN (
+                SELECT id FROM revenue_rule_runs
+                WHERE temple_id = ?
+                ORDER BY id DESC
+                LIMIT 500
+            )
+            """,
+            (scoped_temple_id, scoped_temple_id),
+        )
+        conn.commit()
+    return len(active_rules)
+
+
+def list_revenue_rule_runs(
+    data_dir: Path,
+    limit: int = 50,
+    temple_id: str | None = None,
+) -> list[dict[str, Any]]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    limit = max(min(limit, 200), 1)
+    with db(data_dir) as conn:
+        rows = list(
+            conn.execute(
+                """
+                SELECT * FROM revenue_rule_runs
+                WHERE temple_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (scoped_temple_id, limit),
+            )
+        )
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["triggered"] = bool(item["triggered"])
+        item["metric_label"] = revenue_rule_metric_label(str(item["metric"]))
+        item["metric_value_display"] = format_rule_metric_value(str(item["metric"]), float(item["metric_value"]))
+        item["threshold_display"] = format_rule_metric_value(str(item["metric"]), float(item["threshold_value"]))
+        results.append(item)
+    return results
+
+
+def evaluate_revenue_rule(
+    rule: dict[str, Any],
+    leads: dict[str, Any],
+    conversions: dict[str, Any],
+    opportunities: list[dict[str, Any]],
+) -> dict[str, Any]:
+    metric_value = revenue_rule_metric_value(str(rule["metric"]), str(rule.get("strategy") or ""), leads, conversions, opportunities)
+    threshold = float(rule["threshold_value"])
+    operator = str(rule["operator"])
+    triggered = metric_value >= threshold if operator == "gte" else metric_value <= threshold
+    if rule["status"] != "active":
+        decision = "inactive"
+    elif triggered and rule["rule_type"] == "block":
+        decision = "blocked"
+    elif triggered and rule["rule_type"] == "require_approval":
+        decision = "approval"
+    elif triggered and rule["rule_type"] == "pause":
+        decision = "pause"
+    elif triggered and rule["rule_type"] == "promote":
+        decision = "apply"
+    else:
+        decision = "watch"
+    distance = abs(metric_value - threshold)
+    return {
+        "triggered": triggered and rule["status"] == "active",
+        "decision": decision,
+        "severity": revenue_rule_severity(decision),
+        "metric_value": metric_value,
+        "metric_value_display": format_rule_metric_value(str(rule["metric"]), metric_value),
+        "threshold_display": format_rule_metric_value(str(rule["metric"]), threshold),
+        "operator_label": "at least" if operator == "gte" else "at or below",
+        "distance": distance,
+        "message": revenue_rule_message(rule, metric_value, threshold, decision),
+    }
+
+
+def revenue_rule_metric_value(
+    metric: str,
+    strategy: str,
+    leads: dict[str, Any],
+    conversions: dict[str, Any],
+    opportunities: list[dict[str, Any]],
+) -> float:
+    strategy = strategy.strip()
+    scoped_leads = [
+        lead
+        for lead in leads.get("rows", [])
+        if not strategy or str(lead.get("strategy") or "") == strategy
+    ]
+    open_leads = [lead for lead in scoped_leads if lead.get("stage") in OPEN_LEAD_STAGES]
+    lost_leads = [lead for lead in scoped_leads if lead.get("stage") == "lost"]
+    strategy_rows = {str(row.get("id") or ""): row for row in conversions.get("by_strategy", [])}
+    conversion_row = strategy_rows.get(strategy) if strategy else None
+    if metric == "open_weighted_value":
+        return float(sum(int(lead.get("weighted_value_minor") or 0) for lead in open_leads))
+    if metric == "conversion_rate_pct":
+        return float(conversion_row["conversion_rate_pct"]) if conversion_row else float(conversions.get("conversion_rate_pct") or 0)
+    if metric == "win_rate_pct":
+        if conversion_row:
+            closed = int(conversion_row.get("won_count") or 0) + int(conversion_row.get("lost_count") or 0)
+            return round(int(conversion_row.get("won_count") or 0) / closed * 100, 1) if closed else 0.0
+        return float(conversions.get("win_rate_pct") or 0)
+    if metric == "lost_value":
+        return float(sum(int(lead.get("estimated_value_minor") or 0) for lead in lost_leads))
+    if metric == "due_follow_ups":
+        return float(sum(1 for lead in open_leads if lead.get("follow_up_state") in {"overdue", "due_today"}))
+    if metric == "open_leads":
+        return float(len(open_leads))
+    if metric == "opportunity_score":
+        if strategy:
+            return float(next((item["score"] for item in opportunities if item["id"] == strategy), 0))
+        return float(opportunities[0]["score"] if opportunities else 0)
+    raise DivineToolError(f"Unknown revenue rule metric: {metric}")
+
+
+def revenue_rule_to_dict(row: sqlite3.Row, strategy_names: dict[str, str] | None = None) -> dict[str, Any]:
+    item = row_to_dict(row)
+    item["id"] = int(item["id"])
+    item["approval_required"] = bool(item["approval_required"])
+    item["threshold_value"] = float(item["threshold_value"])
+    item["metric_label"] = revenue_rule_metric_label(str(item["metric"]))
+    item["threshold_display"] = format_rule_metric_value(str(item["metric"]), float(item["threshold_value"]))
+    strategy = str(item.get("strategy") or "")
+    item["strategy_label"] = (strategy_names or {}).get(strategy, "All strategies" if not strategy else title_case_from_key(strategy))
+    item["rule_type_label"] = title_case_from_key(str(item["rule_type"]))
+    item["status_label"] = title_case_from_key(str(item["status"]))
+    return item
+
+
+def strategy_names_for_temple(data_dir: Path, temple_id: str) -> dict[str, str]:
+    config = load_config(data_dir)
+    temple = active_temple_config(config, temple_id)
+    names = {"": "All strategies", "unassigned": "Unassigned"}
+    for channel in temple.get("channels", []):
+        channel_id = str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel"))))
+        names[channel_id] = str(channel.get("name", title_case_from_key(channel_id)))
+    return names
+
+
+def normalize_revenue_rule_type(value: str) -> str:
+    cleaned = value.strip().lower().replace("-", "_").replace(" ", "_") or "require_approval"
+    if cleaned not in REVENUE_RULE_TYPES:
+        raise DivineToolError(f"Revenue rule type must be one of: {', '.join(sorted(REVENUE_RULE_TYPES))}.")
+    return cleaned
+
+
+def normalize_revenue_rule_metric(value: str) -> str:
+    cleaned = value.strip().lower().replace("-", "_").replace(" ", "_") or "open_weighted_value"
+    if cleaned not in REVENUE_RULE_METRICS:
+        raise DivineToolError(f"Revenue rule metric must be one of: {', '.join(sorted(REVENUE_RULE_METRICS))}.")
+    return cleaned
+
+
+def normalize_revenue_rule_operator(value: str) -> str:
+    cleaned = value.strip().lower().replace(">=", "gte").replace("<=", "lte") or "gte"
+    if cleaned not in REVENUE_RULE_OPERATORS:
+        raise DivineToolError("Revenue rule operator must be gte or lte.")
+    return cleaned
+
+
+def normalize_revenue_rule_status(value: str) -> str:
+    cleaned = value.strip().lower().replace("-", "_").replace(" ", "_") or "active"
+    if cleaned not in REVENUE_RULE_STATUSES:
+        raise DivineToolError(f"Revenue rule status must be one of: {', '.join(sorted(REVENUE_RULE_STATUSES))}.")
+    return cleaned
+
+
+def normalize_revenue_rule_threshold(metric: str, value: Any) -> float:
+    if value is None or str(value).strip() == "":
+        raise DivineToolError("Revenue rule threshold is required.")
+    kind = str(REVENUE_RULE_METRICS[metric]["kind"])
+    if kind == "money":
+        threshold = float(parse_money_to_minor(value))
+    else:
+        try:
+            threshold = float(str(value).strip().removesuffix("%"))
+        except ValueError as exc:
+            raise DivineToolError("Revenue rule threshold must be a number.") from exc
+    if threshold < 0:
+        raise DivineToolError("Revenue rule threshold cannot be negative.")
+    if kind in {"percent", "score"} and threshold > 100:
+        raise DivineToolError("Percent and score thresholds must be between 0 and 100.")
+    return threshold
+
+
+def revenue_rule_metric_label(metric: str) -> str:
+    return str(REVENUE_RULE_METRICS.get(metric, {}).get("label", title_case_from_key(metric)))
+
+
+def format_rule_metric_value(metric: str, value: float) -> str:
+    kind = str(REVENUE_RULE_METRICS[metric]["kind"])
+    if kind == "money":
+        return format_money(round(value))
+    if kind == "percent":
+        return f"{round(value, 1):g}%"
+    if kind == "score":
+        return f"{round(value):g}/100"
+    return f"{round(value):g}"
+
+
+def revenue_rule_severity(decision: str) -> str:
+    if decision == "blocked":
+        return "critical"
+    if decision in {"approval", "pause"}:
+        return "warning"
+    if decision == "apply":
+        return "positive"
+    if decision == "inactive":
+        return "muted"
+    return "watch"
+
+
+def revenue_rule_message(rule: dict[str, Any], metric_value: float, threshold: float, decision: str) -> str:
+    metric = str(rule["metric"])
+    comparison = "at least" if rule["operator"] == "gte" else "at or below"
+    if decision == "inactive":
+        return "Rule is not active."
+    prefix = (
+        f"{revenue_rule_metric_label(metric)} is {format_rule_metric_value(metric, metric_value)}, "
+        f"{comparison} {format_rule_metric_value(metric, threshold)}."
+    )
+    if decision == "blocked":
+        return f"{prefix} Block this action until the rule is retired or evidence improves."
+    if decision == "approval":
+        return f"{prefix} Human approval is required before acting."
+    if decision == "pause":
+        return f"{prefix} Pause or reduce this strategy before spending more effort."
+    if decision == "apply":
+        return f"{prefix} Promote this action."
+    return f"{prefix} Keep watching before changing priority."
+
+
+def bool_from_payload(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def lead_scoring_context(data_dir: Path, temple_id: str) -> dict[str, Any]:
     report = status_report(data_dir, temple_id=temple_id)
     opportunity_scores = {item["id"]: int(item["score"]) for item in generate_opportunities(data_dir, temple_id=temple_id)}
@@ -3400,6 +3959,7 @@ def generate_report(
     income_rows = income_rows_for_period(data_dir, period, limit=25, temple_id=scoped_temple_id)
     roi = strategy_roi_summary(data_dir, today=today, period_name=period_name, temple_id=scoped_temple_id)
     conversions = lead_conversion_summary(data_dir, temple_id=scoped_temple_id)
+    revenue_rules = revenue_rules_summary(data_dir, temple_id=scoped_temple_id)
     opportunities = generate_opportunities(data_dir, today, temple_id=scoped_temple_id)[:5]
     upgrades = generate_upgrades(data_dir, today, temple_id=scoped_temple_id)
     missed_review = missed_quota_review(
@@ -3433,6 +3993,7 @@ def generate_report(
         "income": serialize_income_rows_for_report(income_rows),
         "strategy_roi": roi,
         "conversions": conversions,
+        "revenue_rules": revenue_rules,
         "opportunities": opportunities,
         "upgrade_recommendations": upgrades,
     }
@@ -3555,6 +4116,25 @@ def format_report_markdown(report: dict[str, Any]) -> str:
             f"- {row['name']}: {row['converted_count']}/{row['lead_count']} booked, "
             f"{row['linked_revenue']} linked, {row['conversion_rate_pct']}% conversion."
         )
+
+    rules = report["revenue_rules"]
+    lines.extend(["", "## Revenue Rules", ""])
+    lines.append(
+        f"- Active rules: {rules['active_count']} of {rules['total_count']}; "
+        f"{rules['triggered_count']} currently triggered."
+    )
+    lines.append(
+        f"- Approval gates: {rules['approval_required_count']}; blocks: {rules['blocked_count']}; promotes: {rules['apply_count']}."
+    )
+    if rules["top_actions"]:
+        for rule in rules["top_actions"][:5]:
+            evaluation = rule["evaluation"]
+            lines.append(
+                f"- {rule['name']} ({evaluation['decision']}): {rule['action']} "
+                f"[{evaluation['metric_value_display']} vs {evaluation['threshold_display']}]."
+            )
+    else:
+        lines.append("- No active revenue rules are currently triggered.")
 
     lines.extend(["", "## Priority Opportunities", ""])
     for item in report["opportunities"][:5]:

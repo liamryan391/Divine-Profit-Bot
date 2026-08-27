@@ -37,7 +37,9 @@ from .core import (
     parse_money_to_minor,
     process_command_inbox,
     record_heartbeat,
+    record_revenue_rule_runs,
     reset_account_password,
+    revenue_rules_summary,
     review_approval_action,
     set_mood,
     set_quota,
@@ -692,9 +694,23 @@ def cmd_daemon(args: argparse.Namespace, data_dir: Path) -> int:
             interval = int(load_config(data_dir).get("automation", {}).get("check_interval_seconds", 300))
     while True:
         outcomes = process_command_inbox(data_dir)
-        record_heartbeat(data_dir, detail=f"processed {len(outcomes)} command(s)")
+        rules = revenue_rules_summary(data_dir)
+        evaluated_count = record_revenue_rule_runs(data_dir, rules)
+        record_heartbeat(
+            data_dir,
+            detail=(
+                f"processed {len(outcomes)} command(s); "
+                f"{rules['triggered_count']} of {evaluated_count} revenue rule(s) triggered"
+            ),
+        )
         for outcome in outcomes:
             print(f"command: {outcome}", flush=True)
+        if rules["triggered_count"]:
+            print(
+                f"rules: {rules['triggered_count']} triggered, "
+                f"{rules['approval_required_count']} need approval, {rules['blocked_count']} blocked",
+                flush=True,
+            )
         print_status(status_report(data_dir), compact=True)
         if args.once:
             return 0

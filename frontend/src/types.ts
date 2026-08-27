@@ -278,6 +278,73 @@ export interface ConversionSummary {
   lost_notes: LeadEntry[];
 }
 
+export interface RevenueRuleEvaluation {
+  triggered: boolean;
+  decision: string;
+  severity: string;
+  metric_value: number;
+  metric_value_display: string;
+  threshold_display: string;
+  operator_label: string;
+  distance: number;
+  message: string;
+}
+
+export interface RevenueRuleEntry {
+  id: number;
+  temple_id: string;
+  name: string;
+  strategy: string;
+  strategy_label: string;
+  rule_type: string;
+  rule_type_label: string;
+  metric: string;
+  metric_label: string;
+  operator: string;
+  threshold_value: number;
+  threshold_display: string;
+  action: string;
+  approval_required: boolean;
+  status: string;
+  status_label: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  evaluation: RevenueRuleEvaluation;
+}
+
+export interface RevenueRulesSummary {
+  temple_id: string;
+  total_count: number;
+  active_count: number;
+  paused_count: number;
+  triggered_count: number;
+  approval_required_count: number;
+  blocked_count: number;
+  apply_count: number;
+  rows: RevenueRuleEntry[];
+  top_actions: RevenueRuleEntry[];
+  recent_runs: RevenueRuleRun[];
+  policy: string[];
+}
+
+export interface RevenueRuleRun {
+  id: number;
+  rule_id: number;
+  rule_name: string;
+  strategy: string;
+  decision: string;
+  triggered: boolean;
+  metric: string;
+  metric_label: string;
+  metric_value: number;
+  metric_value_display: string;
+  threshold_value: number;
+  threshold_display: string;
+  message: string;
+  created_at: string;
+}
+
 export interface ExternalConnection {
   id: string;
   name: string;
@@ -325,6 +392,7 @@ export interface DashboardPayload {
   approvals: ApprovalSummary;
   leads: LeadPipelineSummary;
   conversions?: ConversionSummary;
+  revenue_rules?: RevenueRulesSummary;
   temples: TempleSummary;
   auth: AuthStatus;
   worker: WorkerStatus;

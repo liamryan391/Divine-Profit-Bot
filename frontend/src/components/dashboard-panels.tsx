@@ -1,8 +1,11 @@
 import {
   Activity,
+  Archive,
   ArrowRight,
   BarChart3,
   Check,
+  CirclePause,
+  CirclePlay,
   ClipboardList,
   Coins,
   Download,
@@ -15,6 +18,7 @@ import {
   RefreshCcw,
   Send,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Target,
   TrendingUp,
@@ -32,6 +36,8 @@ import type {
   LeadEntry,
   Opportunity,
   ReportPayload,
+  RevenueRuleEntry,
+  RevenueRulesSummary,
   StrategyRoi,
 } from "../types";
 import {
@@ -236,6 +242,225 @@ export function LeadPipelinePanel({
       </div>
     </Panel>
   );
+}
+
+export function RevenueRulesPanel({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+  onStatus,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  feedback?: WorkflowFeedback;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+  onStatus: (id: number, status: string) => Promise<void>;
+}) {
+  const hasRevenueRulesPayload = Boolean(dashboard.revenue_rules);
+  const summary = revenueRulesFor(dashboard);
+  return (
+    <Panel
+      title="Revenue Rules"
+      icon={ShieldAlert}
+      wide
+      meta={`${summary.triggered_count} triggered - ${summary.active_count} active`}
+    >
+      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+        <MiniMetric label="Active Rules" value={String(summary.active_count)} />
+        <MiniMetric label="Triggered" value={String(summary.triggered_count)} />
+        <MiniMetric label="Approval Gates" value={String(summary.approval_required_count)} />
+        <MiniMetric label="Blocks" value={String(summary.blocked_count)} />
+      </div>
+      {!hasRevenueRulesPayload ? (
+        <div className="mt-4">
+          <EmptyRow>Restart the web server to load the v2.6 revenue rules API.</EmptyRow>
+        </div>
+      ) : (
+        <>
+          <form
+            noValidate
+            className="mt-4 grid gap-3 border-t border-temple-line pt-4 md:grid-cols-4"
+            onSubmit={(event) => onSubmit(event, "/api/revenue-rules", "Revenue rule created")}
+          >
+            <Field label="Rule Name" name="name" placeholder="Prioritise strong service pipeline" required />
+            <StrategySelect label="Strategy" name="strategy" channels={dashboard.config.channels} emptyLabel="All strategies" />
+            <SelectField label="Decision" name="rule_type" defaultValue="require_approval">
+              <option value="promote">Promote</option>
+              <option value="require_approval">Require Approval</option>
+              <option value="pause">Pause</option>
+              <option value="block">Block</option>
+            </SelectField>
+            <SelectField label="Metric" name="metric" defaultValue="open_weighted_value">
+              <option value="open_weighted_value">Open Weighted Pipeline</option>
+              <option value="conversion_rate_pct">Conversion Rate</option>
+              <option value="win_rate_pct">Win Rate</option>
+              <option value="lost_value">Lost Value</option>
+              <option value="due_follow_ups">Due Follow-ups</option>
+              <option value="open_leads">Open Leads</option>
+              <option value="opportunity_score">Opportunity Score</option>
+            </SelectField>
+            <SelectField label="Condition" name="operator" defaultValue="gte">
+              <option value="gte">At least</option>
+              <option value="lte">At or below</option>
+            </SelectField>
+            <Field label="Threshold" name="threshold" inputMode="decimal" placeholder="500.00 or 60" required />
+            <Field
+              className="md:col-span-2"
+              label="Approved Action"
+              name="action"
+              placeholder="Follow up the highest-value proposal"
+              required
+            />
+            <input name="approval_required" type="hidden" value="false" />
+            <label className="field-label flex flex-row items-center gap-2 self-end rounded-lg border border-temple-line bg-temple-panelDeep px-3 py-2.5">
+              <input className="h-5 w-5 accent-temple-gold" name="approval_required" type="checkbox" value="true" defaultChecked />
+              Human approval required
+            </label>
+            <Field className="md:col-span-3" label="Notes" name="notes" placeholder="Evidence, limits, or exception context" />
+            <div className="md:col-span-4">
+              <FormNotice feedback={feedback} />
+            </div>
+            <div className="md:col-span-4">
+              <Button icon={Plus} disabled={busy === "/api/revenue-rules"} type="submit">
+                {busy === "/api/revenue-rules" ? "Creating..." : "Create Rule"}
+              </Button>
+            </div>
+          </form>
+          <RevenueRuleList rules={summary.rows} busy={busy} onStatus={onStatus} />
+          <RevenueRuleRunList summary={summary} />
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function RevenueRuleList({
+  rules,
+  busy,
+  onStatus,
+}: {
+  rules: RevenueRuleEntry[];
+  busy: string;
+  onStatus: (id: number, status: string) => Promise<void>;
+}) {
+  if (!rules.length) {
+    return (
+      <div className="mt-4">
+        <EmptyRow>No revenue rules yet.</EmptyRow>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-4 grid gap-3 xl:grid-cols-2">
+      {rules.slice(0, 10).map((rule) => {
+        const nextStatus = rule.status === "active" ? "paused" : "active";
+        const statusBusy = busy === `revenue-rule-${rule.id}-${nextStatus}`;
+        const retireBusy = busy === `revenue-rule-${rule.id}-retired`;
+        return (
+          <article key={rule.id} className={cx("temple-row grid gap-2 border-l-4", revenueRuleBorder(rule))}>
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+              <div className="grid min-w-0 gap-1">
+                <strong className="break-words">#{rule.id} {rule.name}</strong>
+                <span className="text-sm text-temple-muted">{rule.strategy_label} - {rule.rule_type_label}</span>
+              </div>
+              <Badge>{rule.evaluation.decision}</Badge>
+            </div>
+            <p className="text-sm leading-6 text-temple-muted">{rule.evaluation.message}</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <MiniMetric label="Observed" value={rule.evaluation.metric_value_display} />
+              <MiniMetric label={`${rule.evaluation.operator_label} threshold`} value={rule.threshold_display} />
+            </div>
+            <div className="grid gap-1 border-t border-temple-line pt-2">
+              <span className="text-xs font-black uppercase text-temple-muted">Action</span>
+              <strong className="break-words text-sm">{rule.action}</strong>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge>{rule.status_label}</Badge>
+              <Badge>{rule.metric_label}</Badge>
+              {rule.approval_required ? <Badge>approval</Badge> : null}
+              {rule.status !== "retired" ? (
+                <Button
+                  icon={rule.status === "active" ? CirclePause : CirclePlay}
+                  variant="secondary"
+                  disabled={statusBusy || retireBusy}
+                  onClick={() => void onStatus(rule.id, nextStatus)}
+                >
+                  {statusBusy ? "Updating..." : rule.status === "active" ? "Pause" : "Activate"}
+                </Button>
+              ) : null}
+              {rule.status !== "retired" ? (
+                <Button
+                  icon={Archive}
+                  variant="ghost"
+                  disabled={statusBusy || retireBusy}
+                  onClick={() => void onStatus(rule.id, "retired")}
+                >
+                  {retireBusy ? "Retiring..." : "Retire"}
+                </Button>
+              ) : null}
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function revenueRulesFor(dashboard: DashboardPayload): RevenueRulesSummary {
+  if (dashboard.revenue_rules) {
+    return dashboard.revenue_rules;
+  }
+  return {
+    temple_id: dashboard.status.temple?.id || dashboard.config.active_temple?.id || "main",
+    total_count: 0,
+    active_count: 0,
+    paused_count: 0,
+    triggered_count: 0,
+    approval_required_count: 0,
+    blocked_count: 0,
+    apply_count: 0,
+    rows: [],
+    top_actions: [],
+    recent_runs: [],
+    policy: [],
+  };
+}
+
+function RevenueRuleRunList({ summary }: { summary: RevenueRulesSummary }) {
+  if (!summary.recent_runs.length) {
+    return null;
+  }
+  return (
+    <section className="mt-4 grid gap-2 border-t border-temple-line pt-4">
+      <div className="section-heading">
+        <h3 className="text-sm font-black uppercase text-temple-muted">Recent Worker Evaluations</h3>
+        <Badge>{summary.recent_runs.length}</Badge>
+      </div>
+      <div className="grid gap-2 xl:grid-cols-2">
+        {summary.recent_runs.slice(0, 6).map((run) => (
+          <div key={run.id} className={cx("temple-row grid gap-1 border-l-4", run.triggered ? "border-l-temple-gold" : "border-l-temple-blue")}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <strong className="break-words">#{run.rule_id} {run.rule_name}</strong>
+              <Badge>{run.decision}</Badge>
+            </div>
+            <span className="text-sm text-temple-muted">
+              {run.metric_label}: {run.metric_value_display} / {run.threshold_display} - {formatTime(run.created_at)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function revenueRuleBorder(rule: RevenueRuleEntry) {
+  if (rule.status === "retired") return "border-l-temple-violet";
+  if (rule.status === "paused") return "border-l-temple-blue";
+  if (rule.evaluation.severity === "critical") return "border-l-temple-red";
+  if (rule.evaluation.severity === "warning") return "border-l-temple-gold";
+  if (rule.evaluation.severity === "positive") return "border-l-temple-green";
+  return "border-l-temple-blue";
 }
 
 function ConversionTrackingPanel({

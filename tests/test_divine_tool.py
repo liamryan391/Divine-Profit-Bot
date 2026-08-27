@@ -21,6 +21,7 @@ from divine_tool.core import (
     create_account,
     create_approval_draft,
     create_lead,
+    create_revenue_rule,
     create_session,
     create_temple,
     destroy_session,
@@ -41,7 +42,9 @@ from divine_tool.core import (
     process_command_inbox,
     record_lead_conversion,
     record_heartbeat,
+    record_revenue_rule_runs,
     reset_account_password,
+    revenue_rules_summary,
     save_config,
     review_approval_action,
     set_mood,
@@ -51,6 +54,7 @@ from divine_tool.core import (
     switch_temple,
     temple_summary,
     update_account_profile,
+    update_revenue_rule,
 )
 from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
 from divine_tool.web import make_handler
@@ -142,10 +146,13 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Opening the temple", js_body)
                     self.assertIn(b"Lead Pipeline", js_body)
                     self.assertIn(b"Conversion Tracking", js_body)
+                    self.assertIn(b"Revenue Rules", js_body)
                     self.assertIn(b"Restart the web server", js_body)
                     self.assertIn(b"Create Lead", js_body)
+                    self.assertIn(b"Create Rule", js_body)
                     self.assertIn(b"/api/leads", js_body)
                     self.assertIn(b"/api/conversions/record", js_body)
+                    self.assertIn(b"/api/revenue-rules", js_body)
 
                 try:
                     urlopen(f"{base_url}/api/status")
@@ -317,6 +324,45 @@ class DivineToolTests(unittest.TestCase):
                 self.assertEqual(conversion_payload["state"]["conversions"]["converted_count"], 1)
                 self.assertEqual(conversion_payload["state"]["conversions"]["linked_revenue_minor"], 70000)
                 self.assertEqual(conversion_payload["state"]["income"][0]["lead_id"], lead_payload["id"])
+
+                rule_body = json.dumps(
+                    {
+                        "name": "Promote proven conversions",
+                        "strategy": "freelance_services",
+                        "rule_type": "require_approval",
+                        "metric": "conversion_rate_pct",
+                        "operator": "gte",
+                        "threshold": "50",
+                        "action": "Review the next qualified service lead",
+                        "approval_required": True,
+                    }
+                ).encode("utf-8")
+                rule_request = Request(
+                    f"{base_url}/api/revenue-rules",
+                    data=rule_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(rule_request) as response:
+                    rule_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(rule_payload["ok"])
+                self.assertEqual(rule_payload["state"]["revenue_rules"]["active_count"], 1)
+                self.assertEqual(rule_payload["state"]["revenue_rules"]["triggered_count"], 1)
+                self.assertEqual(rule_payload["state"]["revenue_rules"]["approval_required_count"], 1)
+
+                pause_body = json.dumps({"status": "paused"}).encode("utf-8")
+                pause_request = Request(
+                    f"{base_url}/api/revenue-rules/{rule_payload['id']}/status",
+                    data=pause_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(pause_request) as response:
+                    pause_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(pause_payload["rule"]["status"], "paused")
+                self.assertEqual(pause_payload["state"]["revenue_rules"]["triggered_count"], 0)
 
                 draft_body = json.dumps(
                     {
@@ -528,6 +574,74 @@ class DivineToolTests(unittest.TestCase):
                     gbp_minor=None,
                     source="duplicate invoice",
                 )
+
+    def test_revenue_rules_evaluate_log_and_report_without_executing_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            set_quota(data_dir, "watchful", parse_money_to_minor("1000"), "week")
+            set_mood(data_dir, "watchful")
+            create_lead(
+                data_dir,
+                title="Rule Candidate",
+                contact="Buyer Ltd",
+                source="Referral",
+                offer="Automation engagement",
+                estimated_value_minor=parse_money_to_minor("900"),
+                probability=0.8,
+                stage="proposal",
+                strategy="freelance_services",
+                next_action="Review proposal evidence",
+                follow_up_on=date.today(),
+            )
+            promote_id = create_revenue_rule(
+                data_dir,
+                name="Promote strong service pipeline",
+                rule_type="promote",
+                metric="open_weighted_value",
+                operator="gte",
+                threshold_value="400",
+                action="Prioritise the highest-value service proposal",
+                strategy="freelance_services",
+                approval_required=False,
+            )
+            approval_id = create_revenue_rule(
+                data_dir,
+                name="Gate weak conversion evidence",
+                rule_type="require_approval",
+                metric="conversion_rate_pct",
+                operator="lte",
+                threshold_value="20",
+                action="Require a human review before increasing outreach",
+                approval_required=True,
+            )
+
+            summary = revenue_rules_summary(data_dir)
+            rules = {rule["id"]: rule for rule in summary["rows"]}
+
+            self.assertEqual(summary["active_count"], 2)
+            self.assertEqual(summary["triggered_count"], 2)
+            self.assertEqual(summary["approval_required_count"], 1)
+            self.assertEqual(rules[promote_id]["evaluation"]["decision"], "apply")
+            self.assertEqual(rules[approval_id]["evaluation"]["decision"], "approval")
+            self.assertEqual(rules[promote_id]["evaluation"]["metric_value"], 72000.0)
+
+            self.assertEqual(record_revenue_rule_runs(data_dir, summary), 2)
+            logged = revenue_rules_summary(data_dir)
+            self.assertEqual(len(logged["recent_runs"]), 2)
+            self.assertTrue(all(run["triggered"] for run in logged["recent_runs"]))
+
+            report = generate_report(data_dir, period_name="week", today=date.today())
+            self.assertIn("## Revenue Rules", report["markdown"])
+            self.assertIn("Prioritise the highest-value service proposal", report["markdown"])
+
+            paused = update_revenue_rule(data_dir, promote_id, {"status": "paused"})
+            self.assertEqual(paused["status"], "paused")
+            after_pause = revenue_rules_summary(data_dir)
+            self.assertEqual(after_pause["triggered_count"], 1)
+            self.assertEqual(
+                next(rule for rule in after_pause["rows"] if rule["id"] == promote_id)["evaluation"]["decision"],
+                "inactive",
+            )
 
     def test_config_migration_adds_strategy_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

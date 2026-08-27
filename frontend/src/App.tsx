@@ -25,6 +25,7 @@ import type {
   ImportResult,
   LeadEntry,
   ReportPayload,
+  RevenueRuleEntry,
 } from "./types";
 
 function errorMessage(error: unknown) {
@@ -445,6 +446,33 @@ function App() {
     }
   }
 
+  async function updateRevenueRuleStatus(id: number, status: string) {
+    if (status === "retired" && !window.confirm("Retire this revenue rule? It will stop evaluating until recreated.")) {
+      return;
+    }
+    const busyKey = `revenue-rule-${id}-${status}`;
+    setBusy(busyKey);
+    setWorkflowFeedback("/api/revenue-rules", { tone: "info", message: "Updating revenue rule..." });
+    try {
+      const payload = await apiRequest<{ ok: boolean; rule: RevenueRuleEntry; state: DashboardPayload }>(
+        `/api/revenue-rules/${id}/status`,
+        {
+          method: "POST",
+          body: JSON.stringify({ status }),
+        },
+      );
+      applyDashboard(payload.state);
+      const message = `Revenue rule ${status}`;
+      setWorkflowFeedback("/api/revenue-rules", { tone: "success", message });
+      showToast(message);
+    } catch (error) {
+      setWorkflowFeedback("/api/revenue-rules", { tone: "error", message: errorMessage(error) });
+      handleApiError(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   if (!auth) {
     return (
       <ScreenFrame>
@@ -500,6 +528,7 @@ function App() {
         onImport={(event) => void importCsv(event)}
         onReviewApproval={reviewApproval}
         onAdvanceLead={advanceLead}
+        onRevenueRuleStatus={updateRevenueRuleStatus}
         onPulseWorker={() => void pulseWorker()}
         onRefreshExternal={() => void refreshExternalConnections()}
         onGenerateReport={() => void generateReport()}

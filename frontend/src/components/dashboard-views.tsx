@@ -17,6 +17,7 @@ import {
   QuotaControlPanel,
   QuotaProgressPanel,
   RecentIncomePanel,
+  RevenueRulesPanel,
   ReportForgePanel,
   StrategiesPanel,
   StrategyRoiPanel,
@@ -43,6 +44,7 @@ interface DashboardViewContentProps {
   onImport: (event: FormEvent<HTMLFormElement>) => void;
   onReviewApproval: (id: number, decision: string) => Promise<void>;
   onAdvanceLead: (id: number, stage: string) => Promise<void>;
+  onRevenueRuleStatus: (id: number, status: string) => Promise<void>;
   onPulseWorker: () => void;
   onRefreshExternal: () => void;
   onGenerateReport: () => void;
@@ -95,7 +97,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: v2.6 revenue rules"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: Phase 5 completion review"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
@@ -135,7 +137,7 @@ function StrategiesView({ dashboard }: DashboardViewContentProps) {
   );
 }
 
-function LeadsView({ dashboard, busy, feedback, onJsonForm, onAdvanceLead }: DashboardViewContentProps) {
+function LeadsView({ dashboard, busy, feedback, onJsonForm, onAdvanceLead, onRevenueRuleStatus }: DashboardViewContentProps) {
   return (
     <>
       <div className="mt-4">
@@ -145,6 +147,15 @@ function LeadsView({ dashboard, busy, feedback, onJsonForm, onAdvanceLead }: Das
           feedback={feedback}
           onSubmit={onJsonForm}
           onAdvance={onAdvanceLead}
+        />
+      </div>
+      <div className="mt-4">
+        <RevenueRulesPanel
+          dashboard={dashboard}
+          busy={busy}
+          feedback={feedback["/api/revenue-rules"]}
+          onSubmit={onJsonForm}
+          onStatus={onRevenueRuleStatus}
         />
       </div>
       <DashboardGrid>

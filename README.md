@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.5.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.6.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -128,6 +128,8 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
 - Conversion Tracking for booking leads into linked income, conversion rates, average deal size, strategy conversion evidence, and lost opportunity notes.
+- Revenue Rules for turning pipeline, conversion, follow-up, loss, and opportunity evidence into explicit promote, pause, approval, or block decisions.
+- Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 
 Run it with:
 
@@ -185,6 +187,13 @@ Lead API shape:
 - `GET /api/conversions/summary`
 - `POST /api/conversions/record`
 - `POST /api/conversions/link`
+- `GET /api/revenue-rules?status=&limit=`
+- `GET /api/revenue-rules/summary`
+- `POST /api/revenue-rules`
+- `PATCH /api/revenue-rules/{id}`
+- `POST /api/revenue-rules/{id}/status`
+
+Revenue Rules are evaluated against recorded evidence and surfaced as guidance, approval gates, pauses, or blocks. The daemon records evaluation snapshots for auditability, but it does not send messages, move money, trade assets, or perform another external action from a rule.
 
 ## Accounts And Authentication
 

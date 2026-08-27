@@ -23,6 +23,7 @@ from .core import (
     create_session,
     create_approval_draft,
     create_lead,
+    create_revenue_rule,
     create_temple,
     destroy_session,
     enqueue_command,
@@ -40,6 +41,7 @@ from .core import (
     list_income,
     lead_pipeline_summary,
     list_leads,
+    list_revenue_rules,
     list_temples,
     link_income_to_lead,
     load_config,
@@ -48,6 +50,7 @@ from .core import (
     process_command_inbox,
     record_lead_conversion,
     record_heartbeat,
+    revenue_rules_summary,
     review_approval_action,
     row_to_dict,
     set_mood,
@@ -57,6 +60,7 @@ from .core import (
     switch_temple,
     temple_summary,
     update_lead,
+    update_revenue_rule,
     update_account_profile,
     worker_status,
 )
@@ -153,6 +157,15 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     return
                 if parsed.path == "/api/conversions/summary":
                     self.send_json({"conversions": lead_conversion_summary(data_dir)})
+                    return
+                if parsed.path == "/api/revenue-rules/summary":
+                    self.send_json({"revenue_rules": revenue_rules_summary(data_dir)})
+                    return
+                if parsed.path == "/api/revenue-rules":
+                    query = parse_qs(parsed.query)
+                    status = query.get("status", ["all"])[0]
+                    limit = int(query.get("limit", ["100"])[0])
+                    self.send_json({"revenue_rules": list_revenue_rules(data_dir, status=status, limit=limit)})
                     return
                 if parsed.path == "/api/report":
                     query = parse_qs(parsed.query)
@@ -290,6 +303,26 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                 if parsed.path == "/api/conversions/link":
                     lead = link_income_to_lead(data_dir, lead_id=int(payload["lead_id"]), income_id=int(payload["income_id"]))
                     self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/revenue-rules":
+                    rule_id = create_revenue_rule(
+                        data_dir,
+                        name=str(payload["name"]),
+                        rule_type=str(payload.get("rule_type", "require_approval")),
+                        metric=str(payload.get("metric", "open_weighted_value")),
+                        operator=str(payload.get("operator", "gte")),
+                        threshold_value=payload.get("threshold", payload.get("threshold_value")),
+                        action=str(payload["action"]),
+                        strategy=str(payload.get("strategy", "")),
+                        approval_required=bool_payload(payload.get("approval_required", True)),
+                        notes=str(payload.get("notes", "")),
+                    )
+                    self.send_json({"ok": True, "id": rule_id, "state": dashboard_payload(data_dir, account)})
+                    return
+                rule_parts = revenue_rule_path_parts(parsed.path)
+                if rule_parts and len(rule_parts) == 2 and rule_parts[1] == "status":
+                    rule = update_revenue_rule(data_dir, int(rule_parts[0]), {"status": str(payload["status"])})
+                    self.send_json({"ok": True, "rule": rule, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/quota":
                     set_quota(
@@ -442,6 +475,11 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     lead = update_lead(data_dir, int(lead_parts[0]), updates)
                     self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
                     return
+                rule_parts = revenue_rule_path_parts(parsed.path)
+                if rule_parts and len(rule_parts) == 1:
+                    rule = update_revenue_rule(data_dir, int(rule_parts[0]), revenue_rule_updates_from_payload(payload))
+                    self.send_json({"ok": True, "rule": rule, "state": dashboard_payload(data_dir, account)})
+                    return
                 self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             except KeyError as exc:
                 self.send_json({"error": f"Missing required field: {exc.args[0]}"}, HTTPStatus.BAD_REQUEST)
@@ -563,6 +601,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "approvals": approval_queue_summary(data_dir),
         "leads": lead_pipeline_summary(data_dir),
         "conversions": lead_conversion_summary(data_dir),
+        "revenue_rules": revenue_rules_summary(data_dir),
         "temples": temple_summary(data_dir),
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
         "worker": worker_status(data_dir),
@@ -642,6 +681,21 @@ def lead_path_parts(path: str) -> list[str] | None:
     return parts
 
 
+def revenue_rule_path_parts(path: str) -> list[str] | None:
+    if not path.startswith("/api/revenue-rules/"):
+        return None
+    parts = [part for part in path.removeprefix("/api/revenue-rules/").split("/") if part]
+    if not parts:
+        return None
+    return parts
+
+
+def bool_payload(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def parse_probability_payload(value: Any) -> float:
     if isinstance(value, str):
         cleaned = value.strip().removesuffix("%")
@@ -673,4 +727,19 @@ def lead_updates_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         updates["probability"] = parse_probability_payload(payload["probability"])
     if "follow_up_on" in payload:
         updates["follow_up_on"] = parse_date(payload["follow_up_on"]) if payload["follow_up_on"] else ""
+    return updates
+
+
+def revenue_rule_updates_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    passthrough = {"name", "strategy", "rule_type", "metric", "operator", "action", "status", "notes"}
+    for key in passthrough:
+        if key in payload:
+            updates[key] = payload[key]
+    if "threshold" in payload:
+        updates["threshold"] = payload["threshold"]
+    if "threshold_value" in payload:
+        updates["threshold_value"] = payload["threshold_value"]
+    if "approval_required" in payload:
+        updates["approval_required"] = bool_payload(payload["approval_required"])
     return updates

@@ -136,6 +136,10 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateConversion(form, issues);
   }
 
+  if (workflowKey === "/api/revenue-rules") {
+    validateRevenueRule(form, issues);
+  }
+
   if (workflowKey === "import") {
     const file = fileOf(form, "file");
     if (!file) {
@@ -179,6 +183,25 @@ function validateConversion(form: HTMLFormElement, issues: WorkflowIssue[]) {
   const conversionDate = valueOf(form, "date");
   if (conversionDate && Number.isNaN(new Date(`${conversionDate}T00:00:00`).getTime())) {
     issues.push({ field: "date", label: "Date", message: "Use a valid date." });
+  }
+}
+
+function validateRevenueRule(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "name", "Rule Name");
+  requireText(form, issues, "action", "Approved Action");
+  const threshold = valueOf(form, "threshold");
+  if (!threshold) {
+    issues.push({ field: "threshold", label: "Threshold", message: "Required." });
+    return;
+  }
+  const numericThreshold = Number(threshold.replace(",", ".").replace(/%$/, ""));
+  if (!PERCENT_RE.test(threshold.replace(/%$/, "")) || numericThreshold < 0) {
+    issues.push({ field: "threshold", label: "Threshold", message: "Enter zero or a positive number." });
+    return;
+  }
+  const metric = valueOf(form, "metric");
+  if (["conversion_rate_pct", "win_rate_pct", "opportunity_score"].includes(metric) && numericThreshold > 100) {
+    issues.push({ field: "threshold", label: "Threshold", message: "Percent and score thresholds cannot exceed 100." });
   }
 }
 

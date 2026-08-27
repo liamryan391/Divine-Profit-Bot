@@ -41,10 +41,13 @@ const requiredJs = [
   "Skip to dashboard content",
   "Lead Pipeline",
   "Conversion Tracking",
+  "Revenue Rules",
   "Restart the web server",
   "Create Lead",
+  "Create Rule",
   "/api/leads",
   "/api/conversions/record",
+  "/api/revenue-rules",
   "Lead intake",
   "due follow-ups",
 ];
