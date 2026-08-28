@@ -78,7 +78,16 @@ from divine_tool.core import (
     update_revenue_rule,
     worker_status,
 )
-from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
+from divine_tool.deployment import (
+    BACKUP_FORMAT_VERSION,
+    create_backup,
+    deployment_environment,
+    deployment_preflight,
+    restore_backup,
+    run_recovery_drills,
+    state_integrity,
+    verify_backup,
+)
 from divine_tool.web import (
     MAX_CSV_IMPORT_BODY_BYTES,
     MAX_JSON_BODY_BYTES,
@@ -1353,6 +1362,13 @@ class DivineToolTests(unittest.TestCase):
             finally:
                 backup_conn.close()
 
+            restored_legacy = restore_backup(pre_migration_backup["archive"], data_dir / "restored-legacy")
+            restored_rows = list_income(data_dir / "restored-legacy")
+            self.assertEqual(restored_legacy["source_schema_version"], 0)
+            self.assertEqual(restored_legacy["schema_version"], LATEST_SCHEMA_VERSION)
+            self.assertEqual(restored_rows[0]["source"], "legacy invoice")
+            self.assertEqual(restored_rows[0]["gbp_minor"], 4200)
+
             ensure_state(data_dir)
             first_status = database_status(data_dir)
             ensure_state(data_dir)
@@ -1638,9 +1654,125 @@ class DivineToolTests(unittest.TestCase):
             self.assertTrue(backup["archive"].exists())
             with zipfile.ZipFile(backup["archive"]) as archive:
                 names = set(archive.namelist())
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
             self.assertIn("config.json", names)
             self.assertIn("divine_tool.sqlite3", names)
             self.assertIn("manifest.json", names)
+            self.assertEqual(manifest["format_version"], BACKUP_FORMAT_VERSION)
+            self.assertTrue(all("sha256" in record for record in manifest["files"]))
+            self.assertEqual(backup["verification"]["status"], "verified")
+
+    def test_verified_restore_requires_confirmation_and_preserves_a_safety_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "state"
+            backup_dir = root / "backups"
+            add_income(data_dir, 1250, "GBP", None, "before backup")
+            backup = create_backup(data_dir, backup_dir)
+            add_income(data_dir, 875, "GBP", None, "after backup")
+
+            verification = verify_backup(backup["archive"])
+            self.assertEqual(verification["format_version"], BACKUP_FORMAT_VERSION)
+            self.assertEqual(verification["status"], "verified")
+            with self.assertRaisesRegex(DivineToolError, "--confirm"):
+                restore_backup(backup["archive"], data_dir)
+
+            restored = restore_backup(
+                backup["archive"],
+                data_dir,
+                replace=True,
+                safety_output_dir=backup_dir,
+            )
+
+            self.assertEqual(restored["status"], "restored")
+            self.assertEqual(restored["schema_version"], LATEST_SCHEMA_VERSION)
+            self.assertTrue(restored["safety_backup"].exists())
+            self.assertEqual([row["source"] for row in list_income(data_dir)], ["before backup"])
+            self.assertTrue(state_integrity(data_dir)["ok"])
+            self.assertEqual(verify_backup(restored["safety_backup"])["status"], "verified")
+
+            restore_backup(restored["safety_backup"], data_dir, replace=True, safety_output_dir=backup_dir)
+            self.assertEqual(
+                {row["source"] for row in list_income(data_dir)},
+                {"before backup", "after backup"},
+            )
+
+    def test_backup_verification_rejects_tampering_and_unsafe_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "state"
+            add_income(data_dir, 500, "GBP", None, "tamper test")
+            backup = create_backup(data_dir, root / "backups")
+            tampered = root / "tampered.zip"
+            with zipfile.ZipFile(backup["archive"]) as source, zipfile.ZipFile(
+                tampered, "w", compression=zipfile.ZIP_DEFLATED
+            ) as target:
+                for info in source.infolist():
+                    payload = source.read(info.filename)
+                    if info.filename == "config.json":
+                        payload = bytes([payload[0] ^ 1]) + payload[1:]
+                    target.writestr(info, payload)
+
+            with self.assertRaisesRegex(DivineToolError, "checksum"):
+                verify_backup(tampered)
+
+            unsafe = root / "unsafe.zip"
+            with zipfile.ZipFile(unsafe, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("manifest.json", json.dumps({"files": ["config.json"]}))
+                archive.writestr("../config.json", "{}")
+            with self.assertRaisesRegex(DivineToolError, "unsafe path"):
+                verify_backup(unsafe)
+
+    def test_restore_staging_failure_leaves_live_state_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "state"
+            backup_dir = root / "backups"
+            add_income(data_dir, 1000, "GBP", None, "backup state")
+            backup = create_backup(data_dir, backup_dir)
+            add_income(data_dir, 2000, "GBP", None, "newer live state")
+            before = state_integrity(data_dir)
+
+            with patch("divine_tool.deployment.ensure_state", side_effect=RuntimeError("migration drill failure")):
+                with self.assertRaisesRegex(DivineToolError, "before live state was changed"):
+                    restore_backup(backup["archive"], data_dir, replace=True, safety_output_dir=backup_dir)
+
+            after = state_integrity(data_dir)
+            self.assertEqual(before["config_sha256"], after["config_sha256"])
+            self.assertEqual(before["database"]["table_counts"], after["database"]["table_counts"])
+            self.assertEqual(
+                {row["source"] for row in list_income(data_dir)},
+                {"backup state", "newer live state"},
+            )
+
+    def test_recovery_drills_cover_persistence_and_failure_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "state"
+            add_income(data_dir, 3300, "GBP", None, "drill baseline")
+            before = state_integrity(data_dir)
+
+            result = run_recovery_drills(data_dir, root / "backups")
+            after = state_integrity(data_dir)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(
+                {item["name"] for item in result["checks"]},
+                {
+                    "backup_restore_round_trip",
+                    "persistent_volume_restart",
+                    "interrupted_command_write",
+                    "migration_failure_rollback",
+                    "stale_worker_recovery",
+                },
+            )
+            self.assertTrue(all(item["severity"] == "pass" for item in result["checks"]))
+            self.assertEqual(before["database"]["table_counts"], after["database"]["table_counts"])
+
+            compose_text = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+            self.assertEqual(compose_text.count("divine_data:/data"), 2)
+            self.assertEqual(compose_text.count("restart: unless-stopped"), 2)
 
     def test_strategy_roi_compares_periods_and_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

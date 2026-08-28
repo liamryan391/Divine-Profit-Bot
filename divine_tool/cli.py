@@ -46,7 +46,19 @@ from .core import (
     strategy_roi_summary,
     temple_summary,
 )
-from .deployment import create_backup, deployment_environment, deployment_preflight, format_preflight, healthcheck_url
+from .deployment import (
+    create_backup,
+    deployment_environment,
+    deployment_preflight,
+    format_integrity,
+    format_preflight,
+    format_recovery_drills,
+    healthcheck_url,
+    restore_backup,
+    run_recovery_drills,
+    state_integrity,
+    verify_backup,
+)
 from .web import run_web
 
 
@@ -221,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     account_reset.add_argument("--password", help="New password. If omitted, a hidden prompt is used.")
     account_reset.set_defaults(func=cmd_account_reset_password)
 
-    deploy = sub.add_parser("deploy", help="Deployment preflight, health checks, and backups.")
+    deploy = sub.add_parser("deploy", help="Deployment checks, backups, restores, and recovery drills.")
     deploy_sub = deploy.add_subparsers(required=True)
     deploy_preflight = deploy_sub.add_parser("preflight", help="Check whether this state is ready for hosting.")
     deploy_preflight.add_argument("--host", default=env["host"], help="Hosted bind address to validate.")
@@ -235,6 +247,32 @@ def build_parser() -> argparse.ArgumentParser:
     deploy_backup = deploy_sub.add_parser("backup", help="Create a portable backup of the deployment state.")
     deploy_backup.add_argument("--output", help="Backup output directory.")
     deploy_backup.set_defaults(func=cmd_deploy_backup)
+    deploy_verify = deploy_sub.add_parser("verify-backup", help="Verify a portable backup without changing state.")
+    deploy_verify.add_argument("archive", help="Backup ZIP archive to verify.")
+    deploy_verify.add_argument("--format", choices=["text", "json"], default="text")
+    deploy_verify.set_defaults(func=cmd_deploy_verify_backup)
+    deploy_restore = deploy_sub.add_parser("restore", help="Restore a verified backup into an offline state directory.")
+    deploy_restore.add_argument("archive", help="Backup ZIP archive to restore.")
+    deploy_restore.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Confirm replacement of existing state after stopping web and daemon services.",
+    )
+    deploy_restore.add_argument("--safety-output", help="Directory for the automatic pre-restore safety backup.")
+    deploy_restore.add_argument(
+        "--skip-safety-backup",
+        action="store_true",
+        help="Emergency recovery only: replace damaged state without first backing it up.",
+    )
+    deploy_restore.add_argument("--format", choices=["text", "json"], default="text")
+    deploy_restore.set_defaults(func=cmd_deploy_restore)
+    deploy_integrity = deploy_sub.add_parser("integrity", help="Check live state without modifying it.")
+    deploy_integrity.add_argument("--format", choices=["text", "json"], default="text")
+    deploy_integrity.set_defaults(func=cmd_deploy_integrity)
+    deploy_drill = deploy_sub.add_parser("drill", help="Run isolated backup and failure-recovery drills.")
+    deploy_drill.add_argument("--output", help="Directory for the verified drill backup.")
+    deploy_drill.add_argument("--format", choices=["text", "json"], default="text")
+    deploy_drill.set_defaults(func=cmd_deploy_drill)
 
     command = sub.add_parser("command", help="Queue commands for the daemon.")
     command_sub = command.add_subparsers(required=True)
@@ -641,7 +679,57 @@ def cmd_deploy_backup(args: argparse.Namespace, data_dir: Path) -> int:
     print(f"Backup written: {backup['archive']}")
     print(f"Files: {', '.join(backup['files'])}")
     print(f"Size: {backup['size_bytes']} bytes")
+    print(f"Verification: {backup['verification']['status']}")
     return 0
+
+
+def cmd_deploy_verify_backup(args: argparse.Namespace, _data_dir: Path) -> int:
+    result = verify_backup(Path(args.archive))
+    if args.format == "json":
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(format_integrity(result, title="Backup verification"))
+    return 0
+
+
+def cmd_deploy_restore(args: argparse.Namespace, data_dir: Path) -> int:
+    safety_output = Path(args.safety_output).resolve() if args.safety_output else None
+    result = restore_backup(
+        Path(args.archive),
+        data_dir,
+        replace=args.confirm,
+        safety_output_dir=safety_output,
+        create_safety_backup=not args.skip_safety_backup,
+    )
+    if args.format == "json":
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(f"Restore complete: {result['target']}")
+        print(f"Source schema: v{result['source_schema_version']}")
+        print(f"Active schema: v{result['schema_version']}")
+        if result["safety_backup"]:
+            print(f"Safety backup: {result['safety_backup']}")
+        print(f"Files: {', '.join(result['restored_files'])}")
+    return 0
+
+
+def cmd_deploy_integrity(args: argparse.Namespace, data_dir: Path) -> int:
+    result = state_integrity(data_dir)
+    if args.format == "json":
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(format_integrity(result))
+    return 0 if result["ok"] else 2
+
+
+def cmd_deploy_drill(args: argparse.Namespace, data_dir: Path) -> int:
+    output_dir = Path(args.output).resolve() if args.output else None
+    result = run_recovery_drills(data_dir, output_dir)
+    if args.format == "json":
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        print(format_recovery_drills(result))
+    return 0 if result["ok"] else 2
 
 
 def cmd_command_income(args: argparse.Namespace, data_dir: Path) -> int:

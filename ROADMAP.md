@@ -33,7 +33,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.9.0`.
+Current version: `v2.9.1`.
 
 Completed:
 
@@ -66,6 +66,8 @@ Completed:
 - Environment-based production configuration.
 - Healthcheck command for hosted monitoring.
 - Portable state backups for config, SQLite data, and command logs.
+- SHA-256 backup manifests, archive verification, staged offline restores, and automatic pre-restore safety backups.
+- Recovery drills for persistent-volume restarts, interrupted command claims, migration rollback, and stale workers.
 - Multi-temple profiles with the existing state migrated into `main`.
 - Separate temple quota, mood, strategy template, income, exception, event, and approval contexts.
 - CLI temple list/create/switch/summary commands.
@@ -747,7 +749,7 @@ Release status: shipped.
 
 ### Stage 3.0.6: Backup Restore And Failure Drills
 
-Status: next.
+Status: complete.
 
 Deliverables:
 
@@ -756,6 +758,8 @@ Deliverables:
 - Add integrity checks and a concise operator recovery runbook.
 
 Release target: `v2.9.1`.
+
+Release status: shipped.
 
 ### Stage 3.0.7: Operational Release Gate
 
@@ -792,6 +796,8 @@ The tool is fully operational for protected local use when the Creator can:
 - Run the web and daemon services on a host with persistent state.
 - Check production readiness before public exposure.
 - Take a portable backup of the state directory.
+- Verify and restore portable backups with a pre-restore safety copy.
+- Run isolated recovery drills without changing the active ledger.
 - Create and switch between multiple temples.
 - Keep separate ledgers and approval queues per temple.
 - Review aggregate quota progress across all temples.
@@ -802,9 +808,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Begin Backend Roadmap 3.0, Stage 3.0.6: Backup Restore And Failure Drills.
+Begin Backend Roadmap 3.0, Stage 3.0.7: Operational Release Gate.
 
-- Add a verified restore workflow for portable backups.
-- Test container restart persistence, interrupted writes, migration failure, and stale-worker recovery.
-- Add integrity checks and a concise operator recovery runbook.
+- Run the complete backend, deployment, recovery, and frontend acceptance suite.
+- Recheck aggregate correctness, concurrent access, performance budgets, hosted security, and worker parity.
+- Complete desktop and mobile end-to-end verification against the release candidate.
 - Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.

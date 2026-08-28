@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.9.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.9.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -133,6 +133,8 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 - Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
 - Separate daemon liveness, readiness, and stale-worker signals with recent cycle history in the dashboard.
+- Checksum-backed portable backups, offline verified restores, automatic pre-restore safety backups, and state integrity checks.
+- Isolated recovery drills for persistent-volume restarts, claimed command files, failed migrations, and stale workers.
 
 Run it with:
 
@@ -148,14 +150,15 @@ Every application connection uses SQLite WAL mode, enforces foreign keys, and wa
 
 The schema is upgraded through ordered, transactional migrations. Applied versions are recorded in `schema_migrations` and mirrored in SQLite's `user_version`; ordinary requests check the version without replaying table setup. A failed migration rolls back its schema and data changes and does not advance the recorded version.
 
-The hosted preflight verifies WAL, the busy timeout, foreign-key integrity, and the current schema version. Back up the state before upgrading a hosted instance:
+The hosted preflight verifies WAL, the busy timeout, foreign-key integrity, command-log integrity, and the current schema version. Back up and verify the state before upgrading a hosted instance:
 
 ```powershell
 python -m divine_tool deploy backup
+python -m divine_tool deploy verify-backup ".divine_tool/backups/<backup-file>.zip"
 python -m divine_tool deploy preflight
 ```
 
-The backup command reads existing state without initializing or migrating its schema, so it can safely capture a pre-upgrade database first.
+Each new archive carries file sizes and SHA-256 checksums. The backup command reads existing state without initializing or migrating its schema, so it can safely capture a pre-upgrade database first. Legacy archives without checksums remain restorable only after their ZIP, JSON, SQLite, foreign-key, and schema checks pass with a warning.
 
 ## Dashboard Performance
 
@@ -339,6 +342,32 @@ python -m divine_tool deploy backup
 ```
 
 For HTTPS hosting behind a reverse proxy or cloud load balancer, configure every variable in the API and Authentication Security section before starting the public service. Docker Compose publishes the application port on `127.0.0.1` by default so a host reverse proxy can reach it without exposing the trusted-header boundary directly; change `DIVINE_BIND_ADDRESS` only when the surrounding network provides an equivalent restriction. Keep API keys and payment credentials in environment variables only.
+
+## Backup Restore And Recovery
+
+Restore is an offline operator action and is intentionally unavailable through the web API. Stop both services, verify the archive, restore it, then start and check the services:
+
+```powershell
+docker compose stop web daemon
+python -m divine_tool deploy verify-backup ".divine_tool/backups/<backup-file>.zip"
+python -m divine_tool --data-dir .divine_tool deploy restore ".divine_tool/backups/<backup-file>.zip" --confirm
+docker compose up -d
+python -m divine_tool deploy healthcheck --url http://127.0.0.1:8765/api/health
+python -m divine_tool deploy preflight
+```
+
+When replacing existing state, restore first creates and prints a safety-backup path. The archive is extracted, checked, and migrated in a disposable staging directory before live files change. A handled replacement failure rolls the original files back.
+
+Run read-only integrity checks or the complete isolated drill suite at any time:
+
+```powershell
+python -m divine_tool deploy integrity
+python -m divine_tool deploy drill
+```
+
+The drill takes a verified backup and proves round-trip restore, fresh-process persistence against the same volume, recovery of a claimed command file, transactional migration rollback, and stale-worker recovery. It does not alter the active ledger. For a real container restart drill, record `deploy integrity`, run `docker compose restart web daemon`, then repeat the integrity and health checks.
+
+If an operating-system interruption leaves `.divine_tool/.restore-in-progress.json`, keep both services stopped and read its `safety_backup` path. Restore that archive with `--confirm --skip-safety-backup`, run `deploy integrity`, and only then restart services.
 
 ## Strategy Scoring
 
