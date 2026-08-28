@@ -28,6 +28,8 @@ import type {
   RevenueRuleEntry,
 } from "./types";
 
+const MAX_CSV_FILE_BYTES = 4 * 1024 * 1024;
+
 function errorMessage(error: unknown) {
   if (error instanceof ApiError) {
     return error.message;
@@ -313,6 +315,14 @@ function App() {
     const fileInput = form.elements.namedItem("file") as HTMLInputElement | null;
     const file = fileInput?.files?.[0];
     if (!file) {
+      return;
+    }
+    if (file.size > MAX_CSV_FILE_BYTES) {
+      setWorkflowFeedback("import", {
+        tone: "error",
+        message: "CSV files must be 4 MiB or smaller.",
+      });
+      showToast("CSV file is too large");
       return;
     }
     const sourceType = form.elements.namedItem("source_type") as HTMLSelectElement | null;

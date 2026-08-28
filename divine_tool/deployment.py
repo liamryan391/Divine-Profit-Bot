@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from datetime import datetime
@@ -51,6 +52,42 @@ def env_int(value: str | None, default: int, *, name: str, minimum: int = 1) -> 
     return parsed
 
 
+def normalize_origin(value: str, *, name: str = "origin") -> str:
+    candidate = value.strip().rstrip("/")
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+        port = parsed.port
+    except ValueError as exc:
+        raise DivineToolError(f"{name} is not a valid HTTP origin.") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise DivineToolError(f"{name} must be an exact http:// or https:// origin without a path.")
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = 80 if parsed.scheme.lower() == "http" else 443
+    port_suffix = f":{port}" if port and port != default_port else ""
+    return f"{parsed.scheme.lower()}://{host}{port_suffix}"
+
+
+def allowed_origins(value: str | None, public_origin: str) -> list[str]:
+    candidates = [public_origin] if public_origin else []
+    candidates.extend(item.strip() for item in (value or "").split(",") if item.strip())
+    normalized: list[str] = []
+    for index, candidate in enumerate(candidates, start=1):
+        origin = normalize_origin(candidate, name=f"allowed origin {index}")
+        if origin not in normalized:
+            normalized.append(origin)
+    return normalized
+
+
 def deployment_environment(
     environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
@@ -66,8 +103,16 @@ def deployment_environment(
     if not backup_dir.is_absolute():
         backup_dir = data_dir / backup_dir
 
+    mode = env.get("DIVINE_DEPLOYMENT_MODE", "local").strip().lower() or "local"
+    public_url = env.get("DIVINE_PUBLIC_URL", "").strip().rstrip("/")
+    public_origin = normalize_origin(public_url, name="DIVINE_PUBLIC_URL") if public_url else ""
+    origin_allowlist = allowed_origins(env.get("DIVINE_ALLOWED_ORIGINS"), public_origin)
+    hosted_https = public_origin.startswith("https://")
+    hosted_mode = mode not in {"local", "development", "test"}
+    secure_by_default = hosted_mode or hosted_https
+
     return {
-        "mode": env.get("DIVINE_DEPLOYMENT_MODE", "local"),
+        "mode": mode,
         "data_dir": data_dir.resolve(),
         "backup_dir": backup_dir.resolve(),
         "host": env.get("DIVINE_HOST", "127.0.0.1"),
@@ -77,8 +122,13 @@ def deployment_environment(
             300,
             name="DIVINE_DAEMON_INTERVAL",
         ),
-        "public_url": env.get("DIVINE_PUBLIC_URL", "").rstrip("/"),
-        "cookie_secure": env_bool(env.get("DIVINE_COOKIE_SECURE"), False),
+        "public_url": public_url,
+        "public_origin": public_origin,
+        "allowed_origins": origin_allowlist,
+        "cookie_secure": env_bool(env.get("DIVINE_COOKIE_SECURE"), secure_by_default),
+        "csrf_require_origin": env_bool(env.get("DIVINE_CSRF_REQUIRE_ORIGIN"), hosted_mode or bool(public_origin)),
+        "trust_proxy": env_bool(env.get("DIVINE_TRUST_PROXY"), False),
+        "force_https": env_bool(env.get("DIVINE_FORCE_HTTPS"), secure_by_default),
     }
 
 
@@ -154,14 +204,61 @@ def deployment_preflight(
         checks.append(check("network_bind", "warn", f"Host is {host}; use 0.0.0.0 inside most containers."))
 
     public_url = env["public_url"]
-    if public_url.startswith("https://") and env["cookie_secure"]:
+    public_origin = env["public_origin"]
+    hosted = env["mode"] not in {"local", "development", "test"} or public_bind or bool(public_url)
+    if hosted and not public_origin:
+        checks.append(check("hosted_origin", "fail", "Set DIVINE_PUBLIC_URL to the canonical HTTPS origin."))
+    elif hosted and not public_origin.startswith("https://"):
+        checks.append(check("hosted_origin", "fail", "Hosted deployments require an https:// public origin."))
+    elif public_origin:
+        checks.append(check("hosted_origin", "pass", f"Canonical hosted origin is {public_origin}."))
+    else:
+        checks.append(check("hosted_origin", "pass", "Local mode does not require a public origin."))
+
+    if public_origin.startswith("https://") and env["cookie_secure"]:
         checks.append(check("secure_cookies", "pass", "Secure cookies are enabled for HTTPS hosting."))
-    elif public_url.startswith("https://"):
-        checks.append(check("secure_cookies", "warn", "Set DIVINE_COOKIE_SECURE=true when serving over HTTPS."))
-    elif public_bind:
-        checks.append(check("secure_cookies", "warn", "Set DIVINE_PUBLIC_URL and enable secure cookies before public HTTPS launch."))
+    elif hosted:
+        checks.append(check("secure_cookies", "fail", "Hosted sessions require DIVINE_COOKIE_SECURE=true."))
     else:
         checks.append(check("secure_cookies", "pass", "Local cookie settings are suitable for localhost use."))
+
+    if hosted and not env["force_https"]:
+        checks.append(check("secure_transport", "fail", "Set DIVINE_FORCE_HTTPS=true for hosted traffic."))
+    elif hosted:
+        checks.append(check("secure_transport", "pass", "HTTPS is required for hosted application traffic."))
+    else:
+        checks.append(check("secure_transport", "pass", "Local HTTP is permitted only for loopback development."))
+
+    if hosted and not env["trust_proxy"]:
+        checks.append(
+            check(
+                "proxy_headers",
+                "fail",
+                "Set DIVINE_TRUST_PROXY=true behind a trusted reverse proxy that overwrites forwarding headers.",
+            )
+        )
+    elif hosted:
+        checks.append(check("proxy_headers", "pass", "Trusted reverse-proxy headers are enabled."))
+    else:
+        checks.append(check("proxy_headers", "pass", "Forwarded headers are ignored in local mode."))
+
+    if hosted and (
+        not env["csrf_require_origin"]
+        or not public_origin
+        or public_origin not in env["allowed_origins"]
+        or any(not origin.startswith("https://") for origin in env["allowed_origins"])
+    ):
+        checks.append(
+            check(
+                "csrf_origin",
+                "fail",
+                "Hosted CSRF protection requires the canonical origin in DIVINE_ALLOWED_ORIGINS.",
+            )
+        )
+    elif hosted:
+        checks.append(check("csrf_origin", "pass", "Unsafe requests require an approved Origin or Referer."))
+    else:
+        checks.append(check("csrf_origin", "pass", "Cross-origin unsafe requests are rejected on localhost."))
 
     heartbeat = worker_status(data_dir)
     if heartbeat["state"] == "running":
@@ -197,6 +294,10 @@ def deployment_preflight(
             "mode": env["mode"],
             "public_url": public_url,
             "cookie_secure": env["cookie_secure"],
+            "allowed_origins": env["allowed_origins"],
+            "csrf_require_origin": env["csrf_require_origin"],
+            "trust_proxy": env["trust_proxy"],
+            "force_https": env["force_https"],
         },
         "checks": checks,
     }

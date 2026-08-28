@@ -10,6 +10,7 @@ import unittest
 import zipfile
 from contextlib import closing
 from datetime import date, datetime
+from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -20,6 +21,8 @@ from divine_tool.core import (
     DASHBOARD_SNAPSHOT_BUDGET_MS,
     LATEST_SCHEMA_VERSION,
     SCHEMA_MIGRATIONS,
+    AuthenticationError,
+    LoginThrottledError,
     SchemaMigration,
     DivineToolError,
     add_income,
@@ -44,6 +47,7 @@ from divine_tool.core import (
     lead_conversion_summary,
     lead_pipeline_summary,
     list_approval_actions,
+    list_events,
     list_leads,
     list_leads_page,
     list_accounts,
@@ -70,7 +74,12 @@ from divine_tool.core import (
     update_revenue_rule,
 )
 from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
-from divine_tool.web import dashboard_payload, make_handler
+from divine_tool.web import (
+    MAX_CSV_IMPORT_BODY_BYTES,
+    MAX_JSON_BODY_BYTES,
+    dashboard_payload,
+    make_handler,
+)
 
 
 def seed_representative_dashboard(data_dir: Path) -> None:
@@ -531,6 +540,244 @@ class DivineToolTests(unittest.TestCase):
 
                 self.assertEqual(side_income_payload["state"]["status"]["earned_minor"], 1000)
                 self.assertEqual(side_income_payload["state"]["temples"]["total_earned_minor"], 75500)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_api_request_body_limits_reject_oversized_json_and_csv_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            ensure_state(data_dir)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for path, limit in (
+                    ("/api/auth/login", MAX_JSON_BODY_BYTES),
+                    ("/api/import/csv", MAX_CSV_IMPORT_BODY_BYTES),
+                ):
+                    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+                    try:
+                        connection.putrequest("POST", path)
+                        connection.putheader("Content-Type", "application/json")
+                        connection.putheader("Content-Length", str(limit + 1))
+                        connection.endheaders()
+                        response = connection.getresponse()
+                        payload = json.loads(response.read().decode("utf-8"))
+                    finally:
+                        connection.close()
+                    self.assertEqual(response.status, 413)
+                    self.assertIn("limit", payload["error"])
+
+                wrong_type = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/auth/login",
+                    data=b"username=creator",
+                    method="POST",
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                with self.assertRaises(HTTPError) as unsupported:
+                    urlopen(wrong_type)
+                self.assertEqual(unsupported.exception.code, 415)
+                unsupported.exception.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_login_throttling_persists_failures_and_records_audit_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            config = load_config(data_dir)
+            config["auth"]["login_max_attempts"] = 3
+            config["auth"]["login_attempt_window_seconds"] = 600
+            config["auth"]["login_lockout_seconds"] = 600
+            save_config(data_dir, config)
+
+            for _ in range(2):
+                with self.assertRaises(AuthenticationError):
+                    create_session(
+                        data_dir,
+                        "creator",
+                        "wrong-pass",
+                        client_key="203.0.113.10",
+                    )
+            with self.assertRaises(LoginThrottledError) as throttled:
+                create_session(
+                    data_dir,
+                    "creator",
+                    "wrong-pass",
+                    client_key="203.0.113.10",
+                )
+            self.assertGreater(throttled.exception.retry_after_seconds, 0)
+            with self.assertRaises(LoginThrottledError):
+                create_session(
+                    data_dir,
+                    "creator",
+                    "strong-pass-123",
+                    client_key="203.0.113.10",
+                )
+
+            with closing(connect(data_dir)) as conn:
+                attempt_count = int(conn.execute("SELECT COUNT(*) FROM auth_login_attempts").fetchone()[0])
+            self.assertEqual(attempt_count, 3)
+            auth_events = [row for row in list_events(data_dir, limit=20) if row["category"] == "auth"]
+            messages = [str(row["message"]) for row in auth_events]
+            self.assertEqual(sum(message.startswith("Failed sign-in") for message in messages), 3)
+            self.assertTrue(any(message.startswith("Throttled sign-in") for message in messages))
+            self.assertFalse(any("wrong-pass" in message for message in messages))
+
+            reset_account_password(data_dir, "creator", "better-pass-456")
+            session = create_session(
+                data_dir,
+                "creator",
+                "better-pass-456",
+                client_key="203.0.113.10",
+            )
+            self.assertTrue(session["token"])
+
+    def test_hosted_policy_enforces_https_origin_proxy_and_secure_cookie_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            config = load_config(data_dir)
+            config["auth"]["login_max_attempts"] = 1
+            save_config(data_dir, config)
+            environ = {
+                "DIVINE_DEPLOYMENT_MODE": "production",
+                "DIVINE_PUBLIC_URL": "https://divine.example",
+                "DIVINE_ALLOWED_ORIGINS": "https://divine.example",
+                "DIVINE_COOKIE_SECURE": "true",
+                "DIVINE_CSRF_REQUIRE_ORIGIN": "true",
+                "DIVINE_TRUST_PROXY": "true",
+                "DIVINE_FORCE_HTTPS": "true",
+            }
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir, environ=environ))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            login_body = json.dumps({"username": "creator", "password": "strong-pass-123"}).encode("utf-8")
+            try:
+                with urlopen(f"{base_url}/api/health") as response:
+                    health = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(health["deployment"]["force_https"])
+                self.assertTrue(health["deployment"]["csrf_require_origin"])
+
+                insecure = Request(
+                    f"{base_url}/api/auth/login",
+                    data=login_body,
+                    method="POST",
+                    headers={"Content-Type": "application/json", "Origin": "https://divine.example"},
+                )
+                with self.assertRaises(HTTPError) as insecure_error:
+                    urlopen(insecure)
+                self.assertEqual(insecure_error.exception.code, 426)
+                insecure_error.exception.close()
+
+                missing_origin = Request(
+                    f"{base_url}/api/auth/login",
+                    data=login_body,
+                    method="POST",
+                    headers={"Content-Type": "application/json", "X-Forwarded-Proto": "https"},
+                )
+                with self.assertRaises(HTTPError) as missing_origin_error:
+                    urlopen(missing_origin)
+                self.assertEqual(missing_origin_error.exception.code, 403)
+                missing_origin_error.exception.close()
+
+                wrong_origin = Request(
+                    f"{base_url}/api/auth/login",
+                    data=login_body,
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Forwarded-Proto": "https",
+                        "Origin": "https://attacker.example",
+                    },
+                )
+                with self.assertRaises(HTTPError) as wrong_origin_error:
+                    urlopen(wrong_origin)
+                self.assertEqual(wrong_origin_error.exception.code, 403)
+                wrong_origin_error.exception.close()
+
+                valid_login = Request(
+                    f"{base_url}/api/auth/login",
+                    data=login_body,
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Forwarded-Proto": "https",
+                        "X-Forwarded-For": "203.0.113.20",
+                        "Origin": "https://divine.example",
+                    },
+                )
+                with urlopen(valid_login) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    cookie = response.headers["Set-Cookie"]
+                    hsts = response.headers["Strict-Transport-Security"]
+                self.assertTrue(payload["ok"])
+                self.assertIn("HttpOnly", cookie)
+                self.assertIn("SameSite=Strict", cookie)
+                self.assertIn("Secure", cookie)
+                self.assertIn("max-age=31536000", hsts)
+
+                wrong_password = Request(
+                    f"{base_url}/api/auth/login",
+                    data=json.dumps({"username": "creator", "password": "wrong-pass"}).encode("utf-8"),
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Forwarded-Proto": "https",
+                        "X-Forwarded-For": "203.0.113.21",
+                        "Origin": "https://divine.example",
+                    },
+                )
+                with self.assertRaises(HTTPError) as wrong_password_error:
+                    urlopen(wrong_password)
+                self.assertEqual(wrong_password_error.exception.code, 429)
+                self.assertGreater(int(wrong_password_error.exception.headers["Retry-After"]), 0)
+                wrong_password_error.exception.close()
+                self.assertTrue(
+                    any(
+                        "203.0.113.21" in str(row["message"])
+                        for row in list_events(data_dir, limit=20)
+                        if row["category"] == "auth"
+                    )
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_unexpected_api_errors_are_redacted_and_correlated_with_internal_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            session = create_session(data_dir, "creator", "strong-pass-123")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            request = Request(
+                f"http://127.0.0.1:{server.server_port}/api/status",
+                headers={"Cookie": f"divine_session={session['token']}"},
+            )
+            try:
+                with (
+                    patch("divine_tool.web.dashboard_payload", side_effect=RuntimeError("private-database-detail")),
+                    self.assertLogs("divine_tool.web", level="ERROR") as captured,
+                    self.assertRaises(HTTPError) as failed,
+                ):
+                    urlopen(request)
+                payload = json.loads(failed.exception.read().decode("utf-8"))
+                request_id = failed.exception.headers["X-Request-ID"]
+                failed.exception.close()
+                self.assertEqual(failed.exception.code, 500)
+                self.assertEqual(payload["error"], "Unexpected server error.")
+                self.assertEqual(payload["request_id"], request_id)
+                self.assertNotIn("private-database-detail", json.dumps(payload))
+                self.assertTrue(any("private-database-detail" in entry for entry in captured.output))
+                self.assertTrue(any(request_id in entry for entry in captured.output))
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1168,14 +1415,24 @@ class DivineToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "state"
             backup_dir = Path(tmp) / "backups"
+            production_defaults = deployment_environment({"DIVINE_DEPLOYMENT_MODE": "production"})
+            self.assertTrue(production_defaults["cookie_secure"])
+            self.assertTrue(production_defaults["csrf_require_origin"])
+            self.assertTrue(production_defaults["force_https"])
+            self.assertFalse(production_defaults["trust_proxy"])
             environ = {
                 "DIVINE_DATA_DIR": str(data_dir),
                 "DIVINE_BACKUP_DIR": str(backup_dir),
                 "DIVINE_HOST": "0.0.0.0",
                 "DIVINE_PORT": "8765",
                 "DIVINE_DAEMON_INTERVAL": "60",
+                "DIVINE_DEPLOYMENT_MODE": "production",
                 "DIVINE_PUBLIC_URL": "https://divine.example",
+                "DIVINE_ALLOWED_ORIGINS": "https://divine.example",
                 "DIVINE_COOKIE_SECURE": "true",
+                "DIVINE_CSRF_REQUIRE_ORIGIN": "true",
+                "DIVINE_TRUST_PROXY": "true",
+                "DIVINE_FORCE_HTTPS": "true",
             }
 
             env = deployment_environment(environ)
@@ -1184,6 +1441,10 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(env["backup_dir"], backup_dir.resolve())
             self.assertEqual(env["daemon_interval"], 60)
             self.assertTrue(env["cookie_secure"])
+            self.assertEqual(env["allowed_origins"], ["https://divine.example"])
+            self.assertTrue(env["csrf_require_origin"])
+            self.assertTrue(env["trust_proxy"])
+            self.assertTrue(env["force_https"])
 
             blocked = deployment_preflight(data_dir, host="0.0.0.0", port=8765, environ=environ)
 
@@ -1193,6 +1454,20 @@ class DivineToolTests(unittest.TestCase):
             create_account(data_dir, "creator", "strong-pass-123")
             record_heartbeat(data_dir)
             add_income(data_dir, parse_money_to_minor("25"), "GBP", None, "deployment smoke")
+
+            incomplete = deployment_preflight(
+                data_dir,
+                host="0.0.0.0",
+                port=8765,
+                environ={"DIVINE_DEPLOYMENT_MODE": "production"},
+            )
+            self.assertEqual(incomplete["status"], "blocked")
+            self.assertTrue(
+                any(item["name"] == "hosted_origin" and item["severity"] == "fail" for item in incomplete["checks"])
+            )
+            self.assertTrue(
+                any(item["name"] == "proxy_headers" and item["severity"] == "fail" for item in incomplete["checks"])
+            )
 
             ready = deployment_preflight(data_dir, host="0.0.0.0", port=8765, environ=environ)
 

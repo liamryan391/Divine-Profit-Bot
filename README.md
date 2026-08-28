@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.7.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.8.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -130,6 +130,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Conversion Tracking for booking leads into linked income, conversion rates, average deal size, strategy conversion evidence, and lost opportunity notes.
 - Revenue Rules for turning pipeline, conversion, follow-up, loss, and opportunity evidence into explicit promote, pause, approval, or block decisions.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
+- Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 
 Run it with:
 
@@ -166,6 +167,37 @@ Response-time budgets for the local reference environment:
 - Worker status poll: median at or below 50 ms over local HTTP.
 
 Benchmark recorded on 27 August 2026: the representative dashboard payload improved from about 330 ms to 61 ms median, and worker polling measured about 14 ms median over HTTP. The automated suite rebuilds the representative fixture and enforces the dashboard budget.
+
+## API And Authentication Security
+
+The web boundary rejects oversized bodies before reading them. Ordinary JSON requests are limited to 256 KiB; the CSV import request envelope is limited to 5 MiB and its decoded CSV content to 4 MiB. The React importer checks the same 4 MiB file limit before reading a selected file.
+
+Failed sign-ins are tracked by both normalized username and client source. Five failures within 15 minutes trigger a 15-minute lockout by default, returned as HTTP `429` with `Retry-After`. Failures and throttled attempts are written to the authenticated Temple Log without passwords or session tokens. A successful sign-in or local password reset clears pending throttle rows; the audit events remain.
+
+Unexpected server exceptions return only a generic message and correlation request ID. The internal server log retains the matching request ID, method, path, client source, and traceback for diagnosis. JSON responses and static assets also set a restrictive content security policy, framing protection, permissions policy, and related browser security headers.
+
+Hosted mode uses this policy:
+
+- Session cookies are `HttpOnly`, `Secure`, and `SameSite=Strict`.
+- Unsafe requests must carry an exact approved `Origin` or `Referer`; cross-site fetches are rejected and CORS is not enabled.
+- Application traffic must arrive over HTTPS. Only a loopback `/api/health` probe may use direct HTTP.
+- Forwarding headers are ignored unless `DIVINE_TRUST_PROXY=true`.
+- A trusted proxy must strip and overwrite `X-Forwarded-For` and `X-Forwarded-Proto` and must be the only network path to the application port.
+- Production mode fails closed to secure-cookie, origin-check, and HTTPS defaults even when individual toggles are omitted.
+
+Required hosted settings:
+
+```text
+DIVINE_DEPLOYMENT_MODE=production
+DIVINE_PUBLIC_URL=https://divine.example
+DIVINE_ALLOWED_ORIGINS=https://divine.example
+DIVINE_COOKIE_SECURE=true
+DIVINE_CSRF_REQUIRE_ORIGIN=true
+DIVINE_TRUST_PROXY=true
+DIVINE_FORCE_HTTPS=true
+```
+
+`python -m divine_tool deploy preflight --host 0.0.0.0` blocks a hosted release when the canonical HTTPS origin, secure cookie, origin check, proxy trust, or transport policy is incomplete.
 
 For frontend development, run the Python web app for the API and use the Vite dev server for the browser UI:
 
@@ -288,7 +320,7 @@ Create a portable backup of config, SQLite state, and command logs:
 python -m divine_tool deploy backup
 ```
 
-For HTTPS hosting behind a reverse proxy or cloud load balancer, set `DIVINE_PUBLIC_URL` and `DIVINE_COOKIE_SECURE=true` in the host environment. Keep API keys and payment credentials in environment variables only.
+For HTTPS hosting behind a reverse proxy or cloud load balancer, configure every variable in the API and Authentication Security section before starting the public service. Docker Compose publishes the application port on `127.0.0.1` by default so a host reverse proxy can reach it without exposing the trusted-header boundary directly; change `DIVINE_BIND_ADDRESS` only when the surrounding network provides an equivalent restriction. Keep API keys and payment credentials in environment variables only.
 
 ## Strategy Scoring
 

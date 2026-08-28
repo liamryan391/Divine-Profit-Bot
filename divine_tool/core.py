@@ -187,6 +187,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "session_ttl_hours": 12,
         "password_min_length": 10,
+        "login_max_attempts": 5,
+        "login_attempt_window_seconds": 900,
+        "login_lockout_seconds": 900,
         "secret_management": {
             "policy": "Keep API keys and payment credentials in environment variables, not config files.",
             "allowed_env_vars": ["DIVINE_STRIPE_SECRET_KEY", "DIVINE_GITHUB_TOKEN", "GITHUB_TOKEN"],
@@ -223,6 +226,18 @@ class Period:
 
 class DivineToolError(Exception):
     """Raised for user-correctable Divine Tool errors."""
+
+
+class AuthenticationError(DivineToolError):
+    """Raised when supplied credentials cannot be authenticated."""
+
+
+class LoginThrottledError(AuthenticationError):
+    """Raised when a login key must wait before another attempt."""
+
+    def __init__(self, retry_after_seconds: int):
+        super().__init__("Too many sign-in attempts. Try again later.")
+        self.retry_after_seconds = max(int(retry_after_seconds), 1)
 
 
 APPROVAL_KINDS = {
@@ -515,12 +530,35 @@ def migrate_revenue_rules(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_authentication_hardening(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            client_key TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            attempted_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_username_time "
+        "ON auth_login_attempts(username, attempted_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_client_time "
+        "ON auth_login_attempts(client_key, attempted_at DESC)"
+    )
+
+
 SCHEMA_MIGRATIONS = (
     SchemaMigration(1, "core_ledger", migrate_core_ledger),
     SchemaMigration(2, "approval_actions", migrate_approval_actions),
     SchemaMigration(3, "lead_pipeline", migrate_lead_pipeline),
     SchemaMigration(4, "authentication", migrate_authentication),
     SchemaMigration(5, "revenue_rules", migrate_revenue_rules),
+    SchemaMigration(6, "authentication_hardening", migrate_authentication_hardening),
 )
 LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
 
@@ -1698,26 +1736,149 @@ def reset_account_password(data_dir: Path, username: str, password: str) -> dict
             (salt, password_hash, account_id),
         )
         conn.execute("DELETE FROM auth_sessions WHERE account_id = ?", (account_id,))
+        conn.execute("DELETE FROM auth_login_attempts")
         conn.commit()
         updated = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     log_event(data_dir, f"Owner account password reset: {username}", "auth")
     return account_to_dict(updated)
 
 
-def create_session(data_dir: Path, username: str, password: str, user_agent: str = "") -> dict[str, Any]:
+def login_username_key(username: str) -> tuple[str, str | None]:
+    try:
+        normalized = validate_username(username)
+    except DivineToolError:
+        digest = hashlib.sha256(username.encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"<invalid:{digest}>", None
+    return normalized, normalized
+
+
+def normalize_login_client_key(client_key: str) -> str:
+    normalized = " ".join(str(client_key).split())
+    return normalized[:120] or "unknown"
+
+
+def login_throttle_settings(config: dict[str, Any]) -> tuple[int, int, int]:
+    auth = config.get("auth", {})
+    max_attempts = max(int(auth.get("login_max_attempts", 5)), 1)
+    window_seconds = max(int(auth.get("login_attempt_window_seconds", 900)), 1)
+    lockout_seconds = max(int(auth.get("login_lockout_seconds", 900)), 1)
+    return max_attempts, window_seconds, lockout_seconds
+
+
+def login_throttle_status(
+    data_dir: Path,
+    username: str,
+    client_key: str,
+    *,
+    config: dict[str, Any] | None = None,
+    checked_at: datetime | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    config = config if config is not None else load_config(data_dir)
+    max_attempts, window_seconds, lockout_seconds = login_throttle_settings(config)
+    checked_at = checked_at or datetime.now()
+    cutoff = (checked_at - timedelta(seconds=window_seconds)).isoformat(timespec="microseconds")
+    retention_cutoff = (
+        checked_at - timedelta(seconds=max(window_seconds, lockout_seconds) * 4)
+    ).isoformat(timespec="microseconds")
+    with db(data_dir) as conn:
+        conn.execute("DELETE FROM auth_login_attempts WHERE attempted_at < ?", (retention_cutoff,))
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS attempt_count, MAX(attempted_at) AS latest_attempt
+            FROM auth_login_attempts
+            WHERE outcome = 'failure'
+              AND attempted_at >= ?
+              AND (username = ? OR client_key = ?)
+            """,
+            (cutoff, username, client_key),
+        ).fetchone()
+        conn.commit()
+    attempt_count = int(row["attempt_count"] or 0)
+    latest_attempt = str(row["latest_attempt"] or "")
+    if attempt_count < max_attempts or not latest_attempt:
+        return {
+            "blocked": False,
+            "attempt_count": attempt_count,
+            "max_attempts": max_attempts,
+            "retry_after_seconds": 0,
+        }
+    try:
+        lockout_until = datetime.fromisoformat(latest_attempt) + timedelta(seconds=lockout_seconds)
+        retry_after = max(int((lockout_until - checked_at).total_seconds()) + 1, 0)
+    except ValueError:
+        retry_after = lockout_seconds
+    return {
+        "blocked": retry_after > 0,
+        "attempt_count": attempt_count,
+        "max_attempts": max_attempts,
+        "retry_after_seconds": retry_after,
+    }
+
+
+def record_failed_login(data_dir: Path, username: str, client_key: str) -> None:
+    attempted_at = datetime.now().isoformat(timespec="microseconds")
+    with db(data_dir) as conn:
+        conn.execute(
+            """
+            INSERT INTO auth_login_attempts (username, client_key, outcome, attempted_at)
+            VALUES (?, ?, 'failure', ?)
+            """,
+            (username, client_key, attempted_at),
+        )
+        conn.commit()
+    log_event(data_dir, f"Failed sign-in for {username} from {client_key}", "auth", "warning")
+
+
+def clear_login_failures(data_dir: Path, username: str, client_key: str) -> None:
+    with db(data_dir) as conn:
+        conn.execute(
+            "DELETE FROM auth_login_attempts WHERE username = ? OR client_key = ?",
+            (username, client_key),
+        )
+        conn.commit()
+
+
+def create_session(
+    data_dir: Path,
+    username: str,
+    password: str,
+    user_agent: str = "",
+    client_key: str = "local",
+) -> dict[str, Any]:
     ensure_state(data_dir)
     config = load_config(data_dir)
     if not config.get("auth", {}).get("enabled", True):
         raise DivineToolError("Authentication is disabled.")
-    username = validate_username(username)
+    username_key, account_username = login_username_key(str(username))
+    client_key = normalize_login_client_key(client_key)
+    throttle = login_throttle_status(data_dir, username_key, client_key, config=config)
+    if throttle["blocked"]:
+        log_event(data_dir, f"Throttled sign-in for {username_key} from {client_key}", "auth", "warning")
+        raise LoginThrottledError(int(throttle["retry_after_seconds"]))
     cleanup_expired_sessions(data_dir)
     with db(data_dir) as conn:
-        row = conn.execute("SELECT * FROM accounts WHERE username = ?", (username,)).fetchone()
-        if row is None or int(row["disabled"]):
-            raise DivineToolError("Invalid username or password.")
-        if not verify_password(password, row["password_salt"], row["password_hash"]):
-            raise DivineToolError("Invalid username or password.")
+        row = (
+            conn.execute("SELECT * FROM accounts WHERE username = ?", (account_username,)).fetchone()
+            if account_username
+            else None
+        )
+    password_ok = False
+    if row is not None and not int(row["disabled"]) and len(password) <= 1024:
+        password_ok = verify_password(password, row["password_salt"], row["password_hash"])
+    else:
+        _salt, dummy_hash = hash_password(password[:1024], "00" * 16)
+        hmac.compare_digest(dummy_hash, "0" * 64)
+    if not password_ok:
+        record_failed_login(data_dir, username_key, client_key)
+        throttle = login_throttle_status(data_dir, username_key, client_key, config=config)
+        if throttle["blocked"]:
+            raise LoginThrottledError(int(throttle["retry_after_seconds"]))
+        raise AuthenticationError("Invalid username or password.")
 
+    assert row is not None
+    username = str(row["username"])
+    with db(data_dir) as conn:
         token = secrets.token_urlsafe(32)
         token_hash = session_token_hash(token)
         created = now_iso()
@@ -1734,6 +1895,7 @@ def create_session(data_dir: Path, username: str, password: str, user_agent: str
         conn.execute("UPDATE accounts SET last_login_at = ? WHERE id = ?", (created, int(row["id"])))
         conn.commit()
         account = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(row["id"]),)).fetchone()
+    clear_login_failures(data_dir, username_key, client_key)
     log_event(data_dir, f"Account signed in: {username}", "auth")
     return {"token": token, "expires_at": expires_at, "account": account_to_dict(account)}
 

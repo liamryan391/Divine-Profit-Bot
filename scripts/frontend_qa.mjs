@@ -54,6 +54,7 @@ const requiredJs = [
   "Lead intake",
   "due follow-ups",
   "No report has been generated for this session.",
+  "CSV files must be 4 MiB or smaller.",
 ];
 
 for (const token of requiredHtml) {

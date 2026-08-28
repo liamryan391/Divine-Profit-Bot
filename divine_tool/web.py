@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import logging
 import mimetypes
+import secrets
+import ssl
 import time
 from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .core import (
     WORKER_STATUS_BUDGET_MS,
+    AuthenticationError,
     DivineToolError,
+    LoginThrottledError,
     add_exception,
     add_income,
     add_lead_note,
@@ -63,11 +69,28 @@ from .core import (
     update_account_profile,
     worker_status,
 )
-from .deployment import deployment_environment
+from .deployment import deployment_environment, normalize_origin
 
 
 STATIC_DIR = Path(__file__).with_name("static")
 SESSION_COOKIE = "divine_session"
+MAX_JSON_BODY_BYTES = 256 * 1024
+MAX_CSV_IMPORT_BODY_BYTES = 5 * 1024 * 1024
+MAX_CSV_TEXT_BYTES = 4 * 1024 * 1024
+LOGGER = logging.getLogger("divine_tool.web")
+
+
+class RequestPolicyError(Exception):
+    def __init__(
+        self,
+        message: str,
+        status: HTTPStatus,
+        *,
+        headers: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.headers = headers or []
 
 
 def session_cookie_header(token: str, expires_at: str, secure: bool | None = None) -> str:
@@ -78,27 +101,37 @@ def session_cookie_header(token: str, expires_at: str, secure: bool | None = Non
         max_age = 12 * 60 * 60
     if secure is None:
         secure = bool(deployment_environment()["cookie_secure"])
-    attributes = [f"{SESSION_COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Lax", f"Max-Age={max_age}"]
+    attributes = [f"{SESSION_COOKIE}={token}", "Path=/", "HttpOnly", "SameSite=Strict", f"Max-Age={max_age}"]
     if secure:
         attributes.append("Secure")
     return "Set-Cookie: " + "; ".join(attributes)
 
 
-def clear_session_cookie_header() -> str:
-    return f"Set-Cookie: {SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+def clear_session_cookie_header(secure: bool | None = None) -> str:
+    if secure is None:
+        secure = bool(deployment_environment()["cookie_secure"])
+    attributes = [f"{SESSION_COOKIE}=", "Path=/", "HttpOnly", "SameSite=Strict", "Max-Age=0"]
+    if secure:
+        attributes.append("Secure")
+    return "Set-Cookie: " + "; ".join(attributes)
 
 
-def deployment_health() -> dict[str, Any]:
-    env = deployment_environment()
+def deployment_health(environment: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    env = environment if environment is not None else deployment_environment()
     return {
         "mode": env["mode"],
         "public_url": env["public_url"],
         "cookie_secure": env["cookie_secure"],
+        "allowed_origins": env["allowed_origins"],
+        "csrf_require_origin": env["csrf_require_origin"],
+        "trust_proxy": env["trust_proxy"],
+        "force_https": env["force_https"],
     }
 
 
 def run_web(data_dir: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     ensure_state(data_dir)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     handler = make_handler(data_dir)
     server = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{server.server_port}"
@@ -107,13 +140,19 @@ def run_web(data_dir: Path, host: str = "127.0.0.1", port: int = 8765) -> None:
     server.serve_forever()
 
 
-def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    data_dir: Path,
+    environ: Mapping[str, str] | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    security = deployment_environment(environ)
+
     class DivineRequestHandler(BaseHTTPRequestHandler):
         server_version = "DivineToolHTTP/0.1"
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             try:
+                self.enforce_secure_transport(parsed.path)
                 if parsed.path == "/api/auth/status":
                     self.send_json({"auth": auth_status(data_dir, self.session_token())})
                     return
@@ -148,7 +187,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                             "version": __version__,
                             "worker": worker_status(data_dir),
                             "auth": auth_status(data_dir),
-                            "deployment": deployment_health(),
+                            "deployment": deployment_health(security),
                         }
                     )
                     return
@@ -213,15 +252,19 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     self.send_json({"temples": temple_summary(data_dir), "items": list_temples(data_dir)})
                     return
                 self.serve_static(parsed.path)
+            except RequestPolicyError as exc:
+                self.send_json({"error": str(exc)}, exc.status, extra_headers=exc.headers)
             except DivineToolError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
-                self.send_json({"error": f"Unexpected server error: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_internal_error(exc)
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             try:
-                payload = self.read_json()
+                self.enforce_secure_transport(parsed.path)
+                self.enforce_unsafe_origin()
+                payload = self.read_json(self.request_body_limit(parsed.path))
                 if parsed.path == "/api/auth/setup":
                     account = create_account(
                         data_dir,
@@ -235,6 +278,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         username=account["username"],
                         password=str(payload["password"]),
                         user_agent=self.headers.get("User-Agent", ""),
+                        client_key=self.client_identity(),
                     )
                     self.send_json(
                         {
@@ -242,7 +286,13 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                             "auth": auth_status(data_dir, session["token"]),
                             "state": dashboard_payload(data_dir, session["account"]),
                         },
-                        extra_headers=[session_cookie_header(session["token"], session["expires_at"])],
+                        extra_headers=[
+                            session_cookie_header(
+                                session["token"],
+                                session["expires_at"],
+                                secure=bool(security["cookie_secure"]),
+                            )
+                        ],
                     )
                     return
                 if parsed.path == "/api/auth/login":
@@ -251,6 +301,7 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                         username=str(payload["username"]),
                         password=str(payload["password"]),
                         user_agent=self.headers.get("User-Agent", ""),
+                        client_key=self.client_identity(),
                     )
                     self.send_json(
                         {
@@ -258,14 +309,20 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                             "auth": auth_status(data_dir, session["token"]),
                             "state": dashboard_payload(data_dir, session["account"]),
                         },
-                        extra_headers=[session_cookie_header(session["token"], session["expires_at"])],
+                        extra_headers=[
+                            session_cookie_header(
+                                session["token"],
+                                session["expires_at"],
+                                secure=bool(security["cookie_secure"]),
+                            )
+                        ],
                     )
                     return
                 if parsed.path == "/api/auth/logout":
                     destroy_session(data_dir, self.session_token())
                     self.send_json(
                         {"ok": True, "auth": auth_status(data_dir)},
-                        extra_headers=[clear_session_cookie_header()],
+                        extra_headers=[clear_session_cookie_header(secure=bool(security["cookie_secure"]))],
                     )
                     return
                 account = self.require_auth()
@@ -398,9 +455,15 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     self.send_json({"ok": True, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/import/csv":
+                    csv_text = str(payload["csv_text"])
+                    if len(csv_text.encode("utf-8")) > MAX_CSV_TEXT_BYTES:
+                        raise RequestPolicyError(
+                            "CSV content exceeds the 4 MiB import limit.",
+                            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        )
                     result = import_income_csv(
                         data_dir,
-                        csv_text=str(payload["csv_text"]),
+                        csv_text=csv_text,
                         source_type=str(payload.get("source_type", "generic")),
                         default_strategy=str(payload.get("default_strategy", "")),
                         dry_run=bool(payload.get("dry_run", False)),
@@ -472,6 +535,16 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     self.send_json({"ok": True, "outcomes": outcomes, "state": dashboard_payload(data_dir, account)})
                     return
                 self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+            except RequestPolicyError as exc:
+                self.send_json({"error": str(exc)}, exc.status, extra_headers=exc.headers)
+            except LoginThrottledError as exc:
+                self.send_json(
+                    {"error": str(exc), "retry_after_seconds": exc.retry_after_seconds},
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    extra_headers=[f"Retry-After: {exc.retry_after_seconds}"],
+                )
+            except AuthenticationError:
+                self.send_json({"error": "Invalid username or password."}, HTTPStatus.UNAUTHORIZED)
             except KeyError as exc:
                 self.send_json({"error": f"Missing required field: {exc.args[0]}"}, HTTPStatus.BAD_REQUEST)
             except DivineToolError as exc:
@@ -479,12 +552,14 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             except json.JSONDecodeError:
                 self.send_json({"error": "Request body must be valid JSON."}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
-                self.send_json({"error": f"Unexpected server error: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_internal_error(exc)
 
         def do_PATCH(self) -> None:
             parsed = urlparse(self.path)
             try:
-                payload = self.read_json()
+                self.enforce_secure_transport(parsed.path)
+                self.enforce_unsafe_origin()
+                payload = self.read_json(self.request_body_limit(parsed.path))
                 account = self.require_auth()
                 if account is None:
                     return
@@ -500,6 +575,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
                     self.send_json({"ok": True, "rule": rule, "state": dashboard_payload(data_dir, account)})
                     return
                 self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+            except RequestPolicyError as exc:
+                self.send_json({"error": str(exc)}, exc.status, extra_headers=exc.headers)
             except KeyError as exc:
                 self.send_json({"error": f"Missing required field: {exc.args[0]}"}, HTTPStatus.BAD_REQUEST)
             except DivineToolError as exc:
@@ -507,17 +584,167 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             except json.JSONDecodeError:
                 self.send_json({"error": "Request body must be valid JSON."}, HTTPStatus.BAD_REQUEST)
             except Exception as exc:
-                self.send_json({"error": f"Unexpected server error: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_internal_error(exc)
 
-        def read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0"))
+        def request_body_limit(self, path: str) -> int:
+            return MAX_CSV_IMPORT_BODY_BYTES if path == "/api/import/csv" else MAX_JSON_BODY_BYTES
+
+        def read_json(self, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict[str, Any]:
+            if self.headers.get("Transfer-Encoding"):
+                raise RequestPolicyError(
+                    "Chunked request bodies are not supported.",
+                    HTTPStatus.BAD_REQUEST,
+                )
+            raw_length = self.headers.get("Content-Length")
+            if raw_length is None:
+                return {}
+            try:
+                length = int(raw_length)
+            except ValueError as exc:
+                raise RequestPolicyError("Content-Length must be an integer.", HTTPStatus.BAD_REQUEST) from exc
+            if length < 0:
+                raise RequestPolicyError("Content-Length cannot be negative.", HTTPStatus.BAD_REQUEST)
+            if length > max_bytes:
+                self.close_connection = True
+                size_mib = max_bytes / (1024 * 1024)
+                label = f"{int(size_mib)} MiB" if size_mib >= 1 else f"{max_bytes // 1024} KiB"
+                raise RequestPolicyError(
+                    f"Request body exceeds the {label} limit.",
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
             if length == 0:
                 return {}
-            raw = self.rfile.read(length).decode("utf-8")
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise RequestPolicyError("Content-Type must be application/json.", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise RequestPolicyError("Request body ended before Content-Length bytes were received.", HTTPStatus.BAD_REQUEST)
+            try:
+                raw = body.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise RequestPolicyError("Request body must use UTF-8 encoding.", HTTPStatus.BAD_REQUEST) from exc
             value = json.loads(raw)
             if not isinstance(value, dict):
                 raise DivineToolError("Request body must be a JSON object.")
             return value
+
+        def request_scheme(self) -> str:
+            if security["trust_proxy"]:
+                forwarded = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+                if forwarded:
+                    if forwarded not in {"http", "https"}:
+                        raise RequestPolicyError("Invalid forwarded transport protocol.", HTTPStatus.BAD_REQUEST)
+                    return forwarded
+            return "https" if isinstance(self.connection, ssl.SSLSocket) else "http"
+
+        def direct_client_is_loopback(self) -> bool:
+            try:
+                return ipaddress.ip_address(str(self.client_address[0])).is_loopback
+            except ValueError:
+                return False
+
+        def client_identity(self) -> str:
+            direct = str(self.client_address[0])
+            if not security["trust_proxy"]:
+                return direct[:120]
+            forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+            if not forwarded:
+                return direct[:120]
+            try:
+                return str(ipaddress.ip_address(forwarded))
+            except ValueError:
+                return direct[:120]
+
+        def enforce_secure_transport(self, path: str) -> None:
+            if not security["force_https"]:
+                return
+            if path == "/api/health" and self.direct_client_is_loopback():
+                return
+            if self.request_scheme() != "https":
+                raise RequestPolicyError("HTTPS is required for this deployment.", HTTPStatus.UPGRADE_REQUIRED)
+
+        def enforce_unsafe_origin(self) -> None:
+            fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+            if fetch_site == "cross-site":
+                raise RequestPolicyError("Cross-site requests are not permitted.", HTTPStatus.FORBIDDEN)
+
+            supplied_origin = self.headers.get("Origin", "").strip()
+            referer = self.headers.get("Referer", "").strip()
+            if supplied_origin:
+                candidate = supplied_origin
+            elif referer:
+                parsed_referer = urlparse(referer)
+                candidate = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+            else:
+                if security["csrf_require_origin"]:
+                    raise RequestPolicyError(
+                        "An approved Origin or Referer is required.",
+                        HTTPStatus.FORBIDDEN,
+                    )
+                return
+
+            try:
+                origin = normalize_origin(candidate, name="request origin")
+            except DivineToolError as exc:
+                raise RequestPolicyError("Request origin is not permitted.", HTTPStatus.FORBIDDEN) from exc
+            if origin in security["allowed_origins"]:
+                return
+            request_origin = self.loopback_request_origin()
+            if request_origin and origin == request_origin:
+                return
+            raise RequestPolicyError("Request origin is not permitted.", HTTPStatus.FORBIDDEN)
+
+        def loopback_request_origin(self) -> str:
+            host = self.headers.get("Host", "").strip()
+            if not host:
+                return ""
+            try:
+                origin = normalize_origin(f"{self.request_scheme()}://{host}", name="request host")
+                hostname = urlparse(origin).hostname or ""
+                if hostname == "localhost" or ipaddress.ip_address(hostname).is_loopback:
+                    return origin
+            except (DivineToolError, ValueError):
+                return ""
+            return ""
+
+        def request_id(self) -> str:
+            current = getattr(self, "_divine_request_id", "")
+            if current:
+                return str(current)
+            current = secrets.token_hex(8)
+            self._divine_request_id = current
+            return current
+
+        def send_internal_error(self, exc: Exception) -> None:
+            request_id = self.request_id()
+            LOGGER.exception(
+                "Unhandled request error request_id=%s method=%s path=%s client=%s",
+                request_id,
+                self.command,
+                urlparse(self.path).path,
+                self.client_identity(),
+                exc_info=exc,
+            )
+            self.send_json(
+                {"error": "Unexpected server error.", "request_id": request_id},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+        def send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; "
+                "object-src 'none'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self'",
+            )
+            if security["force_https"]:
+                self.send_header("Strict-Transport-Security", "max-age=31536000")
 
         def serve_static(self, path: str) -> None:
             if path == "/":
@@ -540,8 +767,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("X-Request-ID", self.request_id())
+            self.send_security_headers()
             self.end_headers()
             self.wfile.write(data)
 
@@ -585,8 +812,8 @@ def make_handler(data_dir: Path) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("X-Request-ID", self.request_id())
+            self.send_security_headers()
             for header in extra_headers or []:
                 name, value = header.split(":", 1)
                 self.send_header(name.strip(), value.strip())
