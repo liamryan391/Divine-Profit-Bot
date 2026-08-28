@@ -9,7 +9,7 @@ import time
 import unittest
 import zipfile
 from contextlib import closing
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +17,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from divine_tool.cli import main as cli_main
 from divine_tool.core import (
     DASHBOARD_SNAPSHOT_BUDGET_MS,
     LATEST_SCHEMA_VERSION,
@@ -25,6 +26,7 @@ from divine_tool.core import (
     LoginThrottledError,
     SchemaMigration,
     DivineToolError,
+    WorkerCycleBusyError,
     add_income,
     approval_queue_summary,
     auth_status,
@@ -53,6 +55,7 @@ from divine_tool.core import (
     list_accounts,
     list_income,
     list_temples,
+    list_worker_cycles,
     load_config,
     parse_money_to_minor,
     process_command_inbox,
@@ -61,6 +64,7 @@ from divine_tool.core import (
     record_revenue_rule_runs,
     reset_account_password,
     revenue_rules_summary,
+    run_worker_cycle,
     run_migrations,
     save_config,
     review_approval_action,
@@ -72,6 +76,7 @@ from divine_tool.core import (
     temple_summary,
     update_account_profile,
     update_revenue_rule,
+    worker_status,
 )
 from divine_tool.deployment import create_backup, deployment_environment, deployment_preflight
 from divine_tool.web import (
@@ -191,6 +196,158 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual(outcomes, ["added income #1"])
             self.assertEqual(report["earned_minor"], 2500)
 
+    def test_worker_cycle_records_structured_outcomes_and_health_signals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_revenue_rule(
+                data_dir,
+                name="Review every open pipeline",
+                rule_type="require_approval",
+                metric="open_leads",
+                operator="gte",
+                threshold_value=0,
+                action="Review the next pipeline action",
+                approval_required=True,
+            )
+            create_approval_draft(
+                data_dir,
+                kind="outreach",
+                target="Prospect",
+                offer="Audit",
+                goal="Book a call",
+            )
+            enqueue_command(
+                data_dir,
+                {"action": "set_mood", "mood": "watchful"},
+            )
+            enqueue_command(data_dir, {"action": "unsupported_action"})
+
+            partial = run_worker_cycle(data_dir, trigger="test", worker_name="daemon")
+
+            self.assertEqual(partial["status"], "partial")
+            self.assertEqual(partial["commands"], {"total": 2, "succeeded": 1, "failed": 1})
+            self.assertEqual(partial["rules"]["evaluated"], 1)
+            self.assertEqual(partial["rules"]["triggered"], 1)
+            self.assertEqual(partial["approvals"]["required"], 1)
+            self.assertEqual(partial["approvals"]["pending"], 1)
+            self.assertEqual(partial["failure_count"], 1)
+            degraded = worker_status(data_dir)
+            self.assertTrue(degraded["liveness"]["ok"])
+            self.assertFalse(degraded["readiness"]["ok"])
+            self.assertEqual(degraded["readiness"]["state"], "degraded")
+
+            succeeded = run_worker_cycle(data_dir, trigger="test", worker_name="daemon")
+            healthy = worker_status(data_dir)
+
+            self.assertEqual(succeeded["status"], "succeeded")
+            self.assertTrue(healthy["live"])
+            self.assertTrue(healthy["ready"])
+            self.assertFalse(healthy["stale"])
+            self.assertEqual(healthy["health"], "healthy")
+            self.assertEqual(healthy["latest_worker_cycle"]["id"], succeeded["id"])
+            self.assertEqual(len(list_worker_cycles(data_dir)), 2)
+
+    def test_daemon_cli_and_browser_share_worker_cycle_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            config = load_config(data_dir)
+            config["auth"]["enabled"] = False
+            config["integrations"]["currency_rates"]["enabled"] = False
+            config["integrations"]["github"]["enabled"] = False
+            save_config(data_dir, config)
+            create_revenue_rule(
+                data_dir,
+                name="Observe worker parity",
+                rule_type="promote",
+                metric="open_leads",
+                operator="gte",
+                threshold_value=0,
+                action="Keep the shared worker cycle",
+                approval_required=False,
+            )
+
+            daemon_cycle = run_worker_cycle(data_dir, trigger="daemon", worker_name="daemon")
+            cli_exit = cli_main(["--data-dir", str(data_dir), "daemon", "--once"])
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/daemon/run-once",
+                    data=b"{}",
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request) as response:
+                    browser_payload = json.loads(response.read().decode("utf-8"))
+                with urlopen(f"http://127.0.0.1:{server.server_port}/api/health") as response:
+                    health_payload = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            cycles = list_worker_cycles(data_dir, limit=5)
+            cycle_by_trigger = {cycle["trigger"]: cycle for cycle in cycles}
+            self.assertEqual(cli_exit, 0)
+            self.assertEqual(daemon_cycle["rules"]["evaluated"], 1)
+            self.assertEqual(cycle_by_trigger["cli"]["rules"]["evaluated"], 1)
+            self.assertEqual(browser_payload["cycle"]["trigger"], "browser")
+            self.assertEqual(browser_payload["cycle"]["rules"]["evaluated"], 1)
+            self.assertEqual(health_payload["liveness"]["state"], "live")
+            self.assertEqual(health_payload["readiness"]["state"], "ready")
+            self.assertTrue(health_payload["worker"]["liveness"]["ok"])
+            self.assertTrue(health_payload["worker"]["readiness"]["ok"])
+            self.assertEqual({cycle["trigger"] for cycle in cycles}, {"daemon", "cli", "browser"})
+            self.assertEqual(len(revenue_rules_summary(data_dir)["recent_runs"]), 3)
+
+    def test_worker_cycle_recovers_interrupted_run_and_reports_stale_liveness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            ensure_state(data_dir)
+            with closing(connect(data_dir)) as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO worker_cycles (worker_name, trigger, status, started_at)
+                    VALUES ('daemon', 'daemon', 'running', ?)
+                    """,
+                    (datetime.now().isoformat(timespec="seconds"),),
+                )
+                interrupted_id = int(cursor.lastrowid)
+                conn.commit()
+
+            with self.assertRaises(WorkerCycleBusyError):
+                run_worker_cycle(data_dir, trigger="browser", worker_name="browser")
+
+            interrupted_at = (datetime.now() - timedelta(minutes=11)).isoformat(timespec="seconds")
+            with closing(connect(data_dir)) as conn:
+                conn.execute(
+                    "UPDATE worker_cycles SET started_at = ? WHERE id = ?",
+                    (interrupted_at, interrupted_id),
+                )
+                conn.commit()
+
+            recovered = run_worker_cycle(data_dir, trigger="daemon", worker_name="daemon")
+            cycles = {cycle["id"]: cycle for cycle in list_worker_cycles(data_dir)}
+
+            self.assertEqual(cycles[interrupted_id]["status"], "interrupted")
+            self.assertEqual(cycles[interrupted_id]["failure_count"], 1)
+            self.assertEqual(recovered["status"], "succeeded")
+
+            stale_at = (datetime.now() - timedelta(minutes=11)).isoformat(timespec="seconds")
+            with closing(connect(data_dir)) as conn:
+                conn.execute(
+                    "UPDATE worker_heartbeat SET last_seen_at = ? WHERE worker_name = 'daemon'",
+                    (stale_at,),
+                )
+                conn.commit()
+            stale = worker_status(data_dir)
+            self.assertTrue(stale["stale"])
+            self.assertFalse(stale["liveness"]["ok"])
+            self.assertEqual(stale["liveness"]["state"], "stale")
+            self.assertTrue(stale["readiness"]["ok"])
+
     def test_web_api_records_income(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -224,6 +381,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Lead Pipeline", js_body)
                     self.assertIn(b"Conversion Tracking", js_body)
                     self.assertIn(b"Revenue Rules", js_body)
+                    self.assertIn(b"Worker Operations", js_body)
+                    self.assertIn(b"Recent Worker Cycles", js_body)
                     self.assertIn(b"Restart the web server", js_body)
                     self.assertIn(b"Create Lead", js_body)
                     self.assertIn(b"Create Rule", js_body)
@@ -231,6 +390,7 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"/api/conversions/record", js_body)
                     self.assertIn(b"/api/revenue-rules", js_body)
                     self.assertIn(b"/api/worker/status", js_body)
+                    self.assertIn(b"/api/daemon/run-once", js_body)
 
                 try:
                     urlopen(f"{base_url}/api/status")
@@ -1452,7 +1612,7 @@ class DivineToolTests(unittest.TestCase):
             self.assertTrue(any(item["name"] == "owner_account" and item["severity"] == "fail" for item in blocked["checks"]))
 
             create_account(data_dir, "creator", "strong-pass-123")
-            record_heartbeat(data_dir)
+            run_worker_cycle(data_dir, trigger="daemon", worker_name="daemon")
             add_income(data_dir, parse_money_to_minor("25"), "GBP", None, "deployment smoke")
 
             incomplete = deployment_preflight(

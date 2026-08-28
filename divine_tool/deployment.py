@@ -260,13 +260,24 @@ def deployment_preflight(
     else:
         checks.append(check("csrf_origin", "pass", "Cross-origin unsafe requests are rejected on localhost."))
 
-    heartbeat = worker_status(data_dir)
-    if heartbeat["state"] == "running":
-        checks.append(check("daemon", "pass", "Daemon heartbeat is current."))
-    elif heartbeat["state"] == "stale":
-        checks.append(check("daemon", "warn", "Daemon heartbeat is stale; restart the worker service."))
+    worker = worker_status(data_dir)
+    if worker["liveness"]["ok"]:
+        checks.append(check("daemon_liveness", "pass", "Daemon heartbeat is current."))
+    elif worker["stale"]:
+        checks.append(check("daemon_liveness", "warn", "Daemon heartbeat is stale; restart the worker service."))
     else:
-        checks.append(check("daemon", "warn", "Daemon has not reported yet; start the worker service after deployment."))
+        checks.append(
+            check("daemon_liveness", "warn", "Daemon has not reported yet; start the worker service after deployment.")
+        )
+
+    if worker["readiness"]["ok"]:
+        checks.append(check("daemon_readiness", "pass", "Latest daemon cycle completed successfully."))
+    elif worker["readiness"]["state"] == "degraded":
+        checks.append(
+            check("daemon_readiness", "warn", "Latest daemon cycle completed with recoverable command failures.")
+        )
+    else:
+        checks.append(check("daemon_readiness", "warn", worker["readiness"]["detail"]))
 
     try:
         backup_dir = env["backup_dir"]

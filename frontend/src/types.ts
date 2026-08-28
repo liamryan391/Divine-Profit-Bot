@@ -20,13 +20,44 @@ export interface AuthStatus {
   secret_management?: JsonMap;
 }
 
+export interface WorkerCycle {
+  id: number;
+  worker_name: string;
+  trigger: string;
+  status: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  commands: { total: number; succeeded: number; failed: number };
+  rules: { evaluated: number; triggered: number; blocked: number };
+  approvals: { required: number; pending: number };
+  failure_count: number;
+  error_summary?: string;
+  outcome?: JsonMap;
+}
+
+export interface WorkerSignal {
+  ok: boolean;
+  state: string;
+  detail: string;
+}
+
 export interface WorkerStatus {
   worker_name?: string;
   state: string;
+  health?: string;
+  live?: boolean;
+  ready?: boolean;
+  stale?: boolean;
+  liveness?: WorkerSignal;
+  readiness?: WorkerSignal;
   last_seen_at?: string | null;
   age_seconds: number | null;
   detail?: string;
   stale_after_seconds?: number;
+  latest_cycle?: WorkerCycle | null;
+  latest_worker_cycle?: WorkerCycle | null;
+  recent_cycles?: WorkerCycle[];
 }
 
 export interface Temple {

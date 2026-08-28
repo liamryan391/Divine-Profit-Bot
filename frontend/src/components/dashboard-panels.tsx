@@ -1013,17 +1013,69 @@ export function TempleLogPanel({
   busy: string;
   onPulse: () => void;
 }) {
+  const worker = dashboard.worker;
+  const recentCycles = worker.recent_cycles || [];
+  const latestCycle = worker.latest_cycle || recentCycles[0];
+  const liveness = worker.liveness?.state || worker.state;
+  const readiness = worker.readiness?.state || (worker.state === "running" ? "ready" : "not ready");
   return (
     <Panel
-      title="Temple Log"
-      icon={FileText}
+      title="Worker Operations"
+      icon={Activity}
       wide
       actions={
         <Button icon={Activity} variant="secondary" disabled={busy === "pulse"} onClick={onPulse}>
-          Pulse Worker
+          {busy === "pulse" ? "Running..." : "Run Worker Cycle"}
         </Button>
       }
     >
+      <div className="mb-4 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+        <MiniMetric label="Liveness" value={titleCase(liveness.replace(/_/g, " "))} />
+        <MiniMetric label="Readiness" value={titleCase(readiness.replace(/_/g, " "))} />
+        <MiniMetric label="Latest Cycle" value={latestCycle ? `#${latestCycle.id} ${titleCase(latestCycle.status)}` : "No cycle"} />
+        <MiniMetric label="Duration" value={latestCycle ? `${latestCycle.duration_ms.toFixed(2)} ms` : "Not measured"} />
+      </div>
+      <section className="mb-4 grid gap-2 border-y border-temple-line py-4">
+        <div className="section-heading">
+          <h3 className="text-sm font-black uppercase text-temple-muted">Recent Worker Cycles</h3>
+          <Badge>{recentCycles.length}</Badge>
+        </div>
+        {recentCycles.length ? (
+          <div className="grid gap-2 xl:grid-cols-2">
+            {recentCycles.slice(0, 6).map((cycle) => (
+              <div
+                key={cycle.id}
+                className={cx(
+                  "temple-row grid gap-1 border-l-4",
+                  cycle.status === "succeeded"
+                    ? "border-l-temple-green"
+                    : cycle.status === "partial" || cycle.status === "interrupted"
+                      ? "border-l-temple-gold"
+                      : "border-l-temple-red",
+                )}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <strong>#{cycle.id} {titleCase(cycle.trigger)} Cycle</strong>
+                  <Badge>{titleCase(cycle.status)}</Badge>
+                </div>
+                <span className="text-sm text-temple-muted">
+                  {cycle.commands.succeeded}/{cycle.commands.total} commands; {cycle.rules.triggered}/{cycle.rules.evaluated} rules; {cycle.approvals.required} approval gates
+                </span>
+                <small className="text-temple-muted">
+                  {formatTime(cycle.finished_at || cycle.started_at)} - {cycle.duration_ms.toFixed(2)} ms
+                </small>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyRow>No worker cycles recorded yet.</EmptyRow>
+        )}
+      </section>
+      <div className="section-heading">
+        <h3 className="flex items-center gap-2 text-sm font-black uppercase text-temple-muted">
+          <FileText aria-hidden="true" size={17} /> Temple Log
+        </h3>
+      </div>
       <TempleLog events={dashboard.events} />
     </Panel>
   );

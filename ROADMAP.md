@@ -33,7 +33,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.8.0`.
+Current version: `v2.9.0`.
 
 Completed:
 
@@ -89,6 +89,7 @@ Completed:
 - Backend Roadmap 3.0 Stage 3.0.2: enabled WAL, busy timeout, and foreign keys; replaced repeated schema setup with transactional versioned migrations; and verified legacy-state preservation, rollback, concurrent access, and lock recovery.
 - Backend Roadmap 3.0 Stage 3.0.3: shipped a request-scoped dashboard snapshot, lightweight worker polling, on-demand reports, and enforced representative response-time budgets.
 - Backend Roadmap 3.0 Stage 3.0.4: bounded API and CSV bodies, added persistent login throttling and audit events, redacted unexpected errors, and enforced the hosted origin, CSRF, cookie, proxy, and HTTPS policy.
+- Backend Roadmap 3.0 Stage 3.0.5: unified daemon, CLI, and browser worker cycles; added structured cycle history, independent liveness/readiness/staleness signals, overlap protection, and interrupted-cycle recovery.
 
 ## Phase 0: Foundation
 
@@ -731,7 +732,7 @@ Release status: shipped.
 
 ### Stage 3.0.5: Worker Parity And Observability
 
-Status: next.
+Status: complete.
 
 Deliverables:
 
@@ -742,9 +743,11 @@ Deliverables:
 
 Release target: `v2.9.0`.
 
+Release status: shipped.
+
 ### Stage 3.0.6: Backup Restore And Failure Drills
 
-Status: planned.
+Status: next.
 
 Deliverables:
 
@@ -799,9 +802,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Begin Backend Roadmap 3.0, Stage 3.0.5: Worker Parity And Observability.
+Begin Backend Roadmap 3.0, Stage 3.0.6: Backup Restore And Failure Drills.
 
-- Use one worker-cycle implementation for the daemon, CLI run-once command, and browser pulse.
-- Record structured cycle outcomes for commands, rules, approvals, duration, and failures.
-- Separate liveness, readiness, and stale-worker health signals.
+- Add a verified restore workflow for portable backups.
+- Test container restart persistence, interrupted writes, migration failure, and stale-worker recovery.
+- Add integrity checks and a concise operator recovery runbook.
 - Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.

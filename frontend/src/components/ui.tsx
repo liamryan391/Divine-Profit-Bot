@@ -76,13 +76,24 @@ export function StatusPill({ text }: { text: string }) {
 }
 
 export function WorkerPill({ worker }: { worker: WorkerStatus }) {
-  const color = worker.state === "running" ? "bg-temple-green" : worker.state === "stale" ? "bg-temple-gold" : "bg-temple-red";
+  const liveness = worker.liveness?.state || worker.state;
+  const readiness = worker.readiness?.state || (worker.state === "running" ? "ready" : "not_ready");
+  const color = worker.health === "healthy" || (worker.state === "running" && !worker.health)
+    ? "bg-temple-green"
+    : worker.stale || worker.state === "stale" || worker.health === "degraded"
+      ? "bg-temple-gold"
+      : "bg-temple-red";
   const age = worker.age_seconds === null ? "no heartbeat" : `${worker.age_seconds}s ago`;
   return (
-    <div className="temple-badge break-words" role="status" aria-live="polite" aria-label={`Worker ${worker.state}, last heartbeat ${age}`}>
+    <div
+      className="temple-badge break-words"
+      role="status"
+      aria-live="polite"
+      aria-label={`Worker liveness ${liveness}, readiness ${readiness}, last heartbeat ${age}`}
+    >
       <span className={cx("h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_16px_currentColor]", color)} aria-hidden="true" />
       <span>
-        Worker: {worker.state} ({age})
+        Worker: {liveness} / {readiness} ({age})
       </span>
     </div>
   );

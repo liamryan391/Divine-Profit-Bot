@@ -26,6 +26,7 @@ import type {
   LeadEntry,
   ReportPayload,
   RevenueRuleEntry,
+  WorkerCycle,
 } from "./types";
 
 const MAX_CSV_FILE_BYTES = 4 * 1024 * 1024;
@@ -269,12 +270,14 @@ function App() {
   async function pulseWorker() {
     setBusy("pulse");
     try {
-      const payload = await apiRequest<{ ok: boolean; state: DashboardPayload }>("/api/daemon/run-once", {
+      const payload = await apiRequest<{ ok: boolean; cycle: WorkerCycle; state: DashboardPayload }>("/api/daemon/run-once", {
         method: "POST",
         body: "{}",
       });
       applyDashboard(payload.state);
-      showToast("Worker pulse complete");
+      showToast(
+        `Worker cycle #${payload.cycle.id} ${payload.cycle.status}: ${payload.cycle.rules.triggered}/${payload.cycle.rules.evaluated} rules triggered`,
+      );
     } catch (error) {
       handleApiError(error);
     } finally {

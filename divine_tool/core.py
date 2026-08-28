@@ -240,6 +240,10 @@ class LoginThrottledError(AuthenticationError):
         self.retry_after_seconds = max(int(retry_after_seconds), 1)
 
 
+class WorkerCycleBusyError(DivineToolError):
+    """Raised when another worker cycle still owns the shared worker pipeline."""
+
+
 APPROVAL_KINDS = {
     "invoice_reminder": "Invoice Reminder",
     "outreach": "Outreach Message",
@@ -552,6 +556,45 @@ def migrate_authentication_hardening(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_worker_cycle_observability(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_cycles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            worker_name TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL DEFAULT '',
+            duration_ms REAL NOT NULL DEFAULT 0,
+            command_count INTEGER NOT NULL DEFAULT 0,
+            command_succeeded_count INTEGER NOT NULL DEFAULT 0,
+            command_failed_count INTEGER NOT NULL DEFAULT 0,
+            rules_evaluated_count INTEGER NOT NULL DEFAULT 0,
+            rules_triggered_count INTEGER NOT NULL DEFAULT 0,
+            approvals_required_count INTEGER NOT NULL DEFAULT 0,
+            pending_approvals_count INTEGER NOT NULL DEFAULT 0,
+            blocked_rules_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            outcome_json TEXT NOT NULL DEFAULT '{}',
+            error_summary TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_worker_cycles_worker_started "
+        "ON worker_cycles(worker_name, started_at DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_worker_cycles_started "
+        "ON worker_cycles(started_at DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_cycles_one_running "
+        "ON worker_cycles(status) WHERE status = 'running'"
+    )
+
+
 SCHEMA_MIGRATIONS = (
     SchemaMigration(1, "core_ledger", migrate_core_ledger),
     SchemaMigration(2, "approval_actions", migrate_approval_actions),
@@ -559,6 +602,7 @@ SCHEMA_MIGRATIONS = (
     SchemaMigration(4, "authentication", migrate_authentication),
     SchemaMigration(5, "revenue_rules", migrate_revenue_rules),
     SchemaMigration(6, "authentication_hardening", migrate_authentication_hardening),
+    SchemaMigration(7, "worker_cycle_observability", migrate_worker_cycle_observability),
 )
 LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
 
@@ -1125,11 +1169,82 @@ def record_heartbeat(data_dir: Path, worker_name: str = "daemon", detail: str = 
         conn.commit()
 
 
-def worker_status(data_dir: Path, worker_name: str = "daemon") -> dict[str, Any]:
+def worker_cycle_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        outcome = json.loads(str(row["outcome_json"] or "{}"))
+    except json.JSONDecodeError:
+        outcome = {"failures": [{"message": "Stored worker outcome could not be decoded."}]}
+    return {
+        "id": int(row["id"]),
+        "worker_name": str(row["worker_name"]),
+        "trigger": str(row["trigger"]),
+        "status": str(row["status"]),
+        "started_at": str(row["started_at"]),
+        "finished_at": str(row["finished_at"]),
+        "duration_ms": round(float(row["duration_ms"]), 2),
+        "commands": {
+            "total": int(row["command_count"]),
+            "succeeded": int(row["command_succeeded_count"]),
+            "failed": int(row["command_failed_count"]),
+        },
+        "rules": {
+            "evaluated": int(row["rules_evaluated_count"]),
+            "triggered": int(row["rules_triggered_count"]),
+            "blocked": int(row["blocked_rules_count"]),
+        },
+        "approvals": {
+            "required": int(row["approvals_required_count"]),
+            "pending": int(row["pending_approvals_count"]),
+        },
+        "failure_count": int(row["failure_count"]),
+        "error_summary": str(row["error_summary"]),
+        "outcome": outcome,
+    }
+
+
+def list_worker_cycles(
+    data_dir: Path,
+    limit: int = 8,
+    worker_name: str | None = None,
+) -> list[dict[str, Any]]:
     ensure_state(data_dir)
+    bounded_limit = max(1, min(int(limit), 100))
+    with db(data_dir) as conn:
+        if worker_name:
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT * FROM worker_cycles
+                    WHERE worker_name = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (worker_name, bounded_limit),
+                )
+            )
+        else:
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT * FROM worker_cycles
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (bounded_limit,),
+                )
+            )
+    return [worker_cycle_to_dict(row) for row in rows]
+
+
+def worker_stale_after_seconds(data_dir: Path) -> int:
     config = load_config(data_dir)
     interval = int(config.get("automation", {}).get("check_interval_seconds", 300))
-    stale_after = max(interval * 2, 60)
+    return max(interval * 2, 60)
+
+
+def worker_status(data_dir: Path, worker_name: str = "daemon") -> dict[str, Any]:
+    ensure_state(data_dir)
+    stale_after = worker_stale_after_seconds(data_dir)
     with db(data_dir) as conn:
         row = conn.execute(
             """
@@ -1138,27 +1253,216 @@ def worker_status(data_dir: Path, worker_name: str = "daemon") -> dict[str, Any]
             """,
             (worker_name,),
         ).fetchone()
+        latest_worker_row = conn.execute(
+            """
+            SELECT * FROM worker_cycles
+            WHERE worker_name = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (worker_name,),
+        ).fetchone()
+        recent_rows = list(
+            conn.execute(
+                """
+                SELECT * FROM worker_cycles
+                ORDER BY id DESC
+                LIMIT 8
+                """
+            )
+        )
 
-    if row is None:
-        return {
-            "worker_name": worker_name,
-            "state": "not started",
-            "last_seen_at": None,
-            "age_seconds": None,
-            "detail": "",
-            "stale_after_seconds": stale_after,
-        }
-
-    last_seen = datetime.fromisoformat(row["last_seen_at"])
-    age = max(int((datetime.now() - last_seen).total_seconds()), 0)
+    age: int | None = None
+    if row is not None:
+        last_seen = datetime.fromisoformat(row["last_seen_at"])
+        age = max(int((datetime.now() - last_seen).total_seconds()), 0)
+    stale = age is not None and age > stale_after
+    live = age is not None and not stale
+    liveness_state = "live" if live else "stale" if stale else "not_started"
+    latest_worker_cycle = worker_cycle_to_dict(latest_worker_row) if latest_worker_row is not None else None
+    latest_status = str((latest_worker_cycle or {}).get("status") or "")
+    ready = latest_status == "succeeded"
+    if ready:
+        readiness_state = "ready"
+        readiness_detail = "Latest daemon cycle completed successfully."
+    elif latest_status == "partial":
+        readiness_state = "degraded"
+        readiness_detail = "Latest daemon cycle completed with recoverable command failures."
+    elif latest_status == "running":
+        readiness_state = "starting"
+        readiness_detail = "Daemon cycle is currently running."
+    elif latest_status:
+        readiness_state = "not_ready"
+        readiness_detail = f"Latest daemon cycle ended as {latest_status}."
+    else:
+        readiness_state = "not_ready"
+        readiness_detail = "No daemon cycle has completed yet."
+    health = "healthy" if live and ready else "stale" if stale else "degraded" if live else "unavailable"
     return {
         "worker_name": worker_name,
-        "state": "running" if age <= stale_after else "stale",
-        "last_seen_at": row["last_seen_at"],
+        "state": "running" if live else "stale" if stale else "not started",
+        "health": health,
+        "live": live,
+        "ready": ready,
+        "stale": stale,
+        "liveness": {
+            "ok": live,
+            "state": liveness_state,
+            "detail": "Daemon heartbeat is current." if live else "Daemon heartbeat is stale." if stale else "Daemon has not reported yet.",
+        },
+        "readiness": {
+            "ok": ready,
+            "state": readiness_state,
+            "detail": readiness_detail,
+        },
+        "last_seen_at": row["last_seen_at"] if row is not None else None,
         "age_seconds": age,
-        "detail": row["detail"],
+        "detail": row["detail"] if row is not None else "",
         "stale_after_seconds": stale_after,
+        "latest_cycle": worker_cycle_to_dict(recent_rows[0]) if recent_rows else None,
+        "latest_worker_cycle": latest_worker_cycle,
+        "recent_cycles": [worker_cycle_to_dict(cycle_row) for cycle_row in recent_rows],
     }
+
+
+def start_worker_cycle(data_dir: Path, worker_name: str, trigger: str) -> int:
+    ensure_state(data_dir)
+    stale_after = worker_stale_after_seconds(data_dir)
+    started_at = now_iso()
+    recovered_cycle_id: int | None = None
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            running = conn.execute(
+                "SELECT * FROM worker_cycles WHERE status = 'running' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if running is not None:
+                try:
+                    running_started = datetime.fromisoformat(str(running["started_at"]))
+                    running_age = max(int((datetime.now() - running_started).total_seconds()), 0)
+                except ValueError:
+                    running_age = stale_after + 1
+                if running_age <= stale_after:
+                    conn.rollback()
+                    raise WorkerCycleBusyError(
+                        f"Worker cycle #{int(running['id'])} is already running via {running['trigger']}."
+                    )
+                recovered_cycle_id = int(running["id"])
+                recovery_message = "Recovered an interrupted cycle after its liveness window expired."
+                conn.execute(
+                    """
+                    UPDATE worker_cycles
+                    SET status = 'interrupted', finished_at = ?, duration_ms = ?,
+                        failure_count = CASE WHEN failure_count < 1 THEN 1 ELSE failure_count END,
+                        outcome_json = ?, error_summary = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        started_at,
+                        round(running_age * 1000.0, 2),
+                        json.dumps(
+                            {
+                                "commands": {"outcomes": []},
+                                "rules": {"temples": []},
+                                "approvals": {},
+                                "failures": [{"type": "interrupted", "message": recovery_message}],
+                                "recovery": {"recovered_at": started_at, "next_trigger": trigger},
+                            },
+                            sort_keys=True,
+                        ),
+                        recovery_message,
+                        recovered_cycle_id,
+                    ),
+                )
+            cursor = conn.execute(
+                """
+                INSERT INTO worker_cycles (worker_name, trigger, status, started_at)
+                VALUES (?, ?, 'running', ?)
+                """,
+                (worker_name, trigger, started_at),
+            )
+            cycle_id = int(cursor.lastrowid)
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise WorkerCycleBusyError("Another worker cycle claimed the pipeline first.") from exc
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+    if recovered_cycle_id is not None:
+        log_event(
+            data_dir,
+            f"Worker cycle #{recovered_cycle_id} marked interrupted during restart recovery",
+            "worker",
+            "warning",
+        )
+    record_heartbeat(data_dir, worker_name=worker_name, detail=f"cycle #{cycle_id} running via {trigger}")
+    return cycle_id
+
+
+def finish_worker_cycle(
+    data_dir: Path,
+    cycle_id: int,
+    *,
+    status: str,
+    duration_ms: float,
+    outcome: dict[str, Any],
+    error_summary: str = "",
+) -> dict[str, Any]:
+    if status not in {"succeeded", "partial", "failed", "interrupted"}:
+        raise ValueError(f"Unsupported worker cycle status: {status}")
+    commands = outcome.get("commands", {})
+    rules = outcome.get("rules", {})
+    approvals = outcome.get("approvals", {})
+    failures = outcome.get("failures", [])
+    finished_at = now_iso()
+    with db(data_dir) as conn:
+        row = conn.execute("SELECT worker_name, trigger FROM worker_cycles WHERE id = ?", (cycle_id,)).fetchone()
+        if row is None:
+            raise DivineToolError(f"Worker cycle #{cycle_id} does not exist.")
+        conn.execute(
+            """
+            UPDATE worker_cycles
+            SET status = ?, finished_at = ?, duration_ms = ?,
+                command_count = ?, command_succeeded_count = ?, command_failed_count = ?,
+                rules_evaluated_count = ?, rules_triggered_count = ?,
+                approvals_required_count = ?, pending_approvals_count = ?, blocked_rules_count = ?,
+                failure_count = ?, outcome_json = ?, error_summary = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                finished_at,
+                round(float(duration_ms), 2),
+                int(commands.get("total", 0)),
+                int(commands.get("succeeded", 0)),
+                int(commands.get("failed", 0)),
+                int(rules.get("evaluated", 0)),
+                int(rules.get("triggered", 0)),
+                int(approvals.get("required", 0)),
+                int(approvals.get("pending", 0)),
+                int(rules.get("blocked", 0)),
+                len(failures),
+                json.dumps(outcome, sort_keys=True),
+                error_summary[:1000],
+                cycle_id,
+            ),
+        )
+        conn.execute(
+            """
+            DELETE FROM worker_cycles
+            WHERE id NOT IN (SELECT id FROM worker_cycles ORDER BY id DESC LIMIT 500)
+            """
+        )
+        conn.commit()
+        completed = conn.execute("SELECT * FROM worker_cycles WHERE id = ?", (cycle_id,)).fetchone()
+    detail = (
+        f"cycle #{cycle_id} {status}; {int(commands.get('succeeded', 0))}/{int(commands.get('total', 0))} commands; "
+        f"{int(rules.get('triggered', 0))}/{int(rules.get('evaluated', 0))} rules triggered"
+    )
+    record_heartbeat(data_dir, worker_name=str(row["worker_name"]), detail=detail)
+    return worker_cycle_to_dict(completed)
 
 
 def parse_money_to_minor(value: str | int | float | Decimal) -> int:
@@ -4836,37 +5140,168 @@ def process_command(data_dir: Path, command: dict[str, Any]) -> str:
     raise DivineToolError(f"Unknown command action: {action}")
 
 
-def process_command_inbox(data_dir: Path) -> list[str]:
+def process_command_inbox_detailed(data_dir: Path) -> list[dict[str, Any]]:
     ensure_state(data_dir)
     inbox = command_file(data_dir)
-    if not inbox.exists():
-        return []
-
     processed_path = data_dir / "commands.processed.jsonl"
     failed_path = data_dir / "commands.failed.jsonl"
-    processing_path = data_dir / f"commands.processing.{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jsonl"
-    inbox.replace(processing_path)
-    lines = processing_path.read_text(encoding="utf-8").splitlines()
-    processing_path.unlink()
-    outcomes: list[str] = []
+    processing_paths = sorted(data_dir.glob("commands.processing.*.jsonl"))
+    if inbox.exists():
+        processing_path = data_dir / f"commands.processing.{datetime.now().strftime('%Y%m%d%H%M%S%f')}.jsonl"
+        inbox.replace(processing_path)
+        processing_paths.append(processing_path)
+    outcomes: list[dict[str, Any]] = []
 
-    for raw in lines:
-        if not raw.strip():
-            continue
-        try:
-            command = json.loads(raw)
-            result = process_command(data_dir, command)
-            command["processed_at"] = now_iso()
-            command["result"] = result
-            append_jsonl(processed_path, command)
-            log_event(data_dir, f"Command processed: {result}", "command")
-            outcomes.append(result)
-        except Exception as exc:  # keep daemon alive and preserve bad commands
-            failed = {"raw": raw, "failed_at": now_iso(), "error": str(exc)}
-            append_jsonl(failed_path, failed)
-            log_event(data_dir, f"Command failed: {exc}", "command", "error")
-            outcomes.append(f"failed command: {exc}")
+    for processing_path in processing_paths:
+        lines = processing_path.read_text(encoding="utf-8").splitlines()
+        for raw in lines:
+            if not raw.strip():
+                continue
+            try:
+                command = json.loads(raw)
+                result = process_command(data_dir, command)
+                command["processed_at"] = now_iso()
+                command["result"] = result
+                append_jsonl(processed_path, command)
+                log_event(data_dir, f"Command processed: {result}", "command")
+                outcomes.append(
+                    {
+                        "status": "succeeded",
+                        "action": str(command.get("action") or "unknown"),
+                        "message": result,
+                    }
+                )
+            except Exception as exc:  # keep the cycle alive and preserve bad commands
+                failed = {"raw": raw, "failed_at": now_iso(), "error": str(exc)}
+                append_jsonl(failed_path, failed)
+                log_event(data_dir, f"Command failed: {exc}", "command", "error")
+                outcomes.append(
+                    {
+                        "status": "failed",
+                        "action": "unknown",
+                        "message": f"failed command: {exc}",
+                        "error": str(exc),
+                    }
+                )
+        processing_path.unlink()
     return outcomes
+
+
+def process_command_inbox(data_dir: Path) -> list[str]:
+    return [str(outcome["message"]) for outcome in process_command_inbox_detailed(data_dir)]
+
+
+def run_worker_cycle(
+    data_dir: Path,
+    *,
+    trigger: str = "daemon",
+    worker_name: str | None = None,
+) -> dict[str, Any]:
+    normalized_trigger = trigger.strip().lower()
+    if normalized_trigger not in {"daemon", "cli", "browser", "test"}:
+        raise DivineToolError("Worker trigger must be daemon, cli, browser, or test.")
+    resolved_worker_name = (worker_name or normalized_trigger).strip().lower() or normalized_trigger
+    cycle_id = start_worker_cycle(data_dir, resolved_worker_name, normalized_trigger)
+    started = time.perf_counter()
+    command_outcomes: list[dict[str, Any]] = []
+    rule_temples: list[dict[str, Any]] = []
+    try:
+        command_outcomes = process_command_inbox_detailed(data_dir)
+        config = load_config(data_dir)
+        temples = config.get("temples", []) or [{"id": DEFAULT_TEMPLE_ID}]
+        for temple in temples:
+            temple_id = str(temple.get("id") or DEFAULT_TEMPLE_ID)
+            rules = revenue_rules_summary(data_dir, temple_id=temple_id)
+            evaluated_count = record_revenue_rule_runs(data_dir, rules, temple_id=temple_id)
+            approvals = approval_queue_summary(data_dir, limit=1, temple_id=temple_id)
+            rule_temples.append(
+                {
+                    "temple_id": temple_id,
+                    "evaluated": evaluated_count,
+                    "triggered": int(rules["triggered_count"]),
+                    "approval_required": int(rules["approval_required_count"]),
+                    "pending_approvals": int(approvals["counts"]["pending"]),
+                    "blocked": int(rules["blocked_count"]),
+                }
+            )
+    except Exception as exc:
+        failure = {"type": type(exc).__name__, "message": str(exc)}
+        failed_outcome = {
+            "commands": {
+                "total": len(command_outcomes),
+                "succeeded": sum(1 for item in command_outcomes if item["status"] == "succeeded"),
+                "failed": sum(1 for item in command_outcomes if item["status"] == "failed"),
+                "outcomes": command_outcomes[:25],
+            },
+            "rules": {"evaluated": 0, "triggered": 0, "blocked": 0, "temples": rule_temples},
+            "approvals": {"required": 0, "pending": 0},
+            "failures": [failure],
+        }
+        try:
+            finish_worker_cycle(
+                data_dir,
+                cycle_id,
+                status="failed",
+                duration_ms=(time.perf_counter() - started) * 1000,
+                outcome=failed_outcome,
+                error_summary=str(exc),
+            )
+            log_event(data_dir, f"Worker cycle #{cycle_id} failed: {exc}", "worker", "error")
+        except Exception:
+            pass
+        raise
+
+    command_failures = [item for item in command_outcomes if item["status"] == "failed"]
+    rules_evaluated = sum(item["evaluated"] for item in rule_temples)
+    rules_triggered = sum(item["triggered"] for item in rule_temples)
+    approvals_required = sum(item["approval_required"] for item in rule_temples)
+    pending_approvals = sum(item["pending_approvals"] for item in rule_temples)
+    blocked_rules = sum(item["blocked"] for item in rule_temples)
+    outcome = {
+        "commands": {
+            "total": len(command_outcomes),
+            "succeeded": len(command_outcomes) - len(command_failures),
+            "failed": len(command_failures),
+            "outcomes": command_outcomes[:25],
+            "truncated": max(len(command_outcomes) - 25, 0),
+        },
+        "rules": {
+            "evaluated": rules_evaluated,
+            "triggered": rules_triggered,
+            "blocked": blocked_rules,
+            "temples": rule_temples,
+        },
+        "approvals": {
+            "required": approvals_required,
+            "pending": pending_approvals,
+        },
+        "failures": [
+            {"type": "command", "message": str(item.get("error") or item["message"])}
+            for item in command_failures[:10]
+        ],
+    }
+    status = "partial" if command_failures else "succeeded"
+    error_summary = "; ".join(str(item.get("error") or item["message"]) for item in command_failures[:5])
+    cycle = finish_worker_cycle(
+        data_dir,
+        cycle_id,
+        status=status,
+        duration_ms=(time.perf_counter() - started) * 1000,
+        outcome=outcome,
+        error_summary=error_summary,
+    )
+    log_event(
+        data_dir,
+        (
+            f"Worker cycle #{cycle_id} {status} via {normalized_trigger}: "
+            f"{outcome['commands']['succeeded']}/{outcome['commands']['total']} commands; "
+            f"{rules_triggered}/{rules_evaluated} rules triggered; "
+            f"{approvals_required} approval gate(s)"
+        ),
+        "worker",
+        "warning" if status == "partial" else "info",
+    )
+    return cycle
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:

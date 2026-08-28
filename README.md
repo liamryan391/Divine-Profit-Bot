@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.8.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v2.9.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -79,7 +79,7 @@ Start-Process python -ArgumentList "-m divine_tool daemon --interval 300" -Windo
 By default, state lives in `.divine_tool/`:
 
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
-- `divine_tool.sqlite3`: income, leads, rules, accounts, events, and other durable application state.
+- `divine_tool.sqlite3`: income, leads, rules, accounts, events, worker-cycle history, and other durable application state.
 - `commands.jsonl`: daemon command inbox.
 - `commands.processed.jsonl`: processed daemon commands.
 - `commands.failed.jsonl`: failed daemon commands.
@@ -131,6 +131,8 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Revenue Rules for turning pipeline, conversion, follow-up, loss, and opportunity evidence into explicit promote, pause, approval, or block decisions.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
+- Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
+- Separate daemon liveness, readiness, and stale-worker signals with recent cycle history in the dashboard.
 
 Run it with:
 
@@ -167,6 +169,22 @@ Response-time budgets for the local reference environment:
 - Worker status poll: median at or below 50 ms over local HTTP.
 
 Benchmark recorded on 27 August 2026: the representative dashboard payload improved from about 330 ms to 61 ms median, and worker polling measured about 14 ms median over HTTP. The automated suite rebuilds the representative fixture and enforces the dashboard budget.
+
+## Worker Operations
+
+The continuous daemon, `daemon --once`, and the dashboard's Run Worker Cycle action all use the same cycle implementation. Every cycle processes claimed commands, evaluates and records active revenue rules for every temple, counts approval gates and pending approvals, and stores its duration and failures in SQLite.
+
+Cycle sources remain distinct for honest monitoring:
+
+- `daemon` cycles update the background daemon's liveness and readiness.
+- `cli` cycles prove a manual run completed without pretending the daemon is online.
+- `browser` cycles do the same for the authenticated dashboard action.
+
+`GET /api/worker/status` returns the current daemon heartbeat, independent liveness and readiness objects, the stale threshold, the latest daemon cycle, and recent cycles from every source. `GET /api/health` keeps web-service liveness and readiness separate from the nested worker signals. The Worker Operations panel shows the same state and recent cycle outcomes.
+
+Only one cycle can own the shared command and rule pipeline at a time. A concurrent browser or CLI request receives a busy response instead of duplicating work. Individual bad commands are preserved in `commands.failed.jsonl`; the cycle completes as `partial`, records the failure, and continues processing other commands.
+
+The daemon service uses an `unless-stopped` restart policy. A command inbox claimed by a cycle remains in a `commands.processing.*.jsonl` file until processing completes, and the next cycle resumes any claimed file left by an interrupted process. If a recorded `running` cycle outlives the configured stale window, the next cycle marks it `interrupted` before starting and writes a recovery event to the Temple Log.
 
 ## API And Authentication Security
 

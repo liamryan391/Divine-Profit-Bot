@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .core import (
     DivineToolError,
+    WorkerCycleBusyError,
     add_exception,
     add_income,
     approval_action_to_dict,
@@ -35,11 +36,8 @@ from .core import (
     load_config,
     parse_date,
     parse_money_to_minor,
-    process_command_inbox,
-    record_heartbeat,
-    record_revenue_rule_runs,
     reset_account_password,
-    revenue_rules_summary,
+    run_worker_cycle,
     review_approval_action,
     set_mood,
     set_quota,
@@ -693,24 +691,36 @@ def cmd_daemon(args: argparse.Namespace, data_dir: Path) -> int:
         if "DIVINE_DAEMON_INTERVAL" not in os.environ:
             interval = int(load_config(data_dir).get("automation", {}).get("check_interval_seconds", 300))
     while True:
-        outcomes = process_command_inbox(data_dir)
-        rules = revenue_rules_summary(data_dir)
-        evaluated_count = record_revenue_rule_runs(data_dir, rules)
-        record_heartbeat(
-            data_dir,
-            detail=(
-                f"processed {len(outcomes)} command(s); "
-                f"{rules['triggered_count']} of {evaluated_count} revenue rule(s) triggered"
-            ),
-        )
-        for outcome in outcomes:
-            print(f"command: {outcome}", flush=True)
-        if rules["triggered_count"]:
+        trigger = "cli" if args.once else "daemon"
+        try:
+            cycle = run_worker_cycle(data_dir, trigger=trigger, worker_name=trigger)
+        except WorkerCycleBusyError as exc:
+            print(f"worker busy: {exc}", file=sys.stderr, flush=True)
+            if args.once:
+                return 2
+            time.sleep(max(interval, 1))
+            continue
+        except Exception as exc:
+            if args.once:
+                raise
+            print(f"worker cycle failed: {exc}", file=sys.stderr, flush=True)
+            time.sleep(max(interval, 1))
+            continue
+        commands = cycle["outcome"]["commands"]
+        rules = cycle["outcome"]["rules"]
+        approvals = cycle["outcome"]["approvals"]
+        for outcome in commands["outcomes"]:
+            print(f"command: {outcome['message']}", flush=True)
+        if rules["triggered"]:
             print(
-                f"rules: {rules['triggered_count']} triggered, "
-                f"{rules['approval_required_count']} need approval, {rules['blocked_count']} blocked",
+                f"rules: {rules['triggered']} triggered, "
+                f"{approvals['required']} need approval, {rules['blocked']} blocked",
                 flush=True,
             )
+        print(
+            f"worker: cycle #{cycle['id']} {cycle['status']} via {cycle['trigger']} in {cycle['duration_ms']:.2f} ms",
+            flush=True,
+        )
         print_status(status_report(data_dir), compact=True)
         if args.once:
             return 0

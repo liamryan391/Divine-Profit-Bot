@@ -21,6 +21,7 @@ from .core import (
     AuthenticationError,
     DivineToolError,
     LoginThrottledError,
+    WorkerCycleBusyError,
     add_exception,
     add_income,
     add_lead_note,
@@ -53,10 +54,9 @@ from .core import (
     load_config,
     parse_date,
     parse_money_to_minor,
-    process_command_inbox,
     record_lead_conversion,
-    record_heartbeat,
     revenue_rules_summary,
+    run_worker_cycle,
     review_approval_action,
     row_to_dict,
     set_mood,
@@ -181,11 +181,14 @@ def make_handler(
                     )
                     return
                 if parsed.path == "/api/health":
+                    worker = worker_status(data_dir)
                     self.send_json(
                         {
                             "ok": True,
                             "version": __version__,
-                            "worker": worker_status(data_dir),
+                            "liveness": {"ok": True, "state": "live", "component": "web"},
+                            "readiness": {"ok": True, "state": "ready", "component": "web"},
+                            "worker": worker,
                             "auth": auth_status(data_dir),
                             "deployment": deployment_health(security),
                         }
@@ -530,9 +533,15 @@ def make_handler(
                     self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
                     return
                 if parsed.path == "/api/daemon/run-once":
-                    outcomes = process_command_inbox(data_dir)
-                    record_heartbeat(data_dir, detail=f"processed {len(outcomes)} command(s)")
-                    self.send_json({"ok": True, "outcomes": outcomes, "state": dashboard_payload(data_dir, account)})
+                    cycle = run_worker_cycle(data_dir, trigger="browser", worker_name="browser")
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "cycle": cycle,
+                            "outcomes": cycle["outcome"]["commands"]["outcomes"],
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
                     return
                 self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             except RequestPolicyError as exc:
@@ -543,6 +552,8 @@ def make_handler(
                     HTTPStatus.TOO_MANY_REQUESTS,
                     extra_headers=[f"Retry-After: {exc.retry_after_seconds}"],
                 )
+            except WorkerCycleBusyError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
             except AuthenticationError:
                 self.send_json({"error": "Invalid username or password."}, HTTPStatus.UNAUTHORIZED)
             except KeyError as exc:
