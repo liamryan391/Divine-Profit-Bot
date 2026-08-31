@@ -33,7 +33,7 @@ This roadmap defines how the project moves from the current command-line foundat
 
 ## Current Status
 
-Current version: `v2.9.1`.
+Current version: `v3.0.0`.
 
 Completed:
 
@@ -92,6 +92,8 @@ Completed:
 - Backend Roadmap 3.0 Stage 3.0.3: shipped a request-scoped dashboard snapshot, lightweight worker polling, on-demand reports, and enforced representative response-time budgets.
 - Backend Roadmap 3.0 Stage 3.0.4: bounded API and CSV bodies, added persistent login throttling and audit events, redacted unexpected errors, and enforced the hosted origin, CSRF, cookie, proxy, and HTTPS policy.
 - Backend Roadmap 3.0 Stage 3.0.5: unified daemon, CLI, and browser worker cycles; added structured cycle history, independent liveness/readiness/staleness signals, overlap protection, and interrupted-cycle recovery.
+- Backend Roadmap 3.0 Stage 3.0.6: shipped checksum-backed backups, verified offline restores, pre-restore safety copies, integrity checks, and isolated failure drills.
+- Backend Roadmap 3.0 Stage 3.0.7: passed the operational release gate and shipped `v3.0.0`.
 
 ## Phase 0: Foundation
 
@@ -432,7 +434,7 @@ Sequencing rule:
 - Roadmap 2.0 does not renumber the product roadmap.
 - Roadmap 2.0 reached its completion gate before Phase 5 resumed.
 - Phase 5 Stages 5.1 through 5.3 are now shipped.
-- The Phase 5 operational review exposed concrete backend correctness and reliability blockers, so Backend Roadmap 3.0 now precedes Phase 6.
+- Backend Roadmap 3.0 resolved the Phase 5 operational blockers and passed its release gate; Phase 6 is now unblocked.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -581,7 +583,7 @@ Roadmap 2.0 is complete when:
 
 Goal: help each temple convert legitimate opportunities into tracked revenue.
 
-Status: implementation complete; operational review complete with backend hardening required before Phase 6.
+Status: complete; operational release gate passed in `v3.0.0`.
 
 ### Stage 5.1: Lead Pipeline
 
@@ -664,13 +666,15 @@ Evidence collected on 27 August 2026:
 
 Decision:
 
-- Phase 5 features are complete and usable for protected low-volume local operation.
-- Phase 6 remains queued.
-- Backend Roadmap 3.0 is required next because the review found confirmed correctness, concurrency, performance, security, worker-parity, and recovery work.
+- Phase 5 features are complete and operationally released for protected local use.
+- Backend Roadmap 3.0 resolved the confirmed correctness, concurrency, performance, security, worker-parity, and recovery work.
+- Phase 6 is unblocked and should be scoped before implementation begins.
 
 ## Backend Roadmap 3.0: Operational Core
 
 Goal: make the shipped growth workflows correct at scale, efficient under polling, resilient with concurrent web and daemon processes, and safer for hosted use before adding Phase 6 features.
+
+Status: complete.
 
 ### Stage 3.0.1: Correct Aggregates And Pagination
 
@@ -763,7 +767,7 @@ Release status: shipped.
 
 ### Stage 3.0.7: Operational Release Gate
 
-Status: planned.
+Status: complete.
 
 Backend Roadmap 3.0 is complete when:
 
@@ -774,7 +778,19 @@ Backend Roadmap 3.0 is complete when:
 - Worker behavior is identical across daemon, CLI, and browser entry points.
 - Desktop and mobile workflows pass final end-to-end verification.
 
+Evidence collected on 31 August 2026:
+
+- All 37 automated tests pass, including aggregate ceilings, concurrent access, migration rollback, API security, worker parity, and recovery coverage.
+- The production frontend build, static frontend QA, Python compilation, Docker Compose validation, and deployment preflight pass.
+- All five isolated recovery drills pass: backup/restore round trip, persistent-volume restart, interrupted command write, migration rollback, and stale-worker recovery.
+- The representative 120-lead and 24-rule fixture measures a 64.35 ms median dashboard snapshot and a 3.13 ms median worker-status query, both within budget.
+- Authenticated desktop verification completes lead creation, proposal movement, booked conversion, revenue-rule evaluation, report generation, browser worker execution, and approval review.
+- Daemon and browser cycles produce the same rule and approval-gate outcomes.
+- Every primary route renders at desktop and 390 x 844 mobile widths without document overflow.
+
 Release target: `v3.0.0`.
+
+Release status: shipped.
 
 ## Operational Definition
 
@@ -808,9 +824,9 @@ The tool is fully operational for protected local use when the Creator can:
 
 ## Recommended Next Build Step
 
-Begin Backend Roadmap 3.0, Stage 3.0.7: Operational Release Gate.
+Define Phase 6 before implementation begins.
 
-- Run the complete backend, deployment, recovery, and frontend acceptance suite.
-- Recheck aggregate correctness, concurrent access, performance budgets, hosted security, and worker parity.
-- Complete desktop and mobile end-to-end verification against the release candidate.
-- Keep Phase 6 queued until the Backend Roadmap 3.0 operational release gate passes.
+- Choose the next lawful growth objective using the shipped lead, conversion, revenue-rule, and report evidence.
+- Split Phase 6 into named stages with explicit deliverables, safety boundaries, acceptance gates, and release targets.
+- Keep every external communication or money-moving action human-approved unless a later stage proves a narrower safe boundary.
+- Begin the first Phase 6 stage only after its scope and success measures are recorded here.

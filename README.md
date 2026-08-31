@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v2.9.1`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v3.0.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -135,6 +135,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Separate daemon liveness, readiness, and stale-worker signals with recent cycle history in the dashboard.
 - Checksum-backed portable backups, offline verified restores, automatic pre-restore safety backups, and state integrity checks.
 - Isolated recovery drills for persistent-volume restarts, claimed command files, failed migrations, and stale workers.
+- An operational release gate covering aggregate correctness, concurrent web/daemon access, response-time budgets, hosted security, recovery, worker parity, and authenticated desktop/mobile workflows.
 
 Run it with:
 
@@ -172,6 +173,14 @@ Response-time budgets for the local reference environment:
 - Worker status poll: median at or below 50 ms over local HTTP.
 
 Benchmark recorded on 27 August 2026: the representative dashboard payload improved from about 330 ms to 61 ms median, and worker polling measured about 14 ms median over HTTP. The automated suite rebuilds the representative fixture and enforces the dashboard budget.
+
+## Operational Release Gate
+
+Release `v3.0.0` closes Backend Roadmap 3.0 for protected local operation. The release candidate passed all 37 automated tests, the production frontend build and static QA, Python compilation, Docker Compose validation, deployment preflight, and all five isolated recovery drills on 31 August 2026.
+
+The representative 120-lead and 24-rule benchmark measured a 64.35 ms median dashboard snapshot against a 250 ms budget and a 3.13 ms median worker-status query against a 50 ms budget. Authenticated browser verification also completed the lead-to-booked-income, revenue-rule, report, worker-cycle, and approval workflows, then rendered every primary route at desktop and 390 x 844 mobile widths without document overflow.
+
+This gate validates the application and local reference environment. A public host must still pass preflight with its real HTTPS origin, proxy, cookie, persistent-volume, backup, and credential settings before exposure.
 
 ## Worker Operations
 

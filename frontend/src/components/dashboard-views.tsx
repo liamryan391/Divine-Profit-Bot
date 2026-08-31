@@ -97,7 +97,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: recovery drills"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: Phase 6 planning"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
