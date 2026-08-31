@@ -3,6 +3,8 @@ import {
   Archive,
   ArrowRight,
   BarChart3,
+  Banknote,
+  BellRing,
   Check,
   CirclePause,
   CirclePlay,
@@ -16,6 +18,7 @@ import {
   Mail,
   Plus,
   RefreshCcw,
+  ReceiptText,
   Send,
   Settings,
   ShieldAlert,
@@ -35,6 +38,7 @@ import type {
   ImportResult,
   LeadEntry,
   Opportunity,
+  ReceivableEntry,
   ReportPayload,
   RevenueRuleEntry,
   RevenueRulesSummary,
@@ -814,6 +818,218 @@ function leadFollowUpText(lead: LeadEntry) {
     return `Due today: ${lead.follow_up_on}`;
   }
   return `Follow-up: ${lead.follow_up_on}`;
+}
+
+export function ReceivablesPanel({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+  onAction,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  feedback: WorkflowFeedbackMap;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+  onAction: (id: number, action: "reminder" | "open" | "void") => Promise<void>;
+}) {
+  const summary = dashboard.receivables;
+  const collectable = summary.rows.filter((item) => item.can_record_payment);
+  const convertedLeads = dashboard.leads.rows.filter((lead) => Boolean(lead.converted_income_id));
+  return (
+    <section className="temple-panel mt-4 min-w-0">
+      <div className="section-heading">
+        <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+          <ReceiptText aria-hidden="true" className="text-temple-gold" size={20} />
+          Receivables Pipeline
+        </h2>
+        <Badge>{summary.active_count} open</Badge>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <MiniMetric label="Outstanding" value={summary.outstanding} />
+        <MiniMetric label="Overdue" value={`${summary.overdue} - ${summary.overdue_count}`} />
+        <MiniMetric label="Due In 7 Days" value={String(summary.due_soon_count)} />
+        <MiniMetric label="Collected" value={summary.collected} />
+      </div>
+
+      <div className="mt-5 grid gap-6 border-t border-temple-line pt-5 xl:grid-cols-2">
+        <section className="min-w-0">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Create Receivable</h3>
+          <form
+            noValidate
+            className="grid gap-3 sm:grid-cols-2"
+            onSubmit={(event) => onSubmit(event, "/api/receivables", "Receivable created")}
+          >
+            <Field label="Client" name="client" placeholder="Client or company" required />
+            <Field label="Reference" name="reference" placeholder="INV-001" required />
+            <Field label="Amount" name="amount" inputMode="decimal" placeholder="750.00" required />
+            <Field label="Currency" name="currency" defaultValue="GBP" maxLength={10} required />
+            <Field label="GBP Equivalent" name="gbp_equivalent" inputMode="decimal" placeholder="For non-GBP invoices" />
+            <Field label="Issue Date" name="issued_on" type="date" />
+            <Field label="Due Date" name="due_on" type="date" required />
+            <SelectField label="Booked Lead" name="lead_id" defaultValue="">
+              <option value="">Standalone receivable</option>
+              {convertedLeads.map((lead) => (
+                <option key={lead.id} value={lead.id}>
+                  #{lead.id} {lead.title} - income #{lead.converted_income_id}
+                </option>
+              ))}
+            </SelectField>
+            <Field className="sm:col-span-2" label="Description" name="description" placeholder="Work, product, or retainer billed" />
+            <Field className="sm:col-span-2" label="Notes" name="notes" placeholder="Internal collection context" />
+            <div className="sm:col-span-2">
+              <FormNotice feedback={feedback["/api/receivables"]} />
+            </div>
+            <div className="sm:col-span-2">
+              <Button icon={Plus} disabled={busy === "/api/receivables"} type="submit">
+                {busy === "/api/receivables" ? "Creating..." : "Create Receivable"}
+              </Button>
+            </div>
+          </form>
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Record Collection</h3>
+          <form
+            noValidate
+            className="grid gap-3 sm:grid-cols-2"
+            onSubmit={(event) => onSubmit(event, "/api/receivables/payment", "Payment recorded")}
+          >
+            <div className="sm:col-span-2">
+              <SelectField label="Receivable" name="receivable_id" defaultValue="">
+                <option value="">Select open receivable</option>
+                {collectable.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    #{item.id} {item.reference} - {item.client} - {item.outstanding}
+                  </option>
+                ))}
+              </SelectField>
+            </div>
+            <Field label="Amount" name="amount" inputMode="decimal" placeholder="250.00" required />
+            <Field label="Currency" name="currency" defaultValue="GBP" maxLength={10} required />
+            <Field label="GBP Equivalent" name="gbp_equivalent" inputMode="decimal" placeholder="For non-GBP payments" />
+            <Field label="Payment Date" name="occurred_on" type="date" />
+            <Field label="Payment Reference" name="payment_reference" placeholder="Bank or provider reference" />
+            <Field label="Note" name="note" placeholder="Collection note" />
+            <label className="sm:col-span-2 flex min-h-11 items-center gap-3 rounded-lg border border-temple-line bg-[#0b1424] px-3 text-sm font-black text-temple-text">
+              <input className="h-5 w-5 accent-[#ffd24a]" type="checkbox" name="count_as_income" />
+              Count collection as new income
+            </label>
+            <div className="sm:col-span-2">
+              <FormNotice feedback={feedback["/api/receivables/payment"]} />
+            </div>
+            <div className="sm:col-span-2">
+              <Button icon={Banknote} disabled={busy === "/api/receivables/payment" || !collectable.length} type="submit">
+                {busy === "/api/receivables/payment" ? "Recording..." : "Record Payment"}
+              </Button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black uppercase text-temple-muted">Collection Queue</h3>
+          <Badge>{summary.returned_count} shown</Badge>
+        </div>
+        {summary.rows.length ? (
+          <div className="divide-y divide-temple-line border-y border-temple-line">
+            {summary.rows.map((item) => (
+              <ReceivableRow key={item.id} item={item} busy={busy} onAction={onAction} />
+            ))}
+          </div>
+        ) : (
+          <EmptyRow>No receivables recorded for this temple.</EmptyRow>
+        )}
+      </section>
+
+      {summary.recent_payments.length ? (
+        <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+          <h3 className="mb-2 text-sm font-black uppercase text-temple-muted">Recent Collections</h3>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {summary.recent_payments.slice(0, 6).map((payment) => (
+              <div key={payment.id} className="min-w-0 border-l-2 border-temple-green pl-3">
+                <strong className="block break-words">{payment.counted} - {payment.reference}</strong>
+                <span className="block break-words text-sm text-temple-muted">
+                  {payment.client} - {shortDate(payment.occurred_on)}{payment.counted_as_income ? ` - income #${payment.counted_income_id}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+function ReceivableRow({
+  item,
+  busy,
+  onAction,
+}: {
+  item: ReceivableEntry;
+  busy: string;
+  onAction: (id: number, action: "reminder" | "open" | "void") => Promise<void>;
+}) {
+  const reminderBusy = busy === `receivable-${item.id}-reminder`;
+  const statusAction = item.state === "void" ? "open" : "void";
+  const statusBusy = busy === `receivable-${item.id}-${statusAction}`;
+  return (
+    <article className="grid min-w-0 gap-3 py-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(190px,0.8fr)_auto] lg:items-center">
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <strong className="break-words">#{item.id} {item.reference} - {item.client}</strong>
+          <Badge>{item.state_label}</Badge>
+          {item.active_reminder_id ? <Badge>Reminder {item.active_reminder_status}</Badge> : null}
+        </div>
+        <span className="mt-1 block break-words text-sm text-temple-muted">
+          {item.description || "No description"}{item.already_counted ? ` - booked as income #${item.source_income_id}` : " - unbooked collection"}
+        </span>
+      </div>
+      <div className="min-w-0">
+        <strong className={cx("block break-words", receivableStateText(item.state))}>{item.outstanding} outstanding</strong>
+        <span className="mt-1 block text-sm text-temple-muted">
+          {item.paid} paid of {item.gbp_value} - due {shortDate(item.due_on)}
+        </span>
+        <div
+          className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#0b1120]"
+          role="progressbar"
+          aria-label={`${item.reference} payment progress`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={item.paid_pct}
+        >
+          <div className="h-full bg-temple-green" style={{ width: `${Math.min(item.paid_pct, 100)}%` }} />
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2 lg:justify-end">
+        {item.can_remind ? (
+          <Button icon={BellRing} variant="secondary" disabled={reminderBusy} onClick={() => void onAction(item.id, "reminder")}>
+            {reminderBusy ? "Queuing..." : "Reminder"}
+          </Button>
+        ) : null}
+        {item.state === "void" || (item.can_record_payment && item.paid_gbp_minor === 0) ? (
+          <Button
+            icon={item.state === "void" ? CirclePlay : Archive}
+            variant="ghost"
+            disabled={statusBusy}
+            onClick={() => void onAction(item.id, statusAction)}
+          >
+            {item.state === "void" ? "Reopen" : "Void"}
+          </Button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function receivableStateText(state: string) {
+  if (state === "paid") return "text-temple-green";
+  if (state === "overdue") return "text-temple-red";
+  if (state === "due_today" || state === "due_soon" || state === "partial") return "text-temple-gold";
+  if (state === "void") return "text-temple-muted";
+  return "text-temple-blue";
 }
 
 export function ConfigPanel({ dashboard }: { dashboard: DashboardPayload }) {

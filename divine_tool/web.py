@@ -31,6 +31,7 @@ from .core import (
     create_session,
     create_approval_draft,
     create_lead,
+    create_receivable,
     create_revenue_rule,
     create_temple,
     dashboard_snapshot,
@@ -55,16 +56,20 @@ from .core import (
     parse_date,
     parse_money_to_minor,
     record_lead_conversion,
+    record_receivable_payment,
+    receivables_summary,
     revenue_rules_summary,
     run_worker_cycle,
     review_approval_action,
     row_to_dict,
+    queue_receivable_reminder,
     set_mood,
     set_quota,
     strategy_roi_summary,
     switch_temple,
     temple_summary,
     update_lead,
+    update_receivable_status,
     update_revenue_rule,
     update_account_profile,
     worker_status,
@@ -213,6 +218,12 @@ def make_handler(
                     return
                 if parsed.path == "/api/conversions/summary":
                     self.send_json({"conversions": lead_conversion_summary(data_dir)})
+                    return
+                if parsed.path == "/api/receivables":
+                    query = parse_qs(parsed.query)
+                    status = query.get("status", ["all"])[0]
+                    limit = int(query.get("limit", ["60"])[0])
+                    self.send_json({"receivables": receivables_summary(data_dir, status=status, limit=limit)})
                     return
                 if parsed.path == "/api/revenue-rules/summary":
                     self.send_json({"revenue_rules": revenue_rules_summary(data_dir)})
@@ -382,6 +393,68 @@ def make_handler(
                 if parsed.path == "/api/conversions/link":
                     lead = link_income_to_lead(data_dir, lead_id=int(payload["lead_id"]), income_id=int(payload["income_id"]))
                     self.send_json({"ok": True, "lead": lead, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/receivables":
+                    receivable_id = create_receivable(
+                        data_dir,
+                        client=str(payload["client"]),
+                        reference=str(payload["reference"]),
+                        amount_minor=parse_money_to_minor(payload["amount"]),
+                        due_on=parse_date(payload["due_on"]),
+                        currency=str(payload.get("currency", "GBP")),
+                        gbp_minor=parse_money_to_minor(payload["gbp_equivalent"])
+                        if payload.get("gbp_equivalent")
+                        else None,
+                        description=str(payload.get("description", "")),
+                        issued_on=parse_date(payload["issued_on"]) if payload.get("issued_on") else None,
+                        lead_id=int(payload["lead_id"]) if payload.get("lead_id") else None,
+                        notes=str(payload.get("notes", "")),
+                    )
+                    self.send_json({"ok": True, "id": receivable_id, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/receivables/payment":
+                    result = record_receivable_payment(
+                        data_dir,
+                        receivable_id=int(payload["receivable_id"]),
+                        amount_minor=parse_money_to_minor(payload["amount"]),
+                        currency=str(payload.get("currency", "GBP")),
+                        gbp_minor=parse_money_to_minor(payload["gbp_equivalent"])
+                        if payload.get("gbp_equivalent")
+                        else None,
+                        occurred_on=parse_date(payload["occurred_on"]) if payload.get("occurred_on") else None,
+                        payment_reference=str(payload.get("payment_reference", "")),
+                        note=str(payload.get("note", "")),
+                        count_as_income=bool_payload(payload.get("count_as_income", False)),
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "payment": result["payment"],
+                            "receivable": result["receivable"],
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
+                    return
+                receivable_parts = receivable_path_parts(parsed.path)
+                if receivable_parts and len(receivable_parts) == 2 and receivable_parts[1] == "reminder":
+                    result = queue_receivable_reminder(data_dir, int(receivable_parts[0]))
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "approval_id": result["approval_id"],
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
+                    return
+                if receivable_parts and len(receivable_parts) == 2 and receivable_parts[1] == "status":
+                    receivable = update_receivable_status(
+                        data_dir,
+                        int(receivable_parts[0]),
+                        str(payload["status"]),
+                    )
+                    self.send_json(
+                        {"ok": True, "receivable": receivable, "state": dashboard_payload(data_dir, account)}
+                    )
                     return
                 if parsed.path == "/api/revenue-rules":
                     rule_id = create_revenue_rule(
@@ -857,6 +930,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "approvals": snapshot["approvals"],
         "leads": snapshot["leads"],
         "conversions": snapshot["conversions"],
+        "receivables": snapshot["receivables"],
         "revenue_rules": snapshot["revenue_rules"],
         "temples": snapshot["temples"],
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
@@ -948,6 +1022,15 @@ def lead_path_parts(path: str) -> list[str] | None:
     if not path.startswith("/api/leads/"):
         return None
     parts = [part for part in path.removeprefix("/api/leads/").split("/") if part]
+    if not parts:
+        return None
+    return parts
+
+
+def receivable_path_parts(path: str) -> list[str] | None:
+    if not path.startswith("/api/receivables/"):
+        return None
+    parts = [part for part in path.removeprefix("/api/receivables/").split("/") if part]
     if not parts:
         return None
     return parts

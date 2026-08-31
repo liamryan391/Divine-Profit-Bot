@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v3.0.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v3.1.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -34,7 +34,11 @@ python -m divine_tool temple create "Product Temple" --template products
 python -m divine_tool temple switch product_temple
 python -m divine_tool import .\income-export.csv --type payment --dry-run
 python -m divine_tool external
-python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-08-30 --invoice INV-001
+python -m divine_tool approval draft invoice_reminder --target "Client Ltd" --amount 250 --due 2026-09-14 --invoice INV-001
+python -m divine_tool receivable add "Client Ltd" INV-001 750 --due 2026-09-14
+python -m divine_tool receivable list --status overdue
+python -m divine_tool receivable pay 1 250 --reference BANK-001
+python -m divine_tool receivable remind 1
 python -m divine_tool account status
 python -m divine_tool deploy preflight
 python -m divine_tool upgrade
@@ -79,7 +83,7 @@ Start-Process python -ArgumentList "-m divine_tool daemon --interval 300" -Windo
 By default, state lives in `.divine_tool/`:
 
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
-- `divine_tool.sqlite3`: income, leads, rules, accounts, events, worker-cycle history, and other durable application state.
+- `divine_tool.sqlite3`: income, leads, receivables, payments, rules, accounts, events, worker-cycle history, and other durable application state.
 - `commands.jsonl`: daemon command inbox.
 - `commands.processed.jsonl`: processed daemon commands.
 - `commands.failed.jsonl`: failed daemon commands.
@@ -129,6 +133,8 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
 - Conversion Tracking for booking leads into linked income, conversion rates, average deal size, strategy conversion evidence, and lost opportunity notes.
 - Revenue Rules for turning pipeline, conversion, follow-up, loss, and opportunity evidence into explicit promote, pause, approval, or block decisions.
+- Receivables Pipeline for invoices and other money owed, due and overdue exposure, partial or full collections, and human-approved payment reminders.
+- Double-counting protection for receivables linked to booked lead income, with explicit opt-in income recording for standalone collections.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 - Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
@@ -144,6 +150,12 @@ python -m divine_tool web --port 8765
 ```
 
 The dashboard and API share the same `.divine_tool/` state as the CLI and daemon.
+
+## Receivables Pipeline
+
+Stage 6.1 keeps billed revenue and collected cash visible without silently inflating quota income. A receivable linked to a converted lead inherits that lead's booked income reference, so later payments update collection progress but cannot be counted as income again. A standalone receivable may add a payment to the income ledger only when `--count-as-income` or the matching dashboard checkbox is explicitly selected.
+
+Core API routes are `GET/POST /api/receivables`, `POST /api/receivables/payment`, `POST /api/receivables/{id}/reminder`, and `POST /api/receivables/{id}/status`. Reminder requests create pending approval drafts; they do not send external messages. Receivables, payments, approvals, and income remain scoped to the active temple.
 
 ## Database Reliability
 
@@ -163,7 +175,7 @@ Each new archive carries file sizes and SHA-256 checksums. The backup command re
 
 ## Dashboard Performance
 
-The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
+The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
 
 The 10-second browser poll calls only `GET /api/worker/status`. Full weekly and monthly reports are generated only through `GET /api/report?period=week|month` when requested.
 
@@ -181,6 +193,8 @@ Release `v3.0.0` closes Backend Roadmap 3.0 for protected local operation. The r
 The representative 120-lead and 24-rule benchmark measured a 64.35 ms median dashboard snapshot against a 250 ms budget and a 3.13 ms median worker-status query against a 50 ms budget. Authenticated browser verification also completed the lead-to-booked-income, revenue-rule, report, worker-cycle, and approval workflows, then rendered every primary route at desktop and 390 x 844 mobile widths without document overflow.
 
 This gate validates the application and local reference environment. A public host must still pass preflight with its real HTTPS origin, proxy, cookie, persistent-volume, backup, and credential settings before exposure.
+
+Stage 6.1 release `v3.1.0` passed all 39 automated tests, the production frontend build and static QA, Python compilation, Docker Compose validation, schema-v8 deployment preflight, and SQLite integrity checks on 31 August 2026. Isolated browser verification created a receivable, recorded a partial collection with explicit income treatment, queued a human-approved reminder, rendered every primary route at 390 x 844 without document overflow, and produced no console warnings or errors.
 
 ## Worker Operations
 

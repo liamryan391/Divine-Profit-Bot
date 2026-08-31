@@ -30,10 +30,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.9.0`: worker-cycle parity, recovery, and operational observability.
 - `v2.9.1`: tested backup restore and failure drills.
 - `v3.0.0`: Backend Roadmap 3.0 completion gate.
+- `v3.1.0`: Phase 6 Receivables Pipeline with collection tracking and human-approved reminders.
 
 ## Current Status
 
-Current version: `v3.0.0`.
+Current version: `v3.1.0`.
 
 Completed:
 
@@ -94,6 +95,7 @@ Completed:
 - Backend Roadmap 3.0 Stage 3.0.5: unified daemon, CLI, and browser worker cycles; added structured cycle history, independent liveness/readiness/staleness signals, overlap protection, and interrupted-cycle recovery.
 - Backend Roadmap 3.0 Stage 3.0.6: shipped checksum-backed backups, verified offline restores, pre-restore safety copies, integrity checks, and isolated failure drills.
 - Backend Roadmap 3.0 Stage 3.0.7: passed the operational release gate and shipped `v3.0.0`.
+- Phase 6 Stage 6.1: shipped the Receivables Pipeline with temple-scoped invoices, due and overdue exposure, partial and full payments, double-counting protection, reports, CLI/API controls, and human-approved reminder drafts.
 
 ## Phase 0: Foundation
 
@@ -435,6 +437,7 @@ Sequencing rule:
 - Roadmap 2.0 reached its completion gate before Phase 5 resumed.
 - Phase 5 Stages 5.1 through 5.3 are now shipped.
 - Backend Roadmap 3.0 resolved the Phase 5 operational blockers and passed its release gate; Phase 6 is now unblocked.
+- Phase 6 is active; Stage 6.1 is shipped and Stage 6.2 is next.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -792,6 +795,126 @@ Release target: `v3.0.0`.
 
 Release status: shipped.
 
+## Phase 6: Revenue Fulfilment And Retention
+
+Goal: turn booked opportunities into visible, timely collections and then improve repeat revenue, while preserving human control over communication and every money-moving action.
+
+Phase-wide safety boundary:
+
+- Never move money, trade assets, issue refunds, or charge a customer autonomously.
+- Never send a reminder or other external message without explicit human approval.
+- Never mark a receivable paid without recorded payment evidence.
+- Never count one economic event as income more than once.
+- Keep all receivable, payment, approval, and forecast data scoped to its temple.
+
+### Stage 6.1: Receivables Pipeline
+
+Status: complete.
+
+Deliverables:
+
+- Versioned SQLite receivable and payment records with temple, lead, and booked-income links.
+- Invoice reference, client, issue date, due date, value, paid amount, and open, due, overdue, partial, paid, or void state.
+- Standalone and booked-lead receivables with explicit double-counting protection.
+- Partial and full payment recording in GBP or another currency with an explicit GBP equivalent.
+- Human-approved invoice-reminder drafts linked back to the receivable.
+- Dashboard collection workspace, CLI controls, authenticated API routes, status snapshot, and report output.
+- Regression coverage for overdue state, payment limits, duplicate reminders, booked-income protection, and the authenticated web workflow.
+
+Exit gate:
+
+- The Creator can create an invoice, see its collection risk, record a partial or full payment, and queue a reminder for approval.
+- A payment against already-booked lead income cannot increase quota income again.
+- A standalone collection enters the income ledger only after explicit opt-in.
+- Production build, static frontend QA, Python compilation, and automated tests pass.
+
+Release target: `v3.1.0`.
+
+Release status: shipped.
+
+Evidence collected on 31 August 2026:
+
+- All 39 automated tests pass, including concurrent overpayment and duplicate-reminder protection.
+- Production frontend build, static QA, Python compilation, Docker Compose validation, schema-v8 preflight, and SQLite integrity checks pass.
+- Isolated browser verification completes receivable creation, partial collection, explicit income treatment, and reminder approval gating.
+- Every primary route renders at 390 x 844 without document overflow, and the browser console remains clean.
+
+### Stage 6.2: Payment Reconciliation
+
+Status: planned.
+
+Deliverables:
+
+- Import bank and payment-provider transactions without changing external accounts.
+- Suggest receivable matches using amount, currency, reference, client, and date evidence.
+- Require human confirmation for ambiguous matches and income treatment.
+- Preserve idempotency and a complete reconciliation audit trail.
+
+Release target: `v3.2.0`.
+
+### Stage 6.3: Follow-Up Cadences
+
+Status: planned.
+
+Deliverables:
+
+- Configurable due-soon and overdue follow-up schedules.
+- Reminder draft history, suppression rules, and client-level contact state.
+- Human approval before every external dispatch.
+- Collection-time and reminder-outcome measurements.
+
+Release target: `v3.3.0`.
+
+### Stage 6.4: Retainers And Recurring Revenue
+
+Status: planned.
+
+Deliverables:
+
+- Recurring receivable templates for retainers, subscriptions, and instalments.
+- Controlled generation windows, duplicate prevention, and pause or end states.
+- Expected recurring revenue and renewal-risk visibility.
+
+Release target: `v3.4.0`.
+
+### Stage 6.5: Cash Forecasting
+
+Status: planned.
+
+Deliverables:
+
+- Expected cash dates from due dates, payment history, and explicit confidence bands.
+- Best, expected, and delayed collection scenarios.
+- Quota-gap forecasts that distinguish booked revenue from collected cash.
+
+Release target: `v3.5.0`.
+
+### Stage 6.6: Human-Approved Dispatch Integrations
+
+Status: planned.
+
+Deliverables:
+
+- Narrow email or messaging adapters for approved reminder drafts.
+- Credential isolation, delivery receipts, retries, and revocation controls.
+- No bulk unsolicited outreach and no autonomous sending.
+
+Release target: `v3.6.0`.
+
+### Stage 6.7: Operational Release Gate
+
+Status: planned.
+
+Exit gate:
+
+- Reconciliation is idempotent and explainable under concurrent web and daemon use.
+- Reminder schedules never bypass approval or suppression controls.
+- Recurring receivables recover correctly after restart and do not duplicate.
+- Forecasts disclose assumptions and reconcile to ledger evidence.
+- Backup, restore, security, performance, desktop, and mobile workflow checks pass.
+
+Release target: `v3.7.0`.
+
 ## Operational Definition
 
 The tool is fully operational for protected local use when the Creator can:
@@ -821,12 +944,15 @@ The tool is fully operational for protected local use when the Creator can:
 - Record qualified, proposal, or won leads as linked income and review conversion performance.
 - Create, pause, retire, and review evidence-backed revenue rules per temple.
 - Audit daemon rule evaluations without allowing rules to execute financial or external actions.
+- Track billed money through open, due, overdue, partial, paid, and void receivable states.
+- Record collections without double-counting lead income.
+- Queue receivable reminders as drafts that still require human approval.
 
 ## Recommended Next Build Step
 
-Define Phase 6 before implementation begins.
+Build Phase 6 Stage 6.2: Payment Reconciliation.
 
-- Choose the next lawful growth objective using the shipped lead, conversion, revenue-rule, and report evidence.
-- Split Phase 6 into named stages with explicit deliverables, safety boundaries, acceptance gates, and release targets.
-- Keep every external communication or money-moving action human-approved unless a later stage proves a narrower safe boundary.
-- Begin the first Phase 6 stage only after its scope and success measures are recorded here.
+- Import transaction evidence without granting the tool authority to move money.
+- Propose exact and probable receivable matches with visible reasons and confidence.
+- Require the Creator to confirm ambiguous matches and income treatment.
+- Prove duplicate imports and repeated confirmations cannot create duplicate payments or income.

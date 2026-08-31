@@ -136,6 +136,14 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateConversion(form, issues);
   }
 
+  if (workflowKey === "/api/receivables") {
+    validateReceivable(form, issues);
+  }
+
+  if (workflowKey === "/api/receivables/payment") {
+    validateReceivablePayment(form, issues);
+  }
+
   if (workflowKey === "/api/revenue-rules") {
     validateRevenueRule(form, issues);
   }
@@ -183,6 +191,47 @@ function validateConversion(form: HTMLFormElement, issues: WorkflowIssue[]) {
   const conversionDate = valueOf(form, "date");
   if (conversionDate && Number.isNaN(new Date(`${conversionDate}T00:00:00`).getTime())) {
     issues.push({ field: "date", label: "Date", message: "Use a valid date." });
+  }
+}
+
+function validateReceivable(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "client", "Client");
+  requireText(form, issues, "reference", "Reference");
+  requirePositiveMoney(form, issues, "amount", "Amount");
+  requireDate(form, issues, "due_on", "Due Date");
+  validateCurrencyEquivalent(form, issues);
+  const issuedOn = valueOf(form, "issued_on");
+  const dueOn = valueOf(form, "due_on");
+  if (issuedOn && Number.isNaN(new Date(`${issuedOn}T00:00:00`).getTime())) {
+    issues.push({ field: "issued_on", label: "Issue Date", message: "Use a valid date." });
+  }
+  if (issuedOn && dueOn && dueOn < issuedOn) {
+    issues.push({ field: "due_on", label: "Due Date", message: "Choose the issue date or a later date." });
+  }
+}
+
+function validateReceivablePayment(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "receivable_id", "Receivable");
+  requirePositiveMoney(form, issues, "amount", "Amount");
+  validateCurrencyEquivalent(form, issues);
+  const occurredOn = valueOf(form, "occurred_on");
+  if (occurredOn && Number.isNaN(new Date(`${occurredOn}T00:00:00`).getTime())) {
+    issues.push({ field: "occurred_on", label: "Payment Date", message: "Use a valid date." });
+  }
+}
+
+function validateCurrencyEquivalent(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  const currency = valueOf(form, "currency").toUpperCase() || "GBP";
+  const gbp = valueOf(form, "gbp_equivalent");
+  if (currency !== "GBP" && !gbp) {
+    issues.push({
+      field: "gbp_equivalent",
+      label: "GBP Equivalent",
+      message: "Add a GBP equivalent for non-GBP amounts.",
+    });
+  }
+  if (gbp) {
+    requirePositiveMoney(form, issues, "gbp_equivalent", "GBP Equivalent");
   }
 }
 

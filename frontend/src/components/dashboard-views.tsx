@@ -17,6 +17,7 @@ import {
   QuotaControlPanel,
   QuotaProgressPanel,
   RecentIncomePanel,
+  ReceivablesPanel,
   RevenueRulesPanel,
   ReportForgePanel,
   StrategiesPanel,
@@ -45,6 +46,7 @@ interface DashboardViewContentProps {
   onReviewApproval: (id: number, decision: string) => Promise<void>;
   onAdvanceLead: (id: number, stage: string) => Promise<void>;
   onRevenueRuleStatus: (id: number, status: string) => Promise<void>;
+  onReceivableAction: (id: number, action: "reminder" | "open" | "void") => Promise<void>;
   onPulseWorker: () => void;
   onRefreshExternal: () => void;
   onGenerateReport: () => void;
@@ -59,6 +61,7 @@ export function DashboardViewContent(props: DashboardViewContentProps) {
       {props.view === "temples" ? <TemplesView {...props} /> : null}
       {props.view === "strategies" ? <StrategiesView {...props} /> : null}
       {props.view === "leads" ? <LeadsView {...props} /> : null}
+      {props.view === "receivables" ? <ReceivablesView {...props} /> : null}
       {props.view === "imports" ? <ImportsView {...props} /> : null}
       {props.view === "approvals" ? <ApprovalsView {...props} /> : null}
       {props.view === "reports" ? <ReportsView {...props} /> : null}
@@ -97,7 +100,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: Phase 6 planning"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: payment reconciliation"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
@@ -160,6 +163,24 @@ function LeadsView({ dashboard, busy, feedback, onJsonForm, onAdvanceLead, onRev
       </div>
       <DashboardGrid>
         <StrategiesPanel dashboard={dashboard} />
+        <RecentIncomePanel dashboard={dashboard} />
+      </DashboardGrid>
+    </>
+  );
+}
+
+function ReceivablesView({ dashboard, busy, feedback, onJsonForm, onReceivableAction, onReviewApproval }: DashboardViewContentProps) {
+  return (
+    <>
+      <ReceivablesPanel
+        dashboard={dashboard}
+        busy={busy}
+        feedback={feedback}
+        onSubmit={onJsonForm}
+        onAction={onReceivableAction}
+      />
+      <DashboardGrid>
+        <UrgentApprovalsPanel dashboard={dashboard} busy={busy} onReview={onReviewApproval} />
         <RecentIncomePanel dashboard={dashboard} />
       </DashboardGrid>
     </>

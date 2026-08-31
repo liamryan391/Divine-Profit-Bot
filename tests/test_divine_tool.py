@@ -34,6 +34,7 @@ from divine_tool.core import (
     create_account,
     create_approval_draft,
     create_lead,
+    create_receivable,
     create_revenue_rule,
     create_session,
     create_temple,
@@ -60,6 +61,7 @@ from divine_tool.core import (
     parse_money_to_minor,
     process_command_inbox,
     record_lead_conversion,
+    record_receivable_payment,
     record_heartbeat,
     record_revenue_rule_runs,
     reset_account_password,
@@ -68,6 +70,8 @@ from divine_tool.core import (
     run_migrations,
     save_config,
     review_approval_action,
+    queue_receivable_reminder,
+    receivables_summary,
     set_mood,
     set_quota,
     status_report,
@@ -75,6 +79,7 @@ from divine_tool.core import (
     switch_temple,
     temple_summary,
     update_account_profile,
+    update_receivable_status,
     update_revenue_rule,
     worker_status,
 )
@@ -390,6 +395,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Lead Pipeline", js_body)
                     self.assertIn(b"Conversion Tracking", js_body)
                     self.assertIn(b"Revenue Rules", js_body)
+                    self.assertIn(b"Receivables Pipeline", js_body)
+                    self.assertIn(b"Collection Queue", js_body)
                     self.assertIn(b"Worker Operations", js_body)
                     self.assertIn(b"Recent Worker Cycles", js_body)
                     self.assertIn(b"Restart the web server", js_body)
@@ -398,6 +405,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"/api/leads", js_body)
                     self.assertIn(b"/api/conversions/record", js_body)
                     self.assertIn(b"/api/revenue-rules", js_body)
+                    self.assertIn(b"/api/receivables", js_body)
+                    self.assertIn(b"/api/receivables/payment", js_body)
                     self.assertIn(b"/api/worker/status", js_body)
                     self.assertIn(b"/api/daemon/run-once", js_body)
 
@@ -663,6 +672,68 @@ class DivineToolTests(unittest.TestCase):
 
                 self.assertEqual(review_payload["approval"]["status"], "approved")
                 self.assertEqual(review_payload["state"]["approvals"]["counts"]["approved"], 1)
+
+                receivable_body = json.dumps(
+                    {
+                        "client": "Acme Ops",
+                        "reference": "INV-ACME-001",
+                        "amount": "700",
+                        "issued_on": date.today().isoformat(),
+                        "due_on": (date.today() + timedelta(days=7)).isoformat(),
+                        "lead_id": lead_payload["id"],
+                        "description": "Booked retainer collection",
+                    }
+                ).encode("utf-8")
+                receivable_request = Request(
+                    f"{base_url}/api/receivables",
+                    data=receivable_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(receivable_request) as response:
+                    receivable_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(receivable_payload["ok"])
+                self.assertEqual(receivable_payload["state"]["receivables"]["outstanding_minor"], 70000)
+                self.assertTrue(receivable_payload["state"]["receivables"]["rows"][0]["already_counted"])
+
+                reminder_request = Request(
+                    f"{base_url}/api/receivables/{receivable_payload['id']}/reminder",
+                    data=b"{}",
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(reminder_request) as response:
+                    reminder_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(reminder_payload["ok"])
+                self.assertEqual(reminder_payload["state"]["approvals"]["counts"]["pending"], 1)
+
+                payment_body = json.dumps(
+                    {
+                        "receivable_id": receivable_payload["id"],
+                        "amount": "700",
+                        "payment_reference": "PAY-ACME-001",
+                    }
+                ).encode("utf-8")
+                payment_request = Request(
+                    f"{base_url}/api/receivables/payment",
+                    data=payment_body,
+                    method="POST",
+                    headers=json_headers,
+                )
+                with urlopen(payment_request) as response:
+                    payment_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(payment_payload["receivable"]["state"], "paid")
+                self.assertEqual(payment_payload["state"]["receivables"]["outstanding_minor"], 0)
+                self.assertEqual(payment_payload["state"]["status"]["earned_minor"], 74500)
+
+                with urlopen(Request(f"{base_url}/api/receivables", headers=auth_headers)) as response:
+                    receivables_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(receivables_payload["receivables"]["paid_count"], 1)
+                self.assertEqual(receivables_payload["receivables"]["collected_minor"], 70000)
 
                 temple_body = json.dumps(
                     {
@@ -1187,6 +1258,168 @@ class DivineToolTests(unittest.TestCase):
                     gbp_minor=None,
                     source="duplicate invoice",
                 )
+
+    def test_receivables_collect_without_double_counting_booked_income(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            standalone_id = create_receivable(
+                data_dir,
+                client="Independent Buyer",
+                reference="INV-STANDALONE-001",
+                amount_minor=parse_money_to_minor("1000"),
+                due_on=date(2026, 8, 15),
+                issued_on=date(2026, 8, 1),
+                description="Standalone consulting invoice",
+            )
+
+            initial = receivables_summary(data_dir, today=date(2026, 8, 20))
+            self.assertEqual(initial["overdue_count"], 1)
+            self.assertEqual(initial["outstanding_minor"], 100000)
+
+            reminder = queue_receivable_reminder(data_dir, standalone_id)
+            approval = next(item for item in approval_queue_summary(data_dir)["recent"] if item["id"] == reminder["approval_id"])
+            self.assertEqual(approval["receivable_id"], standalone_id)
+            with self.assertRaises(DivineToolError):
+                queue_receivable_reminder(data_dir, standalone_id)
+
+            partial = record_receivable_payment(
+                data_dir,
+                standalone_id,
+                amount_minor=parse_money_to_minor("250"),
+                payment_reference="PAY-STANDALONE-001",
+                occurred_on=date(2026, 8, 20),
+                count_as_income=True,
+            )
+            self.assertEqual(partial["receivable"]["state"], "overdue")
+            self.assertEqual(partial["receivable"]["outstanding_gbp_minor"], 75000)
+            self.assertTrue(partial["payment"]["counted_as_income"])
+            self.assertEqual(list_income(data_dir)[0]["receivable_id"], standalone_id)
+            with self.assertRaises(DivineToolError):
+                record_receivable_payment(
+                    data_dir,
+                    standalone_id,
+                    amount_minor=parse_money_to_minor("800"),
+                )
+
+            lead_id = create_lead(
+                data_dir,
+                title="Booked Buyer",
+                contact="Buyer Ltd",
+                source="Referral",
+                offer="Automation project",
+                estimated_value_minor=parse_money_to_minor("700"),
+                probability=0.8,
+                stage="proposal",
+                strategy="freelance_services",
+                next_action="Collect invoice",
+            )
+            conversion = record_lead_conversion(
+                data_dir,
+                lead_id=lead_id,
+                amount_minor=parse_money_to_minor("700"),
+                currency="GBP",
+                gbp_minor=None,
+                source="Booked contract",
+                occurred_on=date(2026, 8, 20),
+            )
+            linked_id = create_receivable(
+                data_dir,
+                client="Buyer Ltd",
+                reference="INV-BOOKED-001",
+                amount_minor=parse_money_to_minor("700"),
+                due_on=date(2026, 8, 27),
+                issued_on=date(2026, 8, 20),
+                lead_id=lead_id,
+            )
+            linked = next(item for item in receivables_summary(data_dir, today=date(2026, 8, 20))["rows"] if item["id"] == linked_id)
+            self.assertEqual(linked["source_income_id"], conversion["income_id"])
+            self.assertTrue(linked["already_counted"])
+            with self.assertRaises(DivineToolError):
+                record_receivable_payment(
+                    data_dir,
+                    linked_id,
+                    amount_minor=parse_money_to_minor("700"),
+                    count_as_income=True,
+                )
+
+            linked_payment = record_receivable_payment(
+                data_dir,
+                linked_id,
+                amount_minor=parse_money_to_minor("700"),
+                payment_reference="PAY-BOOKED-001",
+            )
+            self.assertEqual(linked_payment["receivable"]["state"], "paid")
+            self.assertFalse(linked_payment["payment"]["counted_as_income"])
+            self.assertEqual(len(list_income(data_dir)), 2)
+
+            report = generate_report(data_dir, period_name="week", today=date(2026, 8, 20))
+            self.assertIn("## Receivables", report["markdown"])
+            self.assertEqual(report["receivables"]["total_count"], 2)
+
+            with self.assertRaises(DivineToolError):
+                update_receivable_status(data_dir, standalone_id, "void")
+
+    def test_concurrent_receivable_payments_and_reminders_preserve_invariants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            receivable_id = create_receivable(
+                data_dir,
+                client="Concurrent Buyer",
+                reference="INV-CONCURRENT-001",
+                amount_minor=parse_money_to_minor("100"),
+                due_on=date.today() + timedelta(days=7),
+            )
+            barrier = threading.Barrier(2)
+            payment_outcomes: list[str] = []
+
+            def pay(reference: str) -> None:
+                barrier.wait()
+                try:
+                    record_receivable_payment(
+                        data_dir,
+                        receivable_id,
+                        amount_minor=parse_money_to_minor("75"),
+                        payment_reference=reference,
+                    )
+                    payment_outcomes.append("recorded")
+                except DivineToolError:
+                    payment_outcomes.append("blocked")
+
+            payment_threads = [
+                threading.Thread(target=pay, args=("PAY-CONCURRENT-A",)),
+                threading.Thread(target=pay, args=("PAY-CONCURRENT-B",)),
+            ]
+            for thread in payment_threads:
+                thread.start()
+            for thread in payment_threads:
+                thread.join(timeout=5)
+
+            summary = receivables_summary(data_dir)
+            self.assertCountEqual(payment_outcomes, ["recorded", "blocked"])
+            self.assertEqual(summary["collected_minor"], 7500)
+            self.assertEqual(summary["outstanding_minor"], 2500)
+            self.assertEqual(len(summary["recent_payments"]), 1)
+
+            reminder_barrier = threading.Barrier(2)
+            reminder_outcomes: list[str] = []
+
+            def remind() -> None:
+                reminder_barrier.wait()
+                try:
+                    queue_receivable_reminder(data_dir, receivable_id)
+                    reminder_outcomes.append("queued")
+                except DivineToolError:
+                    reminder_outcomes.append("blocked")
+
+            reminder_threads = [threading.Thread(target=remind), threading.Thread(target=remind)]
+            for thread in reminder_threads:
+                thread.start()
+            for thread in reminder_threads:
+                thread.join(timeout=5)
+
+            approvals = approval_queue_summary(data_dir)
+            self.assertCountEqual(reminder_outcomes, ["queued", "blocked"])
+            self.assertEqual(approvals["counts"]["pending"], 1)
 
     def test_revenue_rules_evaluate_log_and_report_without_executing_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

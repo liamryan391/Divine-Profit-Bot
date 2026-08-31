@@ -456,6 +456,31 @@ function App() {
     }
   }
 
+  async function handleReceivableAction(id: number, action: "reminder" | "open" | "void") {
+    if (action === "void" && !window.confirm("Void this unpaid receivable?")) {
+      return;
+    }
+    const busyKey = `receivable-${id}-${action}`;
+    const path = action === "reminder" ? `/api/receivables/${id}/reminder` : `/api/receivables/${id}/status`;
+    const message = action === "reminder" ? "Reminder queued for approval" : `Receivable marked ${action}`;
+    setBusy(busyKey);
+    setWorkflowFeedback("/api/receivables", { tone: "info", message: "Updating receivable..." });
+    try {
+      const payload = await apiRequest<{ ok: boolean; state: DashboardPayload }>(path, {
+        method: "POST",
+        body: JSON.stringify(action === "reminder" ? {} : { status: action }),
+      });
+      applyDashboard(payload.state);
+      setWorkflowFeedback("/api/receivables", { tone: "success", message });
+      showToast(message);
+    } catch (error) {
+      setWorkflowFeedback("/api/receivables", { tone: "error", message: errorMessage(error) });
+      handleApiError(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function updateRevenueRuleStatus(id: number, status: string) {
     if (status === "retired" && !window.confirm("Retire this revenue rule? It will stop evaluating until recreated.")) {
       return;
@@ -539,6 +564,7 @@ function App() {
         onReviewApproval={reviewApproval}
         onAdvanceLead={advanceLead}
         onRevenueRuleStatus={updateRevenueRuleStatus}
+        onReceivableAction={handleReceivableAction}
         onPulseWorker={() => void pulseWorker()}
         onRefreshExternal={() => void refreshExternalConnections()}
         onGenerateReport={() => void generateReport()}

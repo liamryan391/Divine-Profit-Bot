@@ -1,4 +1,4 @@
-import { ClipboardList, FileText, Landmark, LayoutDashboard, LogOut, Settings, Target, TrendingUp, Upload } from "lucide-react";
+import { ClipboardList, FileText, Landmark, LayoutDashboard, LogOut, ReceiptText, Settings, Target, TrendingUp, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AuthStatus, Temple, WorkerStatus } from "../types";
@@ -12,6 +12,7 @@ const navIcons: Record<DashboardView, LucideIcon> = {
   temples: Landmark,
   strategies: TrendingUp,
   leads: Target,
+  receivables: ReceiptText,
   imports: Upload,
   approvals: ClipboardList,
   reports: FileText,

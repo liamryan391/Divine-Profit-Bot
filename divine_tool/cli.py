@@ -18,6 +18,7 @@ from .core import (
     auth_status,
     create_approval_draft,
     create_account,
+    create_receivable,
     create_temple,
     default_data_dir,
     enqueue_command,
@@ -36,6 +37,9 @@ from .core import (
     load_config,
     parse_date,
     parse_money_to_minor,
+    queue_receivable_reminder,
+    receivables_summary,
+    record_receivable_payment,
     reset_account_password,
     run_worker_cycle,
     review_approval_action,
@@ -45,6 +49,7 @@ from .core import (
     switch_temple,
     strategy_roi_summary,
     temple_summary,
+    update_receivable_status,
 )
 from .deployment import (
     create_backup,
@@ -157,6 +162,46 @@ def build_parser() -> argparse.ArgumentParser:
     external = sub.add_parser("external", help="Show read-only external connection signals.")
     external.add_argument("--format", choices=["text", "json"], default="text")
     external.set_defaults(func=cmd_external)
+
+    receivable = sub.add_parser("receivable", help="Manage invoices and other money owed.")
+    receivable_sub = receivable.add_subparsers(required=True)
+    receivable_list = receivable_sub.add_parser("list", help="List receivables and collection totals.")
+    receivable_list.add_argument(
+        "--status",
+        choices=["all", "open", "overdue", "due_soon", "partial", "paid", "void"],
+        default="all",
+    )
+    receivable_list.add_argument("--limit", type=int, default=60)
+    receivable_list.set_defaults(func=cmd_receivable_list)
+    receivable_add = receivable_sub.add_parser("add", help="Create a receivable.")
+    receivable_add.add_argument("client")
+    receivable_add.add_argument("reference")
+    receivable_add.add_argument("amount")
+    receivable_add.add_argument("--due", required=True, help="Due date in YYYY-MM-DD format.")
+    receivable_add.add_argument("--currency", default="GBP")
+    receivable_add.add_argument("--gbp-equivalent")
+    receivable_add.add_argument("--issued", help="Issue date in YYYY-MM-DD format.")
+    receivable_add.add_argument("--description", default="")
+    receivable_add.add_argument("--lead-id", type=int)
+    receivable_add.add_argument("--notes", default="")
+    receivable_add.set_defaults(func=cmd_receivable_add)
+    receivable_pay = receivable_sub.add_parser("pay", help="Record a receivable payment.")
+    receivable_pay.add_argument("id", type=int)
+    receivable_pay.add_argument("amount")
+    receivable_pay.add_argument("--currency", default="GBP")
+    receivable_pay.add_argument("--gbp-equivalent")
+    receivable_pay.add_argument("--date", help="Payment date in YYYY-MM-DD format.")
+    receivable_pay.add_argument("--reference", default="")
+    receivable_pay.add_argument("--note", default="")
+    receivable_pay.add_argument("--count-as-income", action="store_true")
+    receivable_pay.set_defaults(func=cmd_receivable_pay)
+    receivable_remind = receivable_sub.add_parser("remind", help="Queue a human-approved payment reminder.")
+    receivable_remind.add_argument("id", type=int)
+    receivable_remind.set_defaults(func=cmd_receivable_remind)
+    receivable_status = receivable_sub.add_parser("status", help="Void or reopen an unpaid receivable.")
+    receivable_status.add_argument("id", type=int)
+    receivable_status.add_argument("status", choices=["open", "void"])
+    receivable_status.set_defaults(func=cmd_receivable_status)
 
     approval = sub.add_parser("approval", help="Create and review human-approved action drafts.")
     approval_sub = approval.add_subparsers(required=True)
@@ -481,6 +526,73 @@ def format_external_item(item: dict[str, object]) -> str:
     if "label" in item:
         return f"{item['label']}: {item['value']}"
     return json.dumps(item, sort_keys=True)
+
+
+def cmd_receivable_list(args: argparse.Namespace, data_dir: Path) -> int:
+    summary = receivables_summary(data_dir, status=args.status, limit=args.limit)
+    print(
+        f"Receivables: {summary['outstanding']} outstanding; {summary['overdue']} overdue; "
+        f"{summary['collected']} collected."
+    )
+    if not summary["rows"]:
+        print("No receivables found.")
+        return 0
+    for item in summary["rows"]:
+        print(
+            f"#{item['id']} {item['state_label']}: {item['reference']} - {item['client']} - "
+            f"{item['outstanding']} outstanding (due {item['due_on']})"
+        )
+    return 0
+
+
+def cmd_receivable_add(args: argparse.Namespace, data_dir: Path) -> int:
+    receivable_id = create_receivable(
+        data_dir,
+        client=args.client,
+        reference=args.reference,
+        amount_minor=parse_money_to_minor(args.amount),
+        due_on=parse_date(args.due),
+        currency=args.currency,
+        gbp_minor=parse_money_to_minor(args.gbp_equivalent) if args.gbp_equivalent else None,
+        description=args.description,
+        issued_on=parse_date(args.issued) if args.issued else None,
+        lead_id=args.lead_id,
+        notes=args.notes,
+    )
+    print(f"Created receivable #{receivable_id}.")
+    return 0
+
+
+def cmd_receivable_pay(args: argparse.Namespace, data_dir: Path) -> int:
+    result = record_receivable_payment(
+        data_dir,
+        receivable_id=args.id,
+        amount_minor=parse_money_to_minor(args.amount),
+        currency=args.currency,
+        gbp_minor=parse_money_to_minor(args.gbp_equivalent) if args.gbp_equivalent else None,
+        occurred_on=parse_date(args.date) if args.date else None,
+        payment_reference=args.reference,
+        note=args.note,
+        count_as_income=args.count_as_income,
+    )
+    payment = result["payment"]
+    receivable = result["receivable"]
+    counted = f" and counted as income #{payment['counted_income_id']}" if payment["counted_income_id"] else ""
+    print(f"Recorded {payment['counted']} on receivable #{args.id}{counted}.")
+    print(f"Outstanding: {receivable['outstanding']} ({receivable['state_label']}).")
+    return 0
+
+
+def cmd_receivable_remind(args: argparse.Namespace, data_dir: Path) -> int:
+    result = queue_receivable_reminder(data_dir, args.id)
+    print(f"Queued reminder approval draft #{result['approval_id']} for receivable #{args.id}.")
+    return 0
+
+
+def cmd_receivable_status(args: argparse.Namespace, data_dir: Path) -> int:
+    receivable = update_receivable_status(data_dir, args.id, args.status)
+    print(f"Receivable #{receivable['id']} marked {receivable['state_label']}.")
+    return 0
 
 
 def cmd_approval_list(args: argparse.Namespace, data_dir: Path) -> int:

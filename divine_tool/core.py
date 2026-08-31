@@ -253,6 +253,9 @@ APPROVAL_KINDS = {
 APPROVAL_STATUSES = {"pending", "approved", "rejected", "completed"}
 LEAD_STAGES = ("new", "contacted", "qualified", "proposal", "won", "lost")
 OPEN_LEAD_STAGES = {"new", "contacted", "qualified", "proposal"}
+RECEIVABLE_STATUSES = {"open", "paid", "void"}
+RECEIVABLE_FILTERS = RECEIVABLE_STATUSES | {"all", "overdue", "due_soon", "partial"}
+RECEIVABLE_DUE_SOON_DAYS = 7
 DEFAULT_TEMPLE_ID = "main"
 REVENUE_RULE_TYPES = {"promote", "pause", "require_approval", "block"}
 REVENUE_RULE_STATUSES = {"active", "paused", "retired"}
@@ -595,6 +598,88 @@ def migrate_worker_cycle_observability(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_receivables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receivables (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            lead_id INTEGER,
+            source_income_id INTEGER,
+            client TEXT NOT NULL,
+            reference TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            amount_minor INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'GBP',
+            gbp_minor INTEGER NOT NULL,
+            paid_gbp_minor INTEGER NOT NULL DEFAULT 0,
+            issued_on TEXT NOT NULL,
+            due_on TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(lead_id) REFERENCES leads(id),
+            FOREIGN KEY(source_income_id) REFERENCES income(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_receivables_temple_reference "
+        "ON receivables(temple_id, reference)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_receivables_temple_due "
+        "ON receivables(temple_id, status, due_on)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_receivables_temple_lead "
+        "ON receivables(temple_id, lead_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receivable_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            receivable_id INTEGER NOT NULL,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            amount_minor INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'GBP',
+            gbp_minor INTEGER NOT NULL,
+            counted_income_id INTEGER,
+            payment_reference TEXT NOT NULL DEFAULT '',
+            occurred_on TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(receivable_id) REFERENCES receivables(id),
+            FOREIGN KEY(counted_income_id) REFERENCES income(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_receivable_payments_receivable "
+        "ON receivable_payments(receivable_id, occurred_on DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_receivable_payments_temple_reference "
+        "ON receivable_payments(temple_id, payment_reference) WHERE payment_reference <> ''"
+    )
+    ensure_column(conn, "approval_actions", "receivable_id", "INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_approval_actions_receivable_status "
+        "ON approval_actions(receivable_id, status)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_actions_one_active_receivable_reminder "
+        "ON approval_actions(receivable_id) "
+        "WHERE receivable_id IS NOT NULL AND status IN ('pending', 'approved')"
+    )
+    ensure_column(conn, "income", "receivable_id", "INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_income_temple_receivable "
+        "ON income(temple_id, receivable_id)"
+    )
+
+
 SCHEMA_MIGRATIONS = (
     SchemaMigration(1, "core_ledger", migrate_core_ledger),
     SchemaMigration(2, "approval_actions", migrate_approval_actions),
@@ -603,6 +688,7 @@ SCHEMA_MIGRATIONS = (
     SchemaMigration(5, "revenue_rules", migrate_revenue_rules),
     SchemaMigration(6, "authentication_hardening", migrate_authentication_hardening),
     SchemaMigration(7, "worker_cycle_observability", migrate_worker_cycle_observability),
+    SchemaMigration(8, "receivables", migrate_receivables),
 )
 LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
 
@@ -2635,6 +2721,7 @@ def create_approval_draft(
     context: str = "",
     tone: str = "polite",
     temple_id: str | None = None,
+    receivable_id: int | None = None,
 ) -> int:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
@@ -2660,10 +2747,20 @@ def create_approval_draft(
         cur = conn.execute(
             """
             INSERT INTO approval_actions
-                (temple_id, kind, title, target, strategy, body, metadata_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                (temple_id, receivable_id, kind, title, target, strategy, body, metadata_json, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
-            (scoped_temple_id, kind, title, normalized_target, strategy.strip(), body, json.dumps(metadata, sort_keys=True), created),
+            (
+                scoped_temple_id,
+                receivable_id,
+                kind,
+                title,
+                normalized_target,
+                strategy.strip(),
+                body,
+                json.dumps(metadata, sort_keys=True),
+                created,
+            ),
         )
         conn.commit()
         action_id = int(cur.lastrowid)
@@ -2875,6 +2972,527 @@ def approval_action_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         item["metadata"] = {}
     item["kind_label"] = APPROVAL_KINDS.get(str(item["kind"]), title_case_from_key(str(item["kind"])))
     return item
+
+
+def normalize_receivable_money(
+    amount_minor: int,
+    currency: str,
+    gbp_minor: int | None,
+    label: str,
+) -> tuple[str, int]:
+    if amount_minor <= 0:
+        raise DivineToolError(f"{label} amount must be positive.")
+    normalized_currency = currency.strip().upper() or "GBP"
+    if len(normalized_currency) > 10:
+        raise DivineToolError("Currency codes must be 10 characters or fewer.")
+    if normalized_currency != "GBP" and gbp_minor is None:
+        raise DivineToolError(f"Non-GBP {label.lower()} amounts need a GBP equivalent.")
+    normalized_gbp = amount_minor if gbp_minor is None else int(gbp_minor)
+    if normalized_gbp <= 0:
+        raise DivineToolError(f"{label} GBP equivalent must be positive.")
+    return normalized_currency, normalized_gbp
+
+
+def create_receivable(
+    data_dir: Path,
+    client: str,
+    reference: str,
+    amount_minor: int,
+    due_on: date,
+    currency: str = "GBP",
+    gbp_minor: int | None = None,
+    description: str = "",
+    issued_on: date | None = None,
+    lead_id: int | None = None,
+    notes: str = "",
+    temple_id: str | None = None,
+) -> int:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_client = client.strip()
+    cleaned_reference = reference.strip()
+    if len(cleaned_client) < 2:
+        raise DivineToolError("Receivable client must be at least 2 characters.")
+    if len(cleaned_reference) < 2:
+        raise DivineToolError("Receivable reference must be at least 2 characters.")
+    normalized_currency, normalized_gbp = normalize_receivable_money(
+        amount_minor,
+        currency,
+        gbp_minor,
+        "Receivable",
+    )
+    issued = issued_on or date.today()
+    if due_on < issued:
+        raise DivineToolError("Receivable due date cannot be before its issue date.")
+    created = now_iso()
+    source_income_id: int | None = None
+    with db(data_dir) as conn:
+        if lead_id is not None:
+            lead = conn.execute(
+                "SELECT * FROM leads WHERE id = ? AND temple_id = ?",
+                (lead_id, scoped_temple_id),
+            ).fetchone()
+            if lead is None:
+                raise DivineToolError(f"Lead #{lead_id} was not found.")
+            if not lead["converted_income_id"]:
+                raise DivineToolError("Only leads with booked income can be linked to a receivable in Stage 6.1.")
+            source_income_id = int(lead["converted_income_id"])
+        duplicate = conn.execute(
+            "SELECT id FROM receivables WHERE temple_id = ? AND reference = ?",
+            (scoped_temple_id, cleaned_reference),
+        ).fetchone()
+        if duplicate is not None:
+            raise DivineToolError(
+                f"Receivable reference {cleaned_reference!r} already exists as #{duplicate['id']} for this temple."
+            )
+        cur = conn.execute(
+            """
+            INSERT INTO receivables
+                (temple_id, lead_id, source_income_id, client, reference, description, amount_minor, currency,
+                 gbp_minor, paid_gbp_minor, issued_on, due_on, status, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'open', ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                lead_id,
+                source_income_id,
+                cleaned_client,
+                cleaned_reference,
+                description.strip(),
+                amount_minor,
+                normalized_currency,
+                normalized_gbp,
+                issued.isoformat(),
+                due_on.isoformat(),
+                notes.strip(),
+                created,
+                created,
+            ),
+        )
+        conn.commit()
+        receivable_id = int(cur.lastrowid)
+    booking_note = f" linked to booked income #{source_income_id}" if source_income_id else ""
+    log_event(
+        data_dir,
+        f"Receivable created: {cleaned_reference} for {cleaned_client} ({format_money(normalized_gbp)}){booking_note}",
+        "receivable",
+        temple_id=scoped_temple_id,
+    )
+    return receivable_id
+
+
+def receivable_to_dict(row: sqlite3.Row | dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    item = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+    today = today or date.today()
+    total_gbp = int(item["gbp_minor"])
+    paid_gbp = min(max(int(item.get("paid_gbp_minor") or 0), 0), total_gbp)
+    outstanding_gbp = max(total_gbp - paid_gbp, 0)
+    due_date = date.fromisoformat(str(item["due_on"]))
+    days_until_due = (due_date - today).days
+    stored_status = str(item.get("status") or "open")
+    if stored_status == "void":
+        state = "void"
+    elif stored_status == "paid" or outstanding_gbp == 0:
+        state = "paid"
+    elif days_until_due < 0:
+        state = "overdue"
+    elif days_until_due == 0:
+        state = "due_today"
+    elif paid_gbp > 0:
+        state = "partial"
+    elif days_until_due <= RECEIVABLE_DUE_SOON_DAYS:
+        state = "due_soon"
+    else:
+        state = "open"
+    item.update(
+        {
+            "amount": format_money(int(item["amount_minor"]), str(item["currency"])),
+            "gbp_value": format_money(total_gbp),
+            "paid": format_money(paid_gbp),
+            "outstanding": format_money(outstanding_gbp),
+            "paid_gbp_minor": paid_gbp,
+            "outstanding_gbp_minor": outstanding_gbp,
+            "paid_pct": round(paid_gbp / total_gbp * 100, 1) if total_gbp else 0.0,
+            "state": state,
+            "state_label": title_case_from_key(state),
+            "days_until_due": days_until_due,
+            "already_counted": bool(item.get("source_income_id")),
+            "can_record_payment": state not in {"paid", "void"},
+            "can_remind": (
+                state not in {"paid", "void"}
+                and outstanding_gbp > 0
+                and not item.get("active_reminder_id")
+            ),
+        }
+    )
+    return item
+
+
+def receivable_payment_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+    item.update(
+        {
+            "amount": format_money(int(item["amount_minor"]), str(item["currency"])),
+            "counted": format_money(int(item["gbp_minor"])),
+            "counted_as_income": bool(item.get("counted_income_id")),
+        }
+    )
+    return item
+
+
+def receivables_summary(
+    data_dir: Path,
+    status: str = "all",
+    limit: int = 60,
+    today: date | None = None,
+    temple_id: str | None = None,
+    *,
+    state_ready: bool = False,
+) -> dict[str, Any]:
+    if not state_ready:
+        ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_status = status.strip().lower().replace("-", "_") or "all"
+    if normalized_status not in RECEIVABLE_FILTERS:
+        raise DivineToolError(
+            "Receivable status must be all, open, overdue, due_soon, partial, paid, or void."
+        )
+    display_limit = max(min(int(limit), 200), 1)
+    today = today or date.today()
+    with db(data_dir) as conn:
+        rows = list(
+            conn.execute(
+                """
+                SELECT r.*, a.id AS active_reminder_id, a.status AS active_reminder_status
+                FROM receivables r
+                LEFT JOIN approval_actions a
+                  ON a.receivable_id = r.id
+                 AND a.temple_id = r.temple_id
+                 AND a.status IN ('pending', 'approved')
+                WHERE r.temple_id = ?
+                ORDER BY r.due_on ASC, r.id DESC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        payment_rows = list(
+            conn.execute(
+                """
+                SELECT p.*, r.reference, r.client
+                FROM receivable_payments p
+                JOIN receivables r ON r.id = p.receivable_id AND r.temple_id = p.temple_id
+                WHERE p.temple_id = ?
+                ORDER BY p.occurred_on DESC, p.id DESC
+                LIMIT 12
+                """,
+                (scoped_temple_id,),
+            )
+        )
+    items = [receivable_to_dict(row, today=today) for row in rows]
+    state_priority = {"overdue": 0, "due_today": 1, "partial": 2, "due_soon": 3, "open": 4, "paid": 5, "void": 6}
+    items.sort(key=lambda item: (state_priority.get(str(item["state"]), 9), str(item["due_on"]), -int(item["id"])))
+    active = [item for item in items if item["state"] not in {"paid", "void"}]
+    overdue = [item for item in active if int(item["days_until_due"]) < 0]
+    due_soon = [
+        item
+        for item in active
+        if 0 <= int(item["days_until_due"]) <= RECEIVABLE_DUE_SOON_DAYS
+    ]
+    partial = [item for item in active if int(item["paid_gbp_minor"]) > 0]
+    paid = [item for item in items if item["state"] == "paid"]
+    void = [item for item in items if item["state"] == "void"]
+    if normalized_status == "all":
+        filtered = items
+    elif normalized_status == "open":
+        filtered = active
+    elif normalized_status == "overdue":
+        filtered = overdue
+    elif normalized_status == "due_soon":
+        filtered = due_soon
+    elif normalized_status == "partial":
+        filtered = partial
+    elif normalized_status == "paid":
+        filtered = paid
+    else:
+        filtered = void
+    outstanding_minor = sum(int(item["outstanding_gbp_minor"]) for item in active)
+    overdue_minor = sum(int(item["outstanding_gbp_minor"]) for item in overdue)
+    collected_minor = sum(int(item["paid_gbp_minor"]) for item in items if item["state"] != "void")
+    total_minor = sum(int(item["gbp_minor"]) for item in items if item["state"] != "void")
+    return {
+        "temple_id": scoped_temple_id,
+        "total_count": len(items),
+        "active_count": len(active),
+        "overdue_count": len(overdue),
+        "due_soon_count": len(due_soon),
+        "partial_count": len(partial),
+        "paid_count": len(paid),
+        "void_count": len(void),
+        "total_value": format_money(total_minor),
+        "total_value_minor": total_minor,
+        "collected": format_money(collected_minor),
+        "collected_minor": collected_minor,
+        "outstanding": format_money(outstanding_minor),
+        "outstanding_minor": outstanding_minor,
+        "overdue": format_money(overdue_minor),
+        "overdue_minor": overdue_minor,
+        "filter": normalized_status,
+        "returned_count": min(len(filtered), display_limit),
+        "rows": filtered[:display_limit],
+        "at_risk": sorted(
+            [item for item in active if int(item["days_until_due"]) <= RECEIVABLE_DUE_SOON_DAYS],
+            key=lambda item: (int(item["days_until_due"]), -int(item["outstanding_gbp_minor"])),
+        )[:8],
+        "recent_payments": [receivable_payment_to_dict(row) for row in payment_rows],
+        "policy": [
+            "Reminder messages are drafts until a human approves them.",
+            "Payments linked to booked lead income cannot be counted twice.",
+            "Unlinked payment income is added only when Count as Income is explicitly selected.",
+        ],
+    }
+
+
+def get_receivable(
+    data_dir: Path,
+    receivable_id: int,
+    temple_id: str | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            """
+            SELECT r.*, a.id AS active_reminder_id, a.status AS active_reminder_status
+            FROM receivables r
+            LEFT JOIN approval_actions a
+              ON a.receivable_id = r.id
+             AND a.temple_id = r.temple_id
+             AND a.status IN ('pending', 'approved')
+            WHERE r.id = ? AND r.temple_id = ?
+            """,
+            (receivable_id, scoped_temple_id),
+        ).fetchone()
+    if row is None:
+        raise DivineToolError(f"Receivable #{receivable_id} was not found.")
+    return receivable_to_dict(row, today=today)
+
+
+def record_receivable_payment(
+    data_dir: Path,
+    receivable_id: int,
+    amount_minor: int,
+    currency: str = "GBP",
+    gbp_minor: int | None = None,
+    occurred_on: date | None = None,
+    payment_reference: str = "",
+    note: str = "",
+    count_as_income: bool = False,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_currency, payment_gbp = normalize_receivable_money(
+        amount_minor,
+        currency,
+        gbp_minor,
+        "Payment",
+    )
+    occurred = (occurred_on or date.today()).isoformat()
+    created = now_iso()
+    cleaned_reference = payment_reference.strip()
+    counted_income_id: int | None = None
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM receivables WHERE id = ? AND temple_id = ?",
+            (receivable_id, scoped_temple_id),
+        ).fetchone()
+        if row is None:
+            raise DivineToolError(f"Receivable #{receivable_id} was not found.")
+        current = receivable_to_dict(row)
+        if current["state"] == "void":
+            raise DivineToolError("Void receivables cannot accept payments.")
+        if current["state"] == "paid":
+            raise DivineToolError("This receivable is already paid.")
+        invoice_currency = str(row["currency"]).upper()
+        if normalized_currency != invoice_currency:
+            raise DivineToolError(f"Payment currency must match the receivable currency ({invoice_currency}).")
+        outstanding_gbp = int(current["outstanding_gbp_minor"])
+        if payment_gbp > outstanding_gbp:
+            raise DivineToolError(
+                f"Payment exceeds the outstanding balance of {format_money(outstanding_gbp)}."
+            )
+        if count_as_income and row["source_income_id"]:
+            raise DivineToolError(
+                f"This receivable is already counted as income #{row['source_income_id']}; record collection without counting it again."
+            )
+        if cleaned_reference:
+            duplicate = conn.execute(
+                "SELECT id FROM receivable_payments WHERE temple_id = ? AND payment_reference = ?",
+                (scoped_temple_id, cleaned_reference),
+            ).fetchone()
+            if duplicate is not None:
+                raise DivineToolError(
+                    f"Payment reference {cleaned_reference!r} already exists as payment #{duplicate['id']}."
+                )
+        if count_as_income:
+            income_source = f"Receivable {row['reference']} payment from {row['client']}"
+            income_note = note.strip() or f"Collected against receivable #{receivable_id}"
+            income_cur = conn.execute(
+                """
+                INSERT INTO income
+                    (temple_id, amount_minor, currency, gbp_minor, lead_id, receivable_id, strategy,
+                     import_fingerprint, source, note, occurred_at, created_at)
+                VALUES (?, ?, ?, ?, NULL, ?, '', '', ?, ?, ?, ?)
+                """,
+                (
+                    scoped_temple_id,
+                    amount_minor,
+                    normalized_currency,
+                    payment_gbp,
+                    receivable_id,
+                    income_source,
+                    income_note,
+                    occurred,
+                    created,
+                ),
+            )
+            counted_income_id = int(income_cur.lastrowid)
+        payment_cur = conn.execute(
+            """
+            INSERT INTO receivable_payments
+                (receivable_id, temple_id, amount_minor, currency, gbp_minor, counted_income_id,
+                 payment_reference, occurred_on, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receivable_id,
+                scoped_temple_id,
+                amount_minor,
+                normalized_currency,
+                payment_gbp,
+                counted_income_id,
+                cleaned_reference,
+                occurred,
+                note.strip(),
+                created,
+            ),
+        )
+        new_paid_gbp = int(row["paid_gbp_minor"]) + payment_gbp
+        new_status = "paid" if new_paid_gbp >= int(row["gbp_minor"]) else "open"
+        conn.execute(
+            """
+            UPDATE receivables
+            SET paid_gbp_minor = ?, status = ?, updated_at = ?
+            WHERE id = ? AND temple_id = ?
+            """,
+            (new_paid_gbp, new_status, created, receivable_id, scoped_temple_id),
+        )
+        payment_row = conn.execute(
+            """
+            SELECT p.*, r.reference, r.client
+            FROM receivable_payments p
+            JOIN receivables r ON r.id = p.receivable_id AND r.temple_id = p.temple_id
+            WHERE p.id = ?
+            """,
+            (int(payment_cur.lastrowid),),
+        ).fetchone()
+        conn.commit()
+    ledger_note = f" and counted as income #{counted_income_id}" if counted_income_id else ""
+    log_event(
+        data_dir,
+        f"Receivable payment recorded: {format_money(payment_gbp)} on {row['reference']}{ledger_note}",
+        "receivable",
+        temple_id=scoped_temple_id,
+    )
+    return {
+        "payment": receivable_payment_to_dict(payment_row),
+        "receivable": get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id),
+        "summary": receivables_summary(data_dir, temple_id=scoped_temple_id),
+    }
+
+
+def queue_receivable_reminder(
+    data_dir: Path,
+    receivable_id: int,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    receivable = get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id)
+    if not receivable["can_remind"]:
+        raise DivineToolError("Only open receivables with an outstanding balance can queue reminders.")
+    with db(data_dir) as conn:
+        existing = conn.execute(
+            """
+            SELECT id, status FROM approval_actions
+            WHERE temple_id = ? AND receivable_id = ? AND status IN ('pending', 'approved')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (scoped_temple_id, receivable_id),
+        ).fetchone()
+    if existing is not None:
+        raise DivineToolError(
+            f"Receivable #{receivable_id} already has {existing['status']} reminder draft #{existing['id']}."
+        )
+    try:
+        action_id = create_approval_draft(
+            data_dir,
+            kind="invoice_reminder",
+            target=str(receivable["client"]),
+            amount_minor=int(receivable["outstanding_gbp_minor"]),
+            due_on=date.fromisoformat(str(receivable["due_on"])),
+            invoice=str(receivable["reference"]),
+            context=f"Outstanding receivable #{receivable_id}",
+            temple_id=scoped_temple_id,
+            receivable_id=receivable_id,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise DivineToolError(f"Receivable #{receivable_id} already has an active reminder draft.") from exc
+    return {
+        "approval_id": action_id,
+        "receivable": receivable,
+        "approvals": approval_queue_summary(data_dir, temple_id=scoped_temple_id),
+    }
+
+
+def update_receivable_status(
+    data_dir: Path,
+    receivable_id: int,
+    status: str,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_status = status.strip().lower()
+    if normalized_status not in {"open", "void"}:
+        raise DivineToolError("Receivable status can only be changed to open or void; payments mark it paid.")
+    updated = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM receivables WHERE id = ? AND temple_id = ?",
+            (receivable_id, scoped_temple_id),
+        ).fetchone()
+        if row is None:
+            raise DivineToolError(f"Receivable #{receivable_id} was not found.")
+        if int(row["paid_gbp_minor"]) >= int(row["gbp_minor"]):
+            raise DivineToolError("Paid receivables cannot be reopened or voided.")
+        if normalized_status == "void" and int(row["paid_gbp_minor"]) > 0:
+            raise DivineToolError("A partially paid receivable cannot be voided.")
+        conn.execute(
+            "UPDATE receivables SET status = ?, updated_at = ? WHERE id = ? AND temple_id = ?",
+            (normalized_status, updated, receivable_id, scoped_temple_id),
+        )
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Receivable #{receivable_id} marked {normalized_status}",
+        "receivable",
+        temple_id=scoped_temple_id,
+    )
+    return get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id)
 
 
 def create_lead(
@@ -4706,11 +5324,11 @@ def generate_upgrades(
     report = report if report is not None else status_report(data_dir, today, temple_id=temple_id)
     if report["remaining_minor"] == 0:
         return [
-            "Unlock payment reminders for invoices and retainers.",
-            "Add lead scoring so the highest-value opportunities are contacted first.",
-            "Track which approved drafts lead to replies, bookings, and paid income.",
-            "Add a local web dashboard for quota progress, command history, and channel ROI.",
-            "Add exportable weekly reports for the Creator.",
+            "Reconcile imported bank or payment-provider transactions against open receivables.",
+            "Add configurable follow-up cadences while keeping every outbound reminder human-approved.",
+            "Model retainers and recurring receivables for predictable monthly revenue.",
+            "Forecast expected cash dates from open receivables and historical payment timing.",
+            "Measure which approved reminders shorten collection time without duplicating booked income.",
         ]
     return [
         "Quota is not satisfied yet, so upgrades stay focused on revenue recovery.",
@@ -4751,6 +5369,13 @@ def generate_report(
         temple_id=scoped_temple_id,
         config=config,
         context=lead_context,
+    )
+    receivables = receivables_summary(
+        data_dir,
+        limit=25,
+        today=today,
+        temple_id=scoped_temple_id,
+        state_ready=True,
     )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
@@ -4815,6 +5440,7 @@ def generate_report(
         "income": serialize_income_rows_for_report(income_rows),
         "strategy_roi": roi,
         "conversions": conversions,
+        "receivables": receivables,
         "revenue_rules": revenue_rules,
         "opportunities": opportunities[:5],
         "upgrade_recommendations": upgrades,
@@ -4861,6 +5487,12 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         temple_id=active_temple_id,
         config=config,
         context=lead_context,
+    )
+    receivables = receivables_summary(
+        data_dir,
+        today=snapshot_date,
+        temple_id=active_temple_id,
+        state_ready=True,
     )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
@@ -4921,6 +5553,7 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         "approvals": approvals,
         "leads": leads,
         "conversions": conversions,
+        "receivables": receivables,
         "revenue_rules": revenue_rules,
         "temples": temples,
     }
@@ -5041,6 +5674,25 @@ def format_report_markdown(report: dict[str, Any]) -> str:
             f"- {row['name']}: {row['converted_count']}/{row['lead_count']} booked, "
             f"{row['linked_revenue']} linked, {row['conversion_rate_pct']}% conversion."
         )
+
+    receivables = report["receivables"]
+    lines.extend(["", "## Receivables", ""])
+    lines.append(
+        f"- Outstanding: {receivables['outstanding']} across {receivables['active_count']} open receivable(s); "
+        f"{receivables['overdue']} is overdue."
+    )
+    lines.append(
+        f"- Collected: {receivables['collected']} of {receivables['total_value']}; "
+        f"{receivables['due_soon_count']} due within {RECEIVABLE_DUE_SOON_DAYS} days."
+    )
+    if receivables["at_risk"]:
+        for item in receivables["at_risk"][:5]:
+            lines.append(
+                f"- {item['reference']} - {item['client']}: {item['outstanding']} outstanding, "
+                f"due {item['due_on']} ({item['state_label']})."
+            )
+    else:
+        lines.append("- No receivables are overdue or due soon.")
 
     rules = report["revenue_rules"]
     lines.extend(["", "## Revenue Rules", ""])

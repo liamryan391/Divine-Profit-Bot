@@ -173,6 +173,7 @@ export interface StrategyRoi {
 export interface IncomeEntry {
   id: number;
   lead_id?: number | null;
+  receivable_id?: number | null;
   amount: string;
   counted: string;
   currency: string;
@@ -210,6 +211,7 @@ export interface DashboardSnapshotMetadata {
 
 export interface ApprovalAction {
   id: number;
+  receivable_id?: number | null;
   kind: string;
   kind_label: string;
   title: string;
@@ -338,6 +340,82 @@ export interface ConversionSummary {
   lost_notes: LeadEntry[];
 }
 
+export interface ReceivableEntry {
+  id: number;
+  temple_id: string;
+  lead_id?: number | null;
+  source_income_id?: number | null;
+  active_reminder_id?: number | null;
+  active_reminder_status?: string | null;
+  client: string;
+  reference: string;
+  description?: string;
+  amount_minor: number;
+  currency: string;
+  gbp_minor: number;
+  paid_gbp_minor: number;
+  outstanding_gbp_minor: number;
+  amount: string;
+  gbp_value: string;
+  paid: string;
+  outstanding: string;
+  paid_pct: number;
+  issued_on: string;
+  due_on: string;
+  status: string;
+  state: string;
+  state_label: string;
+  days_until_due: number;
+  already_counted: boolean;
+  can_record_payment: boolean;
+  can_remind: boolean;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReceivablePayment {
+  id: number;
+  receivable_id: number;
+  amount_minor: number;
+  currency: string;
+  gbp_minor: number;
+  counted_income_id?: number | null;
+  payment_reference?: string;
+  occurred_on: string;
+  note?: string;
+  reference: string;
+  client: string;
+  amount: string;
+  counted: string;
+  counted_as_income: boolean;
+}
+
+export interface ReceivablesSummary {
+  temple_id: string;
+  total_count: number;
+  active_count: number;
+  overdue_count: number;
+  due_soon_count: number;
+  partial_count: number;
+  paid_count: number;
+  void_count: number;
+  total_value: string;
+  total_value_minor: number;
+  collected: string;
+  collected_minor: number;
+  outstanding: string;
+  outstanding_minor: number;
+  overdue: string;
+  overdue_minor: number;
+  filter: string;
+  returned_count: number;
+  rows: ReceivableEntry[];
+  at_risk: ReceivableEntry[];
+  recent_payments: ReceivablePayment[];
+  policy: string[];
+}
+
 export interface RevenueRuleEvaluation {
   triggered: boolean;
   decision: string;
@@ -453,6 +531,7 @@ export interface DashboardPayload {
   approvals: ApprovalSummary;
   leads: LeadPipelineSummary;
   conversions?: ConversionSummary;
+  receivables: ReceivablesSummary;
   revenue_rules?: RevenueRulesSummary;
   temples: TempleSummary;
   auth: AuthStatus;
