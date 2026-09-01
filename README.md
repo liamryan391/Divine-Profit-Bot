@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v3.3.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v3.4.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -46,6 +46,10 @@ python -m divine_tool follow-up status
 python -m divine_tool follow-up configure --due-soon "3,0" --overdue "3,7,14,30"
 python -m divine_tool follow-up run
 python -m divine_tool follow-up client "Client Ltd" paused --until 2026-09-14 --reason "Account query"
+python -m divine_tool recurring create "Support Retainer" "Client Ltd" CLIENT-SUPPORT 750 --kind retainer --cadence monthly --start 2026-09-14
+python -m divine_tool recurring status
+python -m divine_tool recurring run
+python -m divine_tool recurring template 1 paused
 python -m divine_tool account status
 python -m divine_tool deploy preflight
 python -m divine_tool upgrade
@@ -90,7 +94,7 @@ Start-Process python -ArgumentList "-m divine_tool daemon --interval 300" -Windo
 By default, state lives in `.divine_tool/`:
 
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
-- `divine_tool.sqlite3`: income, leads, receivables, payments, reconciliation evidence, follow-up cadences and outcomes, rules, accounts, events, worker-cycle history, and other durable application state.
+- `divine_tool.sqlite3`: income, leads, receivables, recurring templates and occurrences, payments, reconciliation evidence, follow-up cadences and outcomes, rules, accounts, events, worker-cycle history, and other durable application state.
 - `commands.jsonl`: daemon command inbox.
 - `commands.processed.jsonl`: processed daemon commands.
 - `commands.failed.jsonl`: failed daemon commands.
@@ -134,7 +138,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 - Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 - Componentized React layout shell with shared cards, panels, fields, buttons, badges, toolbars, and dashboard sections.
-- Hash-based navigation for overview, temples, strategies, leads, receivables, follow-ups, reconciliation, imports, approvals, reports, and settings views.
+- Hash-based navigation for overview, temples, strategies, leads, receivables, recurring revenue, follow-ups, reconciliation, imports, approvals, reports, and settings views.
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
@@ -144,6 +148,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Double-counting protection for receivables linked to booked lead income, with explicit opt-in income recording for standalone collections.
 - Payment Reconciliation for read-only bank/provider CSV evidence, explainable receivable suggestions, explicit confirmation or ignore decisions, duplicate protection, and a complete batch/decision audit trail.
 - Follow-Up Cadences for configurable due-soon and overdue schedules, client pause and do-not-contact safeguards, approval-gated drafts, durable reminder history, and collection outcome measurements.
+- Retainers And Recurring Revenue for temple-scoped retainers, subscriptions, and finite instalments with bounded receivable generation, pause/resume/end controls, expected billing, and renewal risk.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 - Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
@@ -198,6 +203,24 @@ python -m divine_tool follow-up outcome 1 payment_promised --note "Payment promi
 
 Core API routes are `GET /api/follow-ups`, `POST /api/follow-ups/cadence`, `POST /api/follow-ups/client`, `POST /api/follow-ups/run`, and `POST /api/follow-ups/{id}/outcome`. All routes are protected by the same owner authentication policy as receivables and approvals.
 
+## Retainers And Recurring Revenue
+
+Stage 6.4 creates scheduled internal receivables from temple-scoped retainer, subscription, and instalment templates. Weekly, monthly, quarterly, and yearly schedules retain their original calendar anchor, including month-end dates. Generation opens only inside the configured lead window, runs atomically, and is capped at 12 occurrences per template in one cycle.
+
+Generated items enter the ordinary Receivables Pipeline. They do not charge a customer, move money, record a payment, or increase quota income. Payment evidence, reconciliation, follow-up approval, and booked-income double-counting protections continue to apply. Pausing stops future generation, resuming keeps the schedule, and ending is permanent while preserving history.
+
+```powershell
+python -m divine_tool recurring create "Support Retainer" "Client Ltd" CLIENT-SUPPORT 750 --kind retainer --cadence monthly --start 2026-09-14 --renewal 2027-09-14
+python -m divine_tool recurring create "Implementation Plan" "Client Ltd" CLIENT-PLAN 400 --kind instalment --cadence monthly --start 2026-09-14 --occurrences 4
+python -m divine_tool recurring status
+python -m divine_tool recurring run
+python -m divine_tool recurring template 1 paused
+python -m divine_tool recurring template 1 active
+python -m divine_tool recurring template 1 ended
+```
+
+Core API routes are `GET /api/recurring-revenue`, `POST /api/recurring-revenue/templates`, `POST /api/recurring-revenue/run`, and `POST /api/recurring-revenue/templates/{id}/status`. Dashboard and report summaries distinguish normalized monthly recurring value, expected 30-day and 90-day billings, finite remaining value, generated receivables, and renewal risk from collected cash.
+
 ## Database Reliability
 
 Every application connection uses SQLite WAL mode, enforces foreign keys, and waits up to 10 seconds for a contested write lock. This lets the threaded web server and daemon share the same state database without failing immediately during short overlapping writes.
@@ -216,7 +239,7 @@ Each new archive carries file sizes and SHA-256 checksums. The backup command re
 
 ## Dashboard Performance
 
-The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, reconciliation, follow-up cadences, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
+The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, recurring revenue, reconciliation, follow-up cadences, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
 
 The 10-second browser poll calls only `GET /api/worker/status`. Full weekly and monthly reports are generated only through `GET /api/report?period=week|month` when requested.
 
@@ -241,9 +264,11 @@ Stage 6.2 release `v3.2.0` passes all 42 automated tests, including exact and am
 
 Stage 6.3 release `v3.3.0` passes all 45 automated tests, including cadence idempotency, suppression release, approval gating, payment-linked outcomes, stale-draft cancellation, reporting, and authenticated API coverage. The production dashboard build and static QA pass against schema v10; deployment and visual evidence are recorded in the Stage 6.3 roadmap gate.
 
+Stage 6.4 release `v3.4.0` passes all 48 automated tests, including month-end anchoring, bounded and concurrent idempotent generation, lifecycle controls, expected-value and renewal-risk visibility, authenticated API operations, worker parity, and explicit no-payment/no-income assertions. Production build, static QA, Python compilation, Docker Compose validation, schema-v11 preflight, integrity checks, and authenticated desktop/mobile review pass; all 12 routes remain overflow-free at 390 x 844 with a clean browser console.
+
 ## Worker Operations
 
-The continuous daemon, `daemon --once`, and the dashboard's Run Worker Cycle action all use the same cycle implementation. Every cycle processes claimed commands, evaluates and records active revenue rules, reviews due follow-up cadence steps for every temple, counts approval gates and pending approvals, and stores its duration and failures in SQLite.
+The continuous daemon, `daemon --once`, and the dashboard's Run Worker Cycle action all use the same cycle implementation. Every cycle processes claimed commands, generates due recurring receivables inside bounded windows, evaluates and records active revenue rules, reviews due follow-up cadence steps for every temple, counts approval gates and pending approvals, and stores its duration and failures in SQLite.
 
 Cycle sources remain distinct for honest monitoring:
 

@@ -145,6 +145,10 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateReceivablePayment(form, issues);
   }
 
+  if (workflowKey === "/api/recurring-revenue/templates") {
+    validateRecurringRevenueTemplate(form, issues);
+  }
+
   if (workflowKey === "/api/follow-ups/cadence") {
     validateFollowUpCadence(form, issues);
   }
@@ -195,6 +199,40 @@ function validateFollowUpCadence(form: HTMLFormElement, issues: WorkflowIssue[])
   requireIntegerRange(form, issues, "minimum_gap_days", "Minimum Gap", 0, 90);
   requireIntegerRange(form, issues, "max_reminders", "Maximum Reminders", 1, 100);
   requireIntegerRange(form, issues, "stop_after_overdue_days", "Stop After Overdue Days", 1, 3650);
+}
+
+function validateRecurringRevenueTemplate(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireMinLength(form, issues, "name", "Template Name", 2);
+  requireMinLength(form, issues, "client", "Client", 2);
+  requireMinLength(form, issues, "reference_prefix", "Reference Prefix", 2);
+  requirePositiveMoney(form, issues, "amount", "Amount");
+  validateCurrencyEquivalent(form, issues);
+  requireDate(form, issues, "start_on", "First Issue Date");
+  requireIntegerRange(form, issues, "payment_terms_days", "Payment Terms", 0, 365);
+  requireIntegerRange(form, issues, "generate_ahead_days", "Generate Ahead", 0, 90);
+  requireIntegerRange(form, issues, "renewal_notice_days", "Renewal Notice", 1, 365);
+
+  const kind = valueOf(form, "kind");
+  const occurrences = valueOf(form, "total_occurrences");
+  if (kind === "instalment" && !occurrences) {
+    issues.push({ field: "total_occurrences", label: "Total Occurrences", message: "Required for instalment plans." });
+  }
+  if (occurrences) {
+    const numeric = Number(occurrences);
+    if (!Number.isInteger(numeric) || numeric < 1 || numeric > 600) {
+      issues.push({ field: "total_occurrences", label: "Total Occurrences", message: "Enter a whole number from 1 to 600." });
+    }
+  }
+
+  const startOn = valueOf(form, "start_on");
+  for (const [field, label] of [["end_on", "End Date"], ["renewal_on", "Renewal Date"]] as const) {
+    const value = valueOf(form, field);
+    if (value && Number.isNaN(new Date(`${value}T00:00:00`).getTime())) {
+      issues.push({ field, label, message: "Use a valid date." });
+    } else if (value && startOn && value < startOn) {
+      issues.push({ field, label, message: "Choose the first issue date or a later date." });
+    }
+  }
 }
 
 function validateFollowUpClient(form: HTMLFormElement, issues: WorkflowIssue[]) {

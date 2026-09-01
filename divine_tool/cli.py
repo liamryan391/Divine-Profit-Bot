@@ -19,6 +19,7 @@ from .core import (
     create_approval_draft,
     create_account,
     create_receivable,
+    create_recurring_revenue_template,
     create_temple,
     default_data_dir,
     enqueue_command,
@@ -42,8 +43,10 @@ from .core import (
     parse_date,
     parse_money_to_minor,
     process_follow_up_cadences,
+    process_recurring_revenue,
     queue_receivable_reminder,
     receivables_summary,
+    recurring_revenue_summary,
     reconciliation_summary,
     record_follow_up_outcome,
     record_receivable_payment,
@@ -59,6 +62,7 @@ from .core import (
     update_client_contact_state,
     update_follow_up_cadence,
     update_receivable_status,
+    update_recurring_revenue_template_status,
 )
 from .deployment import (
     create_backup,
@@ -243,6 +247,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     follow_up_outcome.add_argument("--note", default="")
     follow_up_outcome.set_defaults(func=cmd_follow_up_outcome)
+
+    recurring = sub.add_parser("recurring", help="Manage retainers and recurring receivable templates.")
+    recurring_sub = recurring.add_subparsers(required=True)
+    recurring_status = recurring_sub.add_parser("status", help="Show recurring value, generation, and renewal risk.")
+    recurring_status.add_argument("--limit", type=int, default=60)
+    recurring_status.add_argument("--format", choices=["text", "json"], default="text")
+    recurring_status.set_defaults(func=cmd_recurring_status)
+    recurring_create = recurring_sub.add_parser("create", help="Create a recurring receivable template.")
+    recurring_create.add_argument("name")
+    recurring_create.add_argument("client")
+    recurring_create.add_argument("reference_prefix")
+    recurring_create.add_argument("amount")
+    recurring_create.add_argument("--kind", choices=["retainer", "subscription", "instalment"], required=True)
+    recurring_create.add_argument("--cadence", choices=["weekly", "monthly", "quarterly", "yearly"], default="monthly")
+    recurring_create.add_argument("--start", required=True, help="First issue date in YYYY-MM-DD format.")
+    recurring_create.add_argument("--currency", default="GBP")
+    recurring_create.add_argument("--gbp-equivalent")
+    recurring_create.add_argument("--description", default="")
+    recurring_create.add_argument("--payment-terms", type=int, default=14)
+    recurring_create.add_argument("--generate-ahead", type=int, default=7)
+    recurring_create.add_argument("--end", help="Optional last schedule date in YYYY-MM-DD format.")
+    recurring_create.add_argument("--renewal", help="Optional renewal date in YYYY-MM-DD format.")
+    recurring_create.add_argument("--renewal-notice", type=int, default=30)
+    recurring_create.add_argument("--occurrences", type=int, help="Optional cap; required for instalments.")
+    recurring_create.add_argument("--notes", default="")
+    recurring_create.set_defaults(func=cmd_recurring_create)
+    recurring_run = recurring_sub.add_parser("run", help="Generate receivables inside configured windows.")
+    recurring_run.add_argument("--date", help="Optional generation date in YYYY-MM-DD format.")
+    recurring_run.add_argument("--template-id", type=int)
+    recurring_run.set_defaults(func=cmd_recurring_run)
+    recurring_template = recurring_sub.add_parser("template", help="Pause, resume, or permanently end a template.")
+    recurring_template.add_argument("id", type=int)
+    recurring_template.add_argument("status", choices=["active", "paused", "ended"])
+    recurring_template.set_defaults(func=cmd_recurring_template_status)
 
     reconcile = sub.add_parser("reconcile", help="Import and review payment evidence.")
     reconcile_sub = reconcile.add_subparsers(required=True)
@@ -738,6 +776,76 @@ def cmd_follow_up_outcome(args: argparse.Namespace, data_dir: Path) -> int:
     result = record_follow_up_outcome(data_dir, args.event_id, args.outcome, args.note)
     event = result["event"]
     print(f"Follow-up event #{event['id']} outcome: {event['outcome_label']}.")
+    return 0
+
+
+def cmd_recurring_status(args: argparse.Namespace, data_dir: Path) -> int:
+    summary = recurring_revenue_summary(data_dir, limit=args.limit)
+    if args.format == "json":
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+    print(
+        f"Recurring revenue: {summary['monthly_recurring_revenue']} normalized monthly; "
+        f"{summary['expected_30_days']} expected in 30 days; {summary['renewal_risk_count']} renewal risk(s)."
+    )
+    print(
+        f"Templates: {summary['active_count']} active, {summary['paused_count']} paused, "
+        f"{summary['ended_count']} ended; {summary['generation_due_count']} ready to generate."
+    )
+    for item in summary["rows"]:
+        next_issue = f" next {item['next_issue_on']}" if item["next_issue_on"] else " schedule complete"
+        renewal = f"; renewal {item['renewal_state_label']}" if item["renewal_on"] else ""
+        print(
+            f"#{item['id']} {item['status_label']} {item['kind_label']}: {item['name']} - "
+            f"{item['client']} - {item['gbp_value']} {item['cadence_label'].lower()};{next_issue}{renewal}"
+        )
+    return 0
+
+
+def cmd_recurring_create(args: argparse.Namespace, data_dir: Path) -> int:
+    template_id = create_recurring_revenue_template(
+        data_dir,
+        name=args.name,
+        kind=args.kind,
+        client=args.client,
+        reference_prefix=args.reference_prefix,
+        amount_minor=parse_money_to_minor(args.amount),
+        cadence=args.cadence,
+        start_on=parse_date(args.start),
+        currency=args.currency,
+        gbp_minor=parse_money_to_minor(args.gbp_equivalent) if args.gbp_equivalent else None,
+        description=args.description,
+        payment_terms_days=args.payment_terms,
+        generate_ahead_days=args.generate_ahead,
+        end_on=parse_date(args.end) if args.end else None,
+        renewal_on=parse_date(args.renewal) if args.renewal else None,
+        renewal_notice_days=args.renewal_notice,
+        total_occurrences=args.occurrences,
+        notes=args.notes,
+    )
+    print(f"Created recurring template #{template_id}.")
+    return 0
+
+
+def cmd_recurring_run(args: argparse.Namespace, data_dir: Path) -> int:
+    result = process_recurring_revenue(
+        data_dir,
+        today=parse_date(args.date) if args.date else None,
+        template_id=args.template_id,
+    )
+    print(
+        f"Recurring generation: {result['evaluated']} template(s) reviewed, "
+        f"{result['generated']} receivable(s) generated, {result['blocked']} blocked."
+    )
+    for item in result["results"]:
+        detail = f" - {item['reason']}" if item["reason"] else ""
+        print(f"- #{item['template_id']} {item['name']}: {item['status']}, {item['generated']} generated{detail}")
+    return 0
+
+
+def cmd_recurring_template_status(args: argparse.Namespace, data_dir: Path) -> int:
+    template = update_recurring_revenue_template_status(data_dir, args.id, args.status)
+    print(f"Recurring template #{template['id']} marked {template['status_label']}.")
     return 0
 
 

@@ -7,6 +7,7 @@ import {
   Banknote,
   BellRing,
   CalendarClock,
+  CalendarRange,
   Check,
   CirclePause,
   CirclePlay,
@@ -24,6 +25,7 @@ import {
   Plus,
   RefreshCcw,
   ReceiptText,
+  Repeat2,
   SearchCheck,
   Send,
   Settings,
@@ -47,6 +49,7 @@ import type {
   LeadEntry,
   Opportunity,
   ReceivableEntry,
+  RecurringRevenueTemplate,
   ReconciliationImportResult,
   ReconciliationReceivableOption,
   ReconciliationTransaction,
@@ -974,6 +977,288 @@ export function ReceivablesPanel({
   );
 }
 
+export function RecurringRevenuePanel({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  feedback: WorkflowFeedbackMap;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm?: boolean) => void;
+}) {
+  const summary = dashboard.recurring_revenue;
+  if (!summary) {
+    return (
+      <section className="temple-panel mt-4 min-w-0">
+        <div className="section-heading">
+          <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+            <Repeat2 aria-hidden="true" className="text-temple-gold" size={20} />
+            Retainers And Recurring Revenue
+          </h2>
+          <Badge>Server update required</Badge>
+        </div>
+        <EmptyRow>Restart the web server to load the v3.4 recurring revenue API and schema.</EmptyRow>
+      </section>
+    );
+  }
+
+  function updateStatus(
+    event: FormEvent<HTMLFormElement>,
+    template: RecurringRevenueTemplate,
+    status: "active" | "paused" | "ended",
+  ) {
+    if (status === "ended" && !window.confirm(`End ${template.name}? Its history will remain, but the template cannot be resumed.`)) {
+      event.preventDefault();
+      return;
+    }
+    onSubmit(
+      event,
+      `/api/recurring-revenue/templates/${template.id}/status`,
+      `${template.name} marked ${status}`,
+      false,
+    );
+  }
+
+  return (
+    <section className="temple-panel mt-4 min-w-0">
+      <div className="section-heading">
+        <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+          <Repeat2 aria-hidden="true" className="text-temple-gold" size={20} />
+          Retainers And Recurring Revenue
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{summary.active_count} active</Badge>
+          <Badge>{summary.generation_due_count} due</Badge>
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+        <MiniMetric label="Active Templates" value={String(summary.active_count)} />
+        <MiniMetric label="Monthly Recurring Value" value={summary.monthly_recurring_revenue} />
+        <MiniMetric label="Expected In 30 Days" value={summary.expected_30_days} />
+        <MiniMetric label="Expected In 90 Days" value={summary.expected_90_days} />
+        <MiniMetric label="Renewal Risk" value={String(summary.renewal_risk_count)} />
+      </div>
+
+      <div className="mt-5 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+        <section className="min-w-0">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Create Recurring Template</h3>
+          <form
+            noValidate
+            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+            onSubmit={(event) => onSubmit(event, "/api/recurring-revenue/templates", "Recurring template created")}
+          >
+            <Field label="Template Name" name="name" placeholder="Monthly support retainer" required />
+            <Field label="Client" name="client" placeholder="Client or company" required />
+            <SelectField label="Revenue Type" name="kind" defaultValue="retainer">
+              <option value="retainer">Retainer</option>
+              <option value="subscription">Subscription</option>
+              <option value="instalment">Instalment plan</option>
+            </SelectField>
+            <Field label="Reference Prefix" name="reference_prefix" placeholder="ACME-SUPPORT" maxLength={32} required />
+            <Field label="Amount" name="amount" inputMode="decimal" placeholder="750.00" required />
+            <SelectField label="Currency" name="currency" defaultValue="GBP">
+              <option value="GBP">GBP</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="BTC">BTC</option>
+              <option value="LTC">LTC</option>
+              <option value="XMR">XMR</option>
+            </SelectField>
+            <Field label="GBP Equivalent" name="gbp_equivalent" inputMode="decimal" placeholder="Required outside GBP" />
+            <SelectField label="Cadence" name="cadence" defaultValue="monthly">
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="yearly">Yearly</option>
+            </SelectField>
+            <Field label="First Issue Date" name="start_on" type="date" required />
+            <Field label="Payment Terms" name="payment_terms_days" type="number" min={0} max={365} defaultValue={14} required />
+            <Field label="Generate Ahead" name="generate_ahead_days" type="number" min={0} max={90} defaultValue={7} required />
+            <Field label="Total Occurrences" name="total_occurrences" type="number" min={1} max={600} placeholder="Required for instalments" />
+            <Field label="End Date" name="end_on" type="date" />
+            <Field label="Renewal Date" name="renewal_on" type="date" />
+            <Field label="Renewal Notice" name="renewal_notice_days" type="number" min={1} max={365} defaultValue={30} required />
+            <Field className="sm:col-span-2" label="Description" name="description" placeholder="Work or service billed on each occurrence" />
+            <Field label="Internal Notes" name="notes" placeholder="Contract or delivery context" />
+            <div className="sm:col-span-2 lg:col-span-3">
+              <FormNotice feedback={feedback["/api/recurring-revenue/templates"]} />
+            </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Button icon={Plus} disabled={busy === "/api/recurring-revenue/templates"} type="submit">
+                {busy === "/api/recurring-revenue/templates" ? "Creating..." : "Create Template"}
+              </Button>
+            </div>
+          </form>
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Generation Queue</h3>
+          <p className="mb-3 text-sm leading-6 text-temple-muted">
+            Creates due internal receivables within each template window. It never charges a customer or records collected income.
+          </p>
+          <form noValidate className="grid gap-3" onSubmit={(event) => onSubmit(event, "/api/recurring-revenue/run", "Recurring generation reviewed")}>
+            <FormNotice feedback={feedback["/api/recurring-revenue/run"]} />
+            <Button icon={CirclePlay} disabled={busy === "/api/recurring-revenue/run"} type="submit">
+              {busy === "/api/recurring-revenue/run" ? "Generating..." : "Run Due Generation"}
+            </Button>
+          </form>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            <MiniMetric label="Finite Value Remaining" value={summary.finite_remaining_value} />
+            <MiniMetric label="Receivables Generated" value={`${summary.generated_receivable_count} - ${summary.generated_value}`} />
+          </div>
+        </section>
+      </div>
+
+      <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black uppercase text-temple-muted">Recurring Templates</h3>
+          <Badge>{summary.returned_count} shown</Badge>
+        </div>
+        {summary.rows.length ? (
+          <div className="divide-y divide-temple-line border-y border-temple-line">
+            {summary.rows.map((template) => {
+              const statusPath = `/api/recurring-revenue/templates/${template.id}/status`;
+              return (
+                <article key={template.id} className="grid min-w-0 gap-4 py-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(230px,0.8fr)_auto] xl:items-center">
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <strong className="break-words">#{template.id} {template.name} - {template.client}</strong>
+                      <Badge>{template.status_label}</Badge>
+                      <Badge>{template.kind_label}</Badge>
+                    </div>
+                    <span className="mt-1 block break-words text-sm text-temple-muted">
+                      {template.gbp_value} {template.cadence_label.toLowerCase()} - {template.monthly_value} normalized monthly
+                    </span>
+                    <span className="mt-1 block break-words text-sm text-temple-muted">
+                      {template.generated_count} generated{template.remaining_occurrences === null ? "" : ` - ${template.remaining_occurrences} remaining`}
+                      {template.description ? ` - ${template.description}` : ""}
+                    </span>
+                  </div>
+                  <div className="min-w-0">
+                    <strong className={cx("block break-words", template.generation_state === "ready" ? "text-temple-gold" : "text-temple-blue")}>
+                      {template.generation_state_label}
+                    </strong>
+                    <span className="mt-1 block break-words text-sm text-temple-muted">
+                      {template.next_issue_on ? `Next issue ${shortDate(template.next_issue_on)}` : "Schedule complete"}
+                    </span>
+                    <span className={cx("mt-1 block break-words text-sm", template.renewal_risk ? "text-temple-red" : "text-temple-muted")}>
+                      {template.renewal_on ? `Renewal ${shortDate(template.renewal_on)} - ${template.renewal_state_label}` : "No renewal date"}
+                    </span>
+                  </div>
+                  <div className="grid min-w-[150px] gap-2 xl:justify-items-end">
+                    {template.can_pause ? (
+                      <form noValidate onSubmit={(event) => updateStatus(event, template, "paused")}>
+                        <input type="hidden" name="status" value="paused" />
+                        <Button icon={CirclePause} variant="secondary" disabled={busy === statusPath} type="submit">Pause</Button>
+                      </form>
+                    ) : null}
+                    {template.can_resume ? (
+                      <form noValidate onSubmit={(event) => updateStatus(event, template, "active")}>
+                        <input type="hidden" name="status" value="active" />
+                        <Button icon={CirclePlay} variant="secondary" disabled={busy === statusPath} type="submit">Resume</Button>
+                      </form>
+                    ) : null}
+                    {template.can_end ? (
+                      <form noValidate onSubmit={(event) => updateStatus(event, template, "ended")}>
+                        <input type="hidden" name="status" value="ended" />
+                        <Button icon={Archive} variant="ghost" disabled={busy === statusPath} type="submit">End</Button>
+                      </form>
+                    ) : null}
+                    <FormNotice feedback={feedback[statusPath]} />
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <EmptyRow>No recurring templates exist for this temple.</EmptyRow>
+        )}
+      </section>
+
+      <div className="mt-6 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-2">
+        <section className="min-w-0">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-black uppercase text-temple-muted">
+              <CalendarRange aria-hidden="true" size={17} /> Upcoming Billing
+            </h3>
+            <Badge>{summary.upcoming.length} shown</Badge>
+          </div>
+          {summary.upcoming.length ? (
+            <div className="divide-y divide-temple-line border-y border-temple-line">
+              {summary.upcoming.map((item) => (
+                <div key={`${item.template_id}-${item.occurrence_number}`} className="grid gap-1 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <strong className="block break-words">{item.template_name} - {item.client}</strong>
+                    <span className="block break-words text-sm text-temple-muted">Occurrence {item.occurrence_number} - {item.kind_label}</span>
+                  </div>
+                  <span className="text-sm font-black text-temple-blue">{item.gbp_value} - {shortDate(item.scheduled_on)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyRow>No scheduled billing falls inside the next 90 days.</EmptyRow>
+          )}
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-black uppercase text-temple-muted">
+              <ShieldAlert aria-hidden="true" size={17} /> Renewal Risk
+            </h3>
+            <Badge>{summary.renewal_risk_count}</Badge>
+          </div>
+          {summary.renewal_risks.length ? (
+            <div className="divide-y divide-temple-line border-y border-temple-line">
+              {summary.renewal_risks.map((template) => (
+                <div key={template.id} className="grid gap-1 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <strong className="block break-words">{template.name} - {template.client}</strong>
+                    <span className="block break-words text-sm text-temple-muted">{template.monthly_value} monthly value</span>
+                  </div>
+                  <span className="text-sm font-black text-temple-red">{template.renewal_state_label} - {shortDate(template.renewal_on)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyRow>No renewals are inside their notice window.</EmptyRow>
+          )}
+        </section>
+      </div>
+
+      <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black uppercase text-temple-muted">Recent Generated Receivables</h3>
+          <Badge>{summary.recent_occurrences.length} shown</Badge>
+        </div>
+        {summary.recent_occurrences.length ? (
+          <div className="divide-y divide-temple-line border-y border-temple-line">
+            {summary.recent_occurrences.slice(0, 10).map((item) => (
+              <div key={item.id} className="grid min-w-0 gap-1 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                <div className="min-w-0">
+                  <strong className="block break-words">#{item.id} {item.reference} - {item.client}</strong>
+                  <span className="block break-words text-sm text-temple-muted">
+                    {item.recurring_template_name} - occurrence {item.recurring_occurrence_number} - due {shortDate(item.due_on)}
+                  </span>
+                </div>
+                <span className="text-sm font-black text-temple-blue">{item.gbp_value}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyRow>No recurring receivables have been generated yet.</EmptyRow>
+        )}
+      </section>
+
+      <ul className="mt-5 grid gap-1 border-t border-temple-line pt-4 text-sm text-temple-muted sm:grid-cols-2">
+        {summary.policy.map((item) => <li key={item} className="break-words">{item}</li>)}
+      </ul>
+    </section>
+  );
+}
+
 export function FollowUpCadencesPanel({
   dashboard,
   busy,
@@ -1541,11 +1826,17 @@ function ReceivableRow({
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <strong className="break-words">#{item.id} {item.reference} - {item.client}</strong>
           <Badge>{item.state_label}</Badge>
+          {item.recurring_template_id ? <Badge>Recurring #{item.recurring_template_id}</Badge> : null}
           {item.active_reminder_id ? <Badge>Reminder {item.active_reminder_status}</Badge> : null}
         </div>
         <span className="mt-1 block break-words text-sm text-temple-muted">
           {item.description || "No description"}{item.already_counted ? ` - booked as income #${item.source_income_id}` : " - unbooked collection"}
         </span>
+        {item.recurring_template_id ? (
+          <span className="mt-1 block break-words text-sm text-temple-blue">
+            {item.recurring_template_name} - occurrence {item.recurring_occurrence_number} - scheduled {shortDate(item.recurring_scheduled_on || item.issued_on)}
+          </span>
+        ) : null}
       </div>
       <div className="min-w-0">
         <strong className={cx("block break-words", receivableStateText(item.state))}>{item.outstanding} outstanding</strong>

@@ -1,4 +1,4 @@
-export type DashboardView = "overview" | "temples" | "strategies" | "leads" | "receivables" | "follow_ups" | "reconciliation" | "imports" | "approvals" | "reports" | "settings";
+export type DashboardView = "overview" | "temples" | "strategies" | "leads" | "receivables" | "recurring" | "follow_ups" | "reconciliation" | "imports" | "approvals" | "reports" | "settings";
 
 export interface DashboardViewMeta {
   id: DashboardView;
@@ -39,6 +39,12 @@ export const dashboardViews: DashboardViewMeta[] = [
     label: "Receivables",
     kicker: "Collection Desk",
     summary: "Money owed, due and overdue exposure, payment collection, and human-approved reminders.",
+  },
+  {
+    id: "recurring",
+    label: "Recurring",
+    kicker: "Revenue Contracts",
+    summary: "Retainers, subscriptions, instalments, generation windows, expected value, and renewal risk.",
   },
   {
     id: "follow_ups",
@@ -84,12 +90,13 @@ export const dashboardViewMeta: Record<DashboardView, DashboardViewMeta> = {
   strategies: dashboardViews[2],
   leads: dashboardViews[3],
   receivables: dashboardViews[4],
-  follow_ups: dashboardViews[5],
-  reconciliation: dashboardViews[6],
-  imports: dashboardViews[7],
-  approvals: dashboardViews[8],
-  reports: dashboardViews[9],
-  settings: dashboardViews[10],
+  recurring: dashboardViews[5],
+  follow_ups: dashboardViews[6],
+  reconciliation: dashboardViews[7],
+  imports: dashboardViews[8],
+  approvals: dashboardViews[9],
+  reports: dashboardViews[10],
+  settings: dashboardViews[11],
 };
 
 export function viewHref(view: DashboardView) {

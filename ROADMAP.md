@@ -33,10 +33,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v3.1.0`: Phase 6 Receivables Pipeline with collection tracking and human-approved reminders.
 - `v3.2.0`: Phase 6 Payment Reconciliation with read-only transaction evidence, explainable matching, human confirmation, and audit history.
 - `v3.3.0`: Phase 6 Follow-Up Cadences with configurable schedules, contact suppression, approval-gated drafts, and collection outcomes.
+- `v3.4.0`: Phase 6 Retainers And Recurring Revenue with controlled receivable generation, lifecycle controls, expected value, and renewal risk.
 
 ## Current Status
 
-Current version: `v3.3.0`.
+Current version: `v3.4.0`.
 
 Completed:
 
@@ -99,6 +100,8 @@ Completed:
 - Backend Roadmap 3.0 Stage 3.0.7: passed the operational release gate and shipped `v3.0.0`.
 - Phase 6 Stage 6.1: shipped the Receivables Pipeline with temple-scoped invoices, due and overdue exposure, partial and full payments, double-counting protection, reports, CLI/API controls, and human-approved reminder drafts.
 - Phase 6 Stage 6.2: shipped read-only payment evidence imports, explainable receivable matching, explicit income treatment, idempotent confirmation, authenticated UI/API/CLI controls, and complete batch/decision audit history.
+- Phase 6 Stage 6.3: shipped configurable follow-up cadences, client suppression, approval-gated drafts, durable reminder history, and collection outcomes.
+- Phase 6 Stage 6.4: shipped recurring templates for retainers, subscriptions, and instalments with bounded idempotent generation, pause/end controls, expected recurring value, and renewal-risk visibility.
 
 ## Phase 0: Foundation
 
@@ -440,7 +443,7 @@ Sequencing rule:
 - Roadmap 2.0 reached its completion gate before Phase 5 resumed.
 - Phase 5 Stages 5.1 through 5.3 are now shipped.
 - Backend Roadmap 3.0 resolved the Phase 5 operational blockers and passed its release gate; Phase 6 is now unblocked.
-- Phase 6 is active; Stages 6.1 through 6.3 are shipped, and Stage 6.4 is next.
+- Phase 6 is active; Stages 6.1 through 6.4 are shipped, and Stage 6.5 is next.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -891,7 +894,7 @@ Evidence collected on 1 September 2026:
 
 ### Stage 6.4: Retainers And Recurring Revenue
 
-Status: planned.
+Status: complete.
 
 Deliverables:
 
@@ -900,6 +903,18 @@ Deliverables:
 - Expected recurring revenue and renewal-risk visibility.
 
 Release target: `v3.4.0`.
+
+Release status: shipped.
+
+Evidence collected on 1 September 2026:
+
+- Schema v11 stores temple-scoped recurring templates and immutable occurrence links to ordinary receivables, with unique template prefixes, occurrence numbers, schedule dates, and receivable links.
+- Retainer, subscription, and finite instalment schedules use anchored weekly, monthly, quarterly, or yearly dates; each run is transactionally idempotent, concurrency safe, and limited to 12 generated occurrences per template.
+- Pause stops future generation, resume preserves the schedule, and end is permanent. Completed finite schedules close automatically while keeping their receivable history.
+- Dashboard, reports, API, CLI, and daemon cycles expose normalized monthly value, expected 30-day and 90-day billings, finite remaining value, upcoming billing, generation state, and renewal risk.
+- Generation creates internal receivables only. It creates no payment or income entry, cannot charge a customer, and keeps reconciliation, follow-up approval, and double-counting controls intact.
+- All 48 automated tests pass, including restart-safe idempotency, concurrent generation, lifecycle controls, anchored month-end dates, renewal visibility, authenticated API coverage, worker parity, migrations, and accounting-boundary assertions.
+- Production frontend build, static QA, Python compilation, Docker Compose validation, schema-v11 preflight, and SQLite integrity checks pass. Authenticated desktop/mobile review exercises create, pause, and resume workflows; all 12 routes render at 390 x 844 without document overflow or browser warnings and errors.
 
 ### Stage 6.5: Cash Forecasting
 
@@ -977,12 +992,16 @@ The tool is fully operational for protected local use when the Creator can:
 - Configure due-soon and overdue reminder schedules per temple.
 - Pause or suppress client contact before any reminder draft is created.
 - Review reminder history and collection outcomes without bypassing human approval.
+- Create retainer, subscription, and instalment templates per temple.
+- Generate due recurring receivables without duplicate occurrences or autonomous charges.
+- Pause, resume, or permanently end recurring schedules while preserving history.
+- Review normalized recurring value, upcoming billing, and renewal risk without treating expected revenue as collected cash.
 
 ## Recommended Next Build Step
 
-Build Phase 6 Stage 6.4: Retainers And Recurring Revenue.
+Build Phase 6 Stage 6.5: Cash Forecasting.
 
-- Add recurring receivable templates for retainers, subscriptions, and instalments.
-- Generate recurring invoices inside controlled windows with duplicate prevention.
-- Add pause, end, renewal-risk, and expected recurring revenue visibility.
-- Preserve the existing approval, reconciliation, follow-up, and income-counting boundaries.
+- Estimate expected cash dates from due dates, payment history, and explicit confidence bands.
+- Show best, expected, and delayed collection scenarios.
+- Forecast quota gaps while distinguishing booked revenue, generated receivables, and collected cash.
+- Preserve explainable assumptions and temple-scoped accounting evidence.

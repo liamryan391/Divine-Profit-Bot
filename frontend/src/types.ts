@@ -348,6 +348,13 @@ export interface ReceivableEntry {
   source_income_id?: number | null;
   active_reminder_id?: number | null;
   active_reminder_status?: string | null;
+  recurring_template_id?: number | null;
+  recurring_occurrence_number?: number | null;
+  recurring_scheduled_on?: string | null;
+  recurring_period_start_on?: string | null;
+  recurring_period_end_on?: string | null;
+  recurring_template_name?: string | null;
+  recurring_kind?: string | null;
   client: string;
   reference: string;
   description?: string;
@@ -414,6 +421,96 @@ export interface ReceivablesSummary {
   rows: ReceivableEntry[];
   at_risk: ReceivableEntry[];
   recent_payments: ReceivablePayment[];
+  policy: string[];
+}
+
+export interface RecurringRevenueTemplate {
+  id: number;
+  temple_id: string;
+  name: string;
+  kind: string;
+  kind_label: string;
+  client: string;
+  reference_prefix: string;
+  description: string;
+  amount_minor: number;
+  currency: string;
+  gbp_minor: number;
+  amount: string;
+  gbp_value: string;
+  cadence: string;
+  cadence_label: string;
+  payment_terms_days: number;
+  generate_ahead_days: number;
+  start_on: string;
+  end_on: string;
+  renewal_on: string;
+  renewal_notice_days: number;
+  total_occurrences?: number | null;
+  remaining_occurrences?: number | null;
+  stored_status: string;
+  status: string;
+  status_label: string;
+  notes: string;
+  monthly_value_minor: number;
+  monthly_value: string;
+  generated_count: number;
+  generated_value_minor: number;
+  generated_value: string;
+  next_occurrence_number: number;
+  next_issue_on: string;
+  generation_window_open_on: string;
+  generation_state: string;
+  generation_state_label: string;
+  schedule_complete: boolean;
+  days_to_renewal?: number | null;
+  renewal_risk: boolean;
+  renewal_state: string;
+  renewal_state_label: string;
+  can_pause: boolean;
+  can_resume: boolean;
+  can_end: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecurringScheduleItem {
+  template_id: number;
+  template_name: string;
+  client: string;
+  kind: string;
+  kind_label: string;
+  occurrence_number: number;
+  scheduled_on: string;
+  gbp_minor: number;
+  gbp_value: string;
+}
+
+export interface RecurringRevenueSummary {
+  temple_id: string;
+  total_count: number;
+  counts: Record<string, number>;
+  active_count: number;
+  paused_count: number;
+  ended_count: number;
+  generation_due_count: number;
+  renewal_risk_count: number;
+  monthly_recurring_revenue_minor: number;
+  monthly_recurring_revenue: string;
+  expected_30_days_minor: number;
+  expected_30_days: string;
+  expected_90_days_minor: number;
+  expected_90_days: string;
+  finite_remaining_value_minor: number;
+  finite_remaining_value: string;
+  generated_receivable_count: number;
+  generated_value_minor: number;
+  generated_value: string;
+  returned_count: number;
+  rows: RecurringRevenueTemplate[];
+  renewal_risks: RecurringRevenueTemplate[];
+  upcoming: RecurringScheduleItem[];
+  recent_occurrences: ReceivableEntry[];
   policy: string[];
 }
 
@@ -782,6 +879,7 @@ export interface DashboardPayload {
   receivables: ReceivablesSummary;
   reconciliation?: ReconciliationSummary;
   follow_ups?: FollowUpSummary;
+  recurring_revenue?: RecurringRevenueSummary;
   revenue_rules?: RevenueRulesSummary;
   temples: TempleSummary;
   auth: AuthStatus;

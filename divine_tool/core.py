@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import calendar
 import copy
 import csv
 import hashlib
@@ -270,6 +271,11 @@ FOLLOW_UP_OUTCOMES = {
 CLIENT_CONTACT_STATUSES = {"active", "paused", "do_not_contact"}
 DEFAULT_DUE_SOON_FOLLOW_UP_DAYS = (3, 0)
 DEFAULT_OVERDUE_FOLLOW_UP_DAYS = (3, 7, 14, 30)
+RECURRING_REVENUE_KINDS = {"retainer", "subscription", "instalment"}
+RECURRING_REVENUE_CADENCES = {"weekly", "monthly", "quarterly", "yearly"}
+RECURRING_REVENUE_STATUSES = {"active", "paused", "ended"}
+RECURRING_GENERATION_MAX_AHEAD_DAYS = 90
+RECURRING_GENERATION_MAX_OCCURRENCES_PER_RUN = 12
 RECONCILIATION_PROVIDERS = {"bank", "generic", "paypal", "square", "stripe"}
 RECONCILIATION_STATUSES = {"unmatched", "suggested", "matched", "ignored"}
 RECONCILIATION_FILTERS = RECONCILIATION_STATUSES | {"all", "review"}
@@ -897,6 +903,74 @@ def migrate_follow_up_cadences(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_recurring_revenue(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recurring_revenue_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            client TEXT NOT NULL,
+            reference_prefix TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            amount_minor INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'GBP',
+            gbp_minor INTEGER NOT NULL,
+            cadence TEXT NOT NULL,
+            payment_terms_days INTEGER NOT NULL DEFAULT 14,
+            generate_ahead_days INTEGER NOT NULL DEFAULT 7,
+            start_on TEXT NOT NULL,
+            end_on TEXT NOT NULL DEFAULT '',
+            renewal_on TEXT NOT NULL DEFAULT '',
+            renewal_notice_days INTEGER NOT NULL DEFAULT 30,
+            total_occurrences INTEGER,
+            status TEXT NOT NULL DEFAULT 'active',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(temple_id, reference_prefix)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recurring_templates_temple_status "
+        "ON recurring_revenue_templates(temple_id, status, start_on, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recurring_templates_temple_renewal "
+        "ON recurring_revenue_templates(temple_id, renewal_on, status)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recurring_receivable_occurrences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            template_id INTEGER NOT NULL,
+            occurrence_number INTEGER NOT NULL,
+            scheduled_on TEXT NOT NULL,
+            period_start_on TEXT NOT NULL,
+            period_end_on TEXT NOT NULL,
+            receivable_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(template_id) REFERENCES recurring_revenue_templates(id),
+            FOREIGN KEY(receivable_id) REFERENCES receivables(id),
+            UNIQUE(template_id, occurrence_number),
+            UNIQUE(template_id, scheduled_on),
+            UNIQUE(receivable_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_temple_scheduled "
+        "ON recurring_receivable_occurrences(temple_id, scheduled_on DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_template "
+        "ON recurring_receivable_occurrences(template_id, occurrence_number DESC)"
+    )
+
+
 SCHEMA_MIGRATIONS = (
     SchemaMigration(1, "core_ledger", migrate_core_ledger),
     SchemaMigration(2, "approval_actions", migrate_approval_actions),
@@ -908,6 +982,7 @@ SCHEMA_MIGRATIONS = (
     SchemaMigration(8, "receivables", migrate_receivables),
     SchemaMigration(9, "payment_reconciliation", migrate_payment_reconciliation),
     SchemaMigration(10, "follow_up_cadences", migrate_follow_up_cadences),
+    SchemaMigration(11, "recurring_revenue", migrate_recurring_revenue),
 )
 LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
 
@@ -3461,12 +3536,24 @@ def receivables_summary(
         rows = list(
             conn.execute(
                 """
-                SELECT r.*, a.id AS active_reminder_id, a.status AS active_reminder_status
+                SELECT r.*, a.id AS active_reminder_id, a.status AS active_reminder_status,
+                       o.template_id AS recurring_template_id,
+                       o.occurrence_number AS recurring_occurrence_number,
+                       o.scheduled_on AS recurring_scheduled_on,
+                       o.period_start_on AS recurring_period_start_on,
+                       o.period_end_on AS recurring_period_end_on,
+                       t.name AS recurring_template_name, t.kind AS recurring_kind
                 FROM receivables r
                 LEFT JOIN approval_actions a
                   ON a.receivable_id = r.id
                  AND a.temple_id = r.temple_id
                  AND a.status IN ('pending', 'approved')
+                LEFT JOIN recurring_receivable_occurrences o
+                  ON o.receivable_id = r.id
+                 AND o.temple_id = r.temple_id
+                LEFT JOIN recurring_revenue_templates t
+                  ON t.id = o.template_id
+                 AND t.temple_id = o.temple_id
                 WHERE r.temple_id = ?
                 ORDER BY r.due_on ASC, r.id DESC
                 """,
@@ -3561,12 +3648,24 @@ def get_receivable(
     with db(data_dir) as conn:
         row = conn.execute(
             """
-            SELECT r.*, a.id AS active_reminder_id, a.status AS active_reminder_status
+            SELECT r.*, a.id AS active_reminder_id, a.status AS active_reminder_status,
+                   o.template_id AS recurring_template_id,
+                   o.occurrence_number AS recurring_occurrence_number,
+                   o.scheduled_on AS recurring_scheduled_on,
+                   o.period_start_on AS recurring_period_start_on,
+                   o.period_end_on AS recurring_period_end_on,
+                   t.name AS recurring_template_name, t.kind AS recurring_kind
             FROM receivables r
             LEFT JOIN approval_actions a
               ON a.receivable_id = r.id
              AND a.temple_id = r.temple_id
              AND a.status IN ('pending', 'approved')
+            LEFT JOIN recurring_receivable_occurrences o
+              ON o.receivable_id = r.id
+             AND o.temple_id = r.temple_id
+            LEFT JOIN recurring_revenue_templates t
+              ON t.id = o.template_id
+             AND t.temple_id = o.temple_id
             WHERE r.id = ? AND r.temple_id = ?
             """,
             (receivable_id, scoped_temple_id),
@@ -4851,6 +4950,646 @@ def update_receivable_status(
         temple_id=scoped_temple_id,
     )
     return get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id)
+
+
+def normalize_recurring_reference_prefix(value: str) -> str:
+    output: list[str] = []
+    previous_separator = False
+    for char in value.strip().upper():
+        if char.isalnum():
+            output.append(char)
+            previous_separator = False
+        elif char in {"-", "_", " "} and not previous_separator:
+            output.append("-")
+            previous_separator = True
+    normalized = "".join(output).strip("-")
+    if len(normalized) < 2:
+        raise DivineToolError("Recurring reference prefix must include at least 2 letters or numbers.")
+    if len(normalized) > 32:
+        raise DivineToolError("Recurring reference prefix must be 32 characters or fewer.")
+    return normalized
+
+
+def recurring_occurrence_date(start_on: date, cadence: str, occurrence_number: int) -> date:
+    if occurrence_number < 1:
+        raise DivineToolError("Recurring occurrence numbers start at 1.")
+    normalized_cadence = cadence.strip().lower()
+    step = occurrence_number - 1
+    if normalized_cadence == "weekly":
+        return start_on + timedelta(weeks=step)
+    month_steps = {"monthly": 1, "quarterly": 3, "yearly": 12}
+    if normalized_cadence not in month_steps:
+        choices = ", ".join(sorted(RECURRING_REVENUE_CADENCES))
+        raise DivineToolError(f"Recurring cadence must be one of: {choices}.")
+    month_index = (start_on.month - 1) + month_steps[normalized_cadence] * step
+    year = start_on.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start_on.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def recurring_monthly_equivalent_minor(gbp_minor: int, cadence: str) -> int:
+    factors = {
+        "weekly": Decimal(52) / Decimal(12),
+        "monthly": Decimal(1),
+        "quarterly": Decimal(1) / Decimal(3),
+        "yearly": Decimal(1) / Decimal(12),
+    }
+    try:
+        value = Decimal(gbp_minor) * factors[cadence]
+    except KeyError as exc:
+        raise DivineToolError(f"Unsupported recurring cadence: {cadence}.") from exc
+    return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def recurring_schedule_complete(
+    template: dict[str, Any],
+    next_occurrence_number: int,
+    next_issue_on: date,
+) -> bool:
+    total_occurrences = template.get("total_occurrences")
+    if total_occurrences is not None and next_occurrence_number > int(total_occurrences):
+        return True
+    end_on = str(template.get("end_on") or "")
+    return bool(end_on and next_issue_on > date.fromisoformat(end_on))
+
+
+def recurring_template_to_dict(
+    row: sqlite3.Row | dict[str, Any],
+    *,
+    today: date | None = None,
+) -> dict[str, Any]:
+    item = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+    today = today or date.today()
+    generated_count = int(item.get("generated_count") or 0)
+    next_occurrence_number = int(item.get("last_occurrence_number") or generated_count) + 1
+    start_on = date.fromisoformat(str(item["start_on"]))
+    next_issue_on = recurring_occurrence_date(start_on, str(item["cadence"]), next_occurrence_number)
+    schedule_complete = recurring_schedule_complete(item, next_occurrence_number, next_issue_on)
+    stored_status = str(item.get("status") or "active")
+    effective_status = "ended" if stored_status == "ended" or schedule_complete else stored_status
+    generation_window_open_on = next_issue_on - timedelta(days=int(item["generate_ahead_days"]))
+    if effective_status == "ended":
+        generation_state = "ended"
+    elif effective_status == "paused":
+        generation_state = "paused"
+    elif today >= generation_window_open_on:
+        generation_state = "ready"
+    else:
+        generation_state = "scheduled"
+    renewal_on_value = str(item.get("renewal_on") or "")
+    days_to_renewal: int | None = None
+    renewal_risk = False
+    renewal_state = "not_set"
+    if renewal_on_value:
+        renewal_date = date.fromisoformat(renewal_on_value)
+        days_to_renewal = (renewal_date - today).days
+        renewal_risk = effective_status != "ended" and days_to_renewal <= int(item["renewal_notice_days"])
+        if days_to_renewal < 0:
+            renewal_state = "overdue"
+        elif renewal_risk:
+            renewal_state = "due_soon"
+        else:
+            renewal_state = "scheduled"
+    total_occurrences = item.get("total_occurrences")
+    remaining_occurrences = (
+        max(int(total_occurrences) - generated_count, 0)
+        if total_occurrences is not None
+        else None
+    )
+    monthly_value_minor = recurring_monthly_equivalent_minor(int(item["gbp_minor"]), str(item["cadence"]))
+    item.update(
+        {
+            "stored_status": stored_status,
+            "status": effective_status,
+            "status_label": title_case_from_key(effective_status),
+            "kind_label": title_case_from_key(str(item["kind"])),
+            "cadence_label": title_case_from_key(str(item["cadence"])),
+            "amount": format_money(int(item["amount_minor"]), str(item["currency"])),
+            "gbp_value": format_money(int(item["gbp_minor"])),
+            "monthly_value_minor": monthly_value_minor,
+            "monthly_value": format_money(monthly_value_minor),
+            "generated_count": generated_count,
+            "generated_value_minor": int(item.get("generated_value_minor") or 0),
+            "generated_value": format_money(int(item.get("generated_value_minor") or 0)),
+            "next_occurrence_number": next_occurrence_number,
+            "next_issue_on": "" if schedule_complete else next_issue_on.isoformat(),
+            "generation_window_open_on": "" if schedule_complete else generation_window_open_on.isoformat(),
+            "generation_state": generation_state,
+            "generation_state_label": title_case_from_key(generation_state),
+            "schedule_complete": schedule_complete,
+            "remaining_occurrences": remaining_occurrences,
+            "days_to_renewal": days_to_renewal,
+            "renewal_risk": renewal_risk,
+            "renewal_state": renewal_state,
+            "renewal_state_label": title_case_from_key(renewal_state),
+            "can_pause": effective_status == "active",
+            "can_resume": effective_status == "paused" and not schedule_complete,
+            "can_end": effective_status != "ended",
+        }
+    )
+    return item
+
+
+def create_recurring_revenue_template(
+    data_dir: Path,
+    name: str,
+    kind: str,
+    client: str,
+    reference_prefix: str,
+    amount_minor: int,
+    cadence: str,
+    start_on: date,
+    *,
+    currency: str = "GBP",
+    gbp_minor: int | None = None,
+    description: str = "",
+    payment_terms_days: int = 14,
+    generate_ahead_days: int = 7,
+    end_on: date | None = None,
+    renewal_on: date | None = None,
+    renewal_notice_days: int = 30,
+    total_occurrences: int | None = None,
+    notes: str = "",
+    temple_id: str | None = None,
+) -> int:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_name = name.strip()
+    cleaned_client = client.strip()
+    normalized_kind = kind.strip().lower().replace("-", "_")
+    normalized_cadence = cadence.strip().lower().replace("-", "_")
+    normalized_prefix = normalize_recurring_reference_prefix(reference_prefix)
+    if len(cleaned_name) < 2:
+        raise DivineToolError("Recurring template name must be at least 2 characters.")
+    if len(cleaned_client) < 2:
+        raise DivineToolError("Recurring client must be at least 2 characters.")
+    if normalized_kind not in RECURRING_REVENUE_KINDS:
+        choices = ", ".join(sorted(RECURRING_REVENUE_KINDS))
+        raise DivineToolError(f"Recurring kind must be one of: {choices}.")
+    if normalized_cadence not in RECURRING_REVENUE_CADENCES:
+        choices = ", ".join(sorted(RECURRING_REVENUE_CADENCES))
+        raise DivineToolError(f"Recurring cadence must be one of: {choices}.")
+    normalized_currency, normalized_gbp = normalize_receivable_money(
+        amount_minor,
+        currency,
+        gbp_minor,
+        "Recurring receivable",
+    )
+    terms = int(payment_terms_days)
+    lead_days = int(generate_ahead_days)
+    notice_days = int(renewal_notice_days)
+    if terms < 0 or terms > 365:
+        raise DivineToolError("Payment terms must be between 0 and 365 days.")
+    if lead_days < 0 or lead_days > RECURRING_GENERATION_MAX_AHEAD_DAYS:
+        raise DivineToolError(
+            f"Generation lead time must be between 0 and {RECURRING_GENERATION_MAX_AHEAD_DAYS} days."
+        )
+    if notice_days < 1 or notice_days > 365:
+        raise DivineToolError("Renewal notice must be between 1 and 365 days.")
+    normalized_total = int(total_occurrences) if total_occurrences is not None else None
+    if normalized_total is not None and (normalized_total < 1 or normalized_total > 600):
+        raise DivineToolError("Total occurrences must be between 1 and 600.")
+    if normalized_kind == "instalment" and normalized_total is None:
+        raise DivineToolError("Instalment templates require a total occurrence count.")
+    if end_on and end_on < start_on:
+        raise DivineToolError("Recurring end date cannot be before the first issue date.")
+    if renewal_on and renewal_on < start_on:
+        raise DivineToolError("Renewal date cannot be before the first issue date.")
+    created = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        duplicate = conn.execute(
+            "SELECT id FROM recurring_revenue_templates WHERE temple_id = ? AND reference_prefix = ?",
+            (scoped_temple_id, normalized_prefix),
+        ).fetchone()
+        if duplicate is not None:
+            raise DivineToolError(
+                f"Recurring reference prefix {normalized_prefix!r} already belongs to template #{duplicate['id']}."
+            )
+        cursor = conn.execute(
+            """
+            INSERT INTO recurring_revenue_templates
+                (temple_id, name, kind, client, reference_prefix, description, amount_minor, currency,
+                 gbp_minor, cadence, payment_terms_days, generate_ahead_days, start_on, end_on,
+                 renewal_on, renewal_notice_days, total_occurrences, status, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                cleaned_name,
+                normalized_kind,
+                cleaned_client,
+                normalized_prefix,
+                description.strip(),
+                amount_minor,
+                normalized_currency,
+                normalized_gbp,
+                normalized_cadence,
+                terms,
+                lead_days,
+                start_on.isoformat(),
+                end_on.isoformat() if end_on else "",
+                renewal_on.isoformat() if renewal_on else "",
+                notice_days,
+                normalized_total,
+                notes.strip(),
+                created,
+                created,
+            ),
+        )
+        template_id = int(cursor.lastrowid)
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Recurring {normalized_kind} template created: {cleaned_name} for {cleaned_client}",
+        "recurring_revenue",
+        temple_id=scoped_temple_id,
+    )
+    return template_id
+
+
+def recurring_generated_reference(template: dict[str, Any], occurrence_number: int, scheduled_on: date) -> str:
+    return (
+        f"{template['reference_prefix']}-R{int(template['id'])}-"
+        f"{scheduled_on.strftime('%Y%m%d')}-{occurrence_number:03d}"
+    )
+
+
+def process_recurring_revenue(
+    data_dir: Path,
+    *,
+    today: date | None = None,
+    template_id: int | None = None,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    today = today or date.today()
+    created = now_iso()
+    results: list[dict[str, Any]] = []
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        params: list[Any] = [scoped_temple_id]
+        template_filter = ""
+        if template_id is not None:
+            template_filter = " AND id = ?"
+            params.append(int(template_id))
+        template_rows = list(
+            conn.execute(
+                f"SELECT * FROM recurring_revenue_templates WHERE temple_id = ?{template_filter} ORDER BY id",
+                params,
+            )
+        )
+        if template_id is not None and not template_rows:
+            raise DivineToolError(f"Recurring template #{template_id} was not found.")
+        for template_row in template_rows:
+            template = row_to_dict(template_row)
+            generated_receivable_ids: list[int] = []
+            blocked_reason = ""
+            status = str(template["status"])
+            if status != "active":
+                results.append(
+                    {
+                        "template_id": int(template["id"]),
+                        "name": str(template["name"]),
+                        "status": status,
+                        "generated": 0,
+                        "receivable_ids": [],
+                        "reason": f"Template is {status}.",
+                    }
+                )
+                continue
+            last_number_row = conn.execute(
+                "SELECT COALESCE(MAX(occurrence_number), 0) AS value FROM recurring_receivable_occurrences WHERE template_id = ?",
+                (int(template["id"]),),
+            ).fetchone()
+            next_number = int(last_number_row["value"]) + 1
+            final_status = "scheduled"
+            for _ in range(RECURRING_GENERATION_MAX_OCCURRENCES_PER_RUN):
+                scheduled_on = recurring_occurrence_date(
+                    date.fromisoformat(str(template["start_on"])),
+                    str(template["cadence"]),
+                    next_number,
+                )
+                if recurring_schedule_complete(template, next_number, scheduled_on):
+                    conn.execute(
+                        "UPDATE recurring_revenue_templates SET status = 'ended', updated_at = ? WHERE id = ?",
+                        (created, int(template["id"])),
+                    )
+                    final_status = "ended"
+                    break
+                generation_opens = scheduled_on - timedelta(days=int(template["generate_ahead_days"]))
+                if today < generation_opens:
+                    final_status = "generated" if generated_receivable_ids else "scheduled"
+                    break
+                reference = recurring_generated_reference(template, next_number, scheduled_on)
+                reference_collision = conn.execute(
+                    "SELECT id FROM receivables WHERE temple_id = ? AND reference = ?",
+                    (scoped_temple_id, reference),
+                ).fetchone()
+                if reference_collision is not None:
+                    blocked_reason = (
+                        f"Generated reference {reference} already belongs to receivable "
+                        f"#{reference_collision['id']}."
+                    )
+                    final_status = "blocked"
+                    break
+                next_scheduled_on = recurring_occurrence_date(
+                    date.fromisoformat(str(template["start_on"])),
+                    str(template["cadence"]),
+                    next_number + 1,
+                )
+                due_on = scheduled_on + timedelta(days=int(template["payment_terms_days"]))
+                description = str(template["description"] or "").strip() or (
+                    f"{title_case_from_key(str(template['kind']))} - {template['name']}"
+                )
+                internal_note = f"Generated from recurring template #{template['id']}, occurrence {next_number}."
+                if str(template["notes"] or "").strip():
+                    internal_note += f" {str(template['notes']).strip()}"
+                receivable_cursor = conn.execute(
+                    """
+                    INSERT INTO receivables
+                        (temple_id, lead_id, source_income_id, client, reference, description, amount_minor,
+                         currency, gbp_minor, paid_gbp_minor, issued_on, due_on, status, notes, created_at, updated_at)
+                    VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'open', ?, ?, ?)
+                    """,
+                    (
+                        scoped_temple_id,
+                        str(template["client"]),
+                        reference,
+                        description,
+                        int(template["amount_minor"]),
+                        str(template["currency"]),
+                        int(template["gbp_minor"]),
+                        scheduled_on.isoformat(),
+                        due_on.isoformat(),
+                        internal_note,
+                        created,
+                        created,
+                    ),
+                )
+                receivable_id = int(receivable_cursor.lastrowid)
+                conn.execute(
+                    """
+                    INSERT INTO recurring_receivable_occurrences
+                        (temple_id, template_id, occurrence_number, scheduled_on, period_start_on,
+                         period_end_on, receivable_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        scoped_temple_id,
+                        int(template["id"]),
+                        next_number,
+                        scheduled_on.isoformat(),
+                        scheduled_on.isoformat(),
+                        (next_scheduled_on - timedelta(days=1)).isoformat(),
+                        receivable_id,
+                        created,
+                    ),
+                )
+                generated_receivable_ids.append(receivable_id)
+                next_number += 1
+            else:
+                final_status = "bounded"
+            results.append(
+                {
+                    "template_id": int(template["id"]),
+                    "name": str(template["name"]),
+                    "status": final_status,
+                    "generated": len(generated_receivable_ids),
+                    "receivable_ids": generated_receivable_ids,
+                    "reason": blocked_reason,
+                }
+            )
+        conn.commit()
+    generated_count = sum(int(item["generated"]) for item in results)
+    blocked_count = sum(1 for item in results if item["status"] == "blocked")
+    if generated_count or blocked_count:
+        log_event(
+            data_dir,
+            f"Recurring generation reviewed {len(results)} template(s): {generated_count} generated, {blocked_count} blocked",
+            "recurring_revenue",
+            "warning" if blocked_count else "info",
+            temple_id=scoped_temple_id,
+        )
+    return {
+        "temple_id": scoped_temple_id,
+        "evaluated": len(results),
+        "generated": generated_count,
+        "blocked": blocked_count,
+        "results": results,
+    }
+
+
+def recurring_expected_schedule(
+    template: dict[str, Any],
+    *,
+    today: date,
+    horizon: date,
+    limit: int = 120,
+) -> list[dict[str, Any]]:
+    if str(template["status"]) != "active" or bool(template["schedule_complete"]):
+        return []
+    start_on = date.fromisoformat(str(template["start_on"]))
+    occurrence_number = int(template["next_occurrence_number"])
+    expected: list[dict[str, Any]] = []
+    for _ in range(limit):
+        scheduled_on = recurring_occurrence_date(start_on, str(template["cadence"]), occurrence_number)
+        if recurring_schedule_complete(template, occurrence_number, scheduled_on) or scheduled_on > horizon:
+            break
+        if scheduled_on >= today or today >= date.fromisoformat(str(template["generation_window_open_on"])):
+            expected.append(
+                {
+                    "template_id": int(template["id"]),
+                    "template_name": str(template["name"]),
+                    "client": str(template["client"]),
+                    "kind": str(template["kind"]),
+                    "kind_label": str(template["kind_label"]),
+                    "occurrence_number": occurrence_number,
+                    "scheduled_on": scheduled_on.isoformat(),
+                    "gbp_minor": int(template["gbp_minor"]),
+                    "gbp_value": str(template["gbp_value"]),
+                }
+            )
+        occurrence_number += 1
+    return expected
+
+
+def recurring_revenue_summary(
+    data_dir: Path,
+    *,
+    today: date | None = None,
+    limit: int = 60,
+    temple_id: str | None = None,
+    state_ready: bool = False,
+) -> dict[str, Any]:
+    if not state_ready:
+        ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    today = today or date.today()
+    display_limit = max(min(int(limit), 200), 1)
+    with db(data_dir) as conn:
+        template_rows = list(
+            conn.execute(
+                """
+                SELECT t.*, COUNT(o.id) AS generated_count,
+                       COALESCE(MAX(o.occurrence_number), 0) AS last_occurrence_number,
+                       COALESCE(SUM(r.gbp_minor), 0) AS generated_value_minor
+                FROM recurring_revenue_templates t
+                LEFT JOIN recurring_receivable_occurrences o ON o.template_id = t.id
+                LEFT JOIN receivables r ON r.id = o.receivable_id AND r.temple_id = o.temple_id
+                WHERE t.temple_id = ?
+                GROUP BY t.id
+                ORDER BY CASE t.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                         t.renewal_on = '', t.renewal_on, t.id DESC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        occurrence_rows = list(
+            conn.execute(
+                """
+                SELECT r.*, o.id AS recurring_occurrence_id, o.template_id AS recurring_template_id,
+                       o.occurrence_number AS recurring_occurrence_number,
+                       o.scheduled_on AS recurring_scheduled_on,
+                       o.period_start_on AS recurring_period_start_on,
+                       o.period_end_on AS recurring_period_end_on,
+                       t.name AS recurring_template_name, t.kind AS recurring_kind
+                FROM recurring_receivable_occurrences o
+                JOIN recurring_revenue_templates t ON t.id = o.template_id AND t.temple_id = o.temple_id
+                JOIN receivables r ON r.id = o.receivable_id AND r.temple_id = o.temple_id
+                WHERE o.temple_id = ?
+                ORDER BY o.scheduled_on DESC, o.id DESC
+                LIMIT 20
+                """,
+                (scoped_temple_id,),
+            )
+        )
+    templates = [recurring_template_to_dict(row, today=today) for row in template_rows]
+    counts = {status: sum(1 for item in templates if item["status"] == status) for status in RECURRING_REVENUE_STATUSES}
+    active = [item for item in templates if item["status"] == "active"]
+    renewal_risks = sorted(
+        [item for item in templates if item["renewal_risk"]],
+        key=lambda item: (int(item["days_to_renewal"] or 0), -int(item["gbp_minor"])),
+    )
+    upcoming: list[dict[str, Any]] = []
+    horizon_30 = today + timedelta(days=30)
+    horizon_90 = today + timedelta(days=90)
+    expected_30_minor = 0
+    expected_90_minor = 0
+    for template in active:
+        schedule = recurring_expected_schedule(template, today=today, horizon=horizon_90)
+        upcoming.extend(schedule)
+        expected_90_minor += sum(int(item["gbp_minor"]) for item in schedule)
+        expected_30_minor += sum(
+            int(item["gbp_minor"])
+            for item in schedule
+            if date.fromisoformat(str(item["scheduled_on"])) <= horizon_30
+        )
+    upcoming.sort(key=lambda item: (str(item["scheduled_on"]), int(item["template_id"]), int(item["occurrence_number"])))
+    monthly_minor = sum(int(item["monthly_value_minor"]) for item in active)
+    finite_remaining_minor = sum(
+        int(item["remaining_occurrences"]) * int(item["gbp_minor"])
+        for item in templates
+        if item["status"] != "ended" and item["remaining_occurrences"] is not None
+    )
+    generated_value_minor = sum(int(item["generated_value_minor"]) for item in templates)
+    recent_occurrences = [receivable_to_dict(row, today=today) for row in occurrence_rows]
+    return {
+        "temple_id": scoped_temple_id,
+        "total_count": len(templates),
+        "counts": counts,
+        "active_count": counts["active"],
+        "paused_count": counts["paused"],
+        "ended_count": counts["ended"],
+        "generation_due_count": sum(1 for item in active if item["generation_state"] == "ready"),
+        "renewal_risk_count": len(renewal_risks),
+        "monthly_recurring_revenue_minor": monthly_minor,
+        "monthly_recurring_revenue": format_money(monthly_minor),
+        "expected_30_days_minor": expected_30_minor,
+        "expected_30_days": format_money(expected_30_minor),
+        "expected_90_days_minor": expected_90_minor,
+        "expected_90_days": format_money(expected_90_minor),
+        "finite_remaining_value_minor": finite_remaining_minor,
+        "finite_remaining_value": format_money(finite_remaining_minor),
+        "generated_receivable_count": sum(int(item["generated_count"]) for item in templates),
+        "generated_value_minor": generated_value_minor,
+        "generated_value": format_money(generated_value_minor),
+        "returned_count": min(len(templates), display_limit),
+        "rows": templates[:display_limit],
+        "renewal_risks": renewal_risks[:8],
+        "upcoming": upcoming[:12],
+        "recent_occurrences": recent_occurrences,
+        "policy": [
+            "Generation creates internal receivables only; it never charges a customer or moves money.",
+            "Generated receivables use the same payment evidence, reconciliation, and income-counting controls.",
+            "Pause stops future generation; ending a template is permanent and preserves its history.",
+            f"Each run is limited to {RECURRING_GENERATION_MAX_OCCURRENCES_PER_RUN} occurrences per template.",
+        ],
+    }
+
+
+def update_recurring_revenue_template_status(
+    data_dir: Path,
+    template_id: int,
+    status: str,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_status = status.strip().lower().replace("-", "_")
+    if normalized_status not in RECURRING_REVENUE_STATUSES:
+        choices = ", ".join(sorted(RECURRING_REVENUE_STATUSES))
+        raise DivineToolError(f"Recurring template status must be one of: {choices}.")
+    updated = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT t.*, COUNT(o.id) AS generated_count,
+                   COALESCE(MAX(o.occurrence_number), 0) AS last_occurrence_number,
+                   COALESCE(SUM(r.gbp_minor), 0) AS generated_value_minor
+            FROM recurring_revenue_templates t
+            LEFT JOIN recurring_receivable_occurrences o ON o.template_id = t.id
+            LEFT JOIN receivables r ON r.id = o.receivable_id AND r.temple_id = o.temple_id
+            WHERE t.id = ? AND t.temple_id = ?
+            GROUP BY t.id
+            """,
+            (template_id, scoped_temple_id),
+        ).fetchone()
+        if row is None:
+            raise DivineToolError(f"Recurring template #{template_id} was not found.")
+        current = recurring_template_to_dict(row)
+        if str(row["status"]) == "ended" and normalized_status != "ended":
+            raise DivineToolError("Ended recurring templates cannot be reactivated; create a replacement template.")
+        if normalized_status != "ended" and bool(current["schedule_complete"]):
+            raise DivineToolError("This recurring schedule is complete and cannot be changed or resumed.")
+        conn.execute(
+            "UPDATE recurring_revenue_templates SET status = ?, updated_at = ? WHERE id = ? AND temple_id = ?",
+            (normalized_status, updated, template_id, scoped_temple_id),
+        )
+        updated_row = conn.execute(
+            """
+            SELECT t.*, COUNT(o.id) AS generated_count,
+                   COALESCE(MAX(o.occurrence_number), 0) AS last_occurrence_number,
+                   COALESCE(SUM(r.gbp_minor), 0) AS generated_value_minor
+            FROM recurring_revenue_templates t
+            LEFT JOIN recurring_receivable_occurrences o ON o.template_id = t.id
+            LEFT JOIN receivables r ON r.id = o.receivable_id AND r.temple_id = o.temple_id
+            WHERE t.id = ? AND t.temple_id = ?
+            GROUP BY t.id
+            """,
+            (template_id, scoped_temple_id),
+        ).fetchone()
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Recurring template #{template_id} marked {normalized_status}",
+        "recurring_revenue",
+        temple_id=scoped_temple_id,
+    )
+    return recurring_template_to_dict(updated_row)
 
 
 def normalize_reconciliation_provider(value: str) -> str:
@@ -7484,11 +8223,11 @@ def generate_upgrades(
     report = report if report is not None else status_report(data_dir, today, temple_id=temple_id)
     if report["remaining_minor"] == 0:
         return [
-            "Model retainers and recurring receivables for predictable monthly revenue.",
             "Forecast expected cash dates from open receivables and historical payment timing.",
-            "Review reminder outcomes and tune cadence timing without weakening human approval.",
-            "Add client-specific cadence templates for recurring collection patterns.",
-            "Compare collection speed before and after completed reminders.",
+            "Compare best, expected, and delayed collection scenarios without treating forecasts as cash.",
+            "Measure the quota gap against both booked recurring value and collected income.",
+            "Review renewal-risk templates before their notice windows close.",
+            "Tune generation lead windows using actual invoicing and collection timing.",
         ]
     return [
         "Quota is not satisfied yet, so upgrades stay focused on revenue recovery.",
@@ -7548,6 +8287,13 @@ def generate_report(
         limit=25,
         today=today,
         temple_id=scoped_temple_id,
+    )
+    recurring_revenue = recurring_revenue_summary(
+        data_dir,
+        limit=25,
+        today=today,
+        temple_id=scoped_temple_id,
+        state_ready=True,
     )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
@@ -7615,6 +8361,7 @@ def generate_report(
         "receivables": receivables,
         "reconciliation": reconciliation,
         "follow_ups": follow_ups,
+        "recurring_revenue": recurring_revenue,
         "revenue_rules": revenue_rules,
         "opportunities": opportunities[:5],
         "upgrade_recommendations": upgrades,
@@ -7678,6 +8425,12 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         today=snapshot_date,
         temple_id=active_temple_id,
     )
+    recurring_revenue = recurring_revenue_summary(
+        data_dir,
+        today=snapshot_date,
+        temple_id=active_temple_id,
+        state_ready=True,
+    )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
             channel.get("name", "Revenue channel")
@@ -7740,6 +8493,7 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         "receivables": receivables,
         "reconciliation": reconciliation,
         "follow_ups": follow_ups,
+        "recurring_revenue": recurring_revenue,
         "revenue_rules": revenue_rules,
         "temples": temples,
     }
@@ -7879,6 +8633,36 @@ def format_report_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append("- No receivables are overdue or due soon.")
+
+    recurring = report["recurring_revenue"]
+    lines.extend(["", "## Retainers And Recurring Revenue", ""])
+    lines.append(
+        f"- Active templates: {recurring['active_count']} of {recurring['total_count']}; "
+        f"normalized monthly recurring value: {recurring['monthly_recurring_revenue']}."
+    )
+    lines.append(
+        f"- Expected billing: {recurring['expected_30_days']} in the next 30 days and "
+        f"{recurring['expected_90_days']} in the next 90 days; these are scheduled receivables, not collected cash."
+    )
+    lines.append(
+        f"- Generation queue: {recurring['generation_due_count']} template(s) ready; "
+        f"renewal risks: {recurring['renewal_risk_count']}."
+    )
+    if recurring["renewal_risks"]:
+        for item in recurring["renewal_risks"][:5]:
+            timing = (
+                f"{abs(int(item['days_to_renewal']))} day(s) overdue"
+                if int(item["days_to_renewal"]) < 0
+                else f"in {item['days_to_renewal']} day(s)"
+            )
+            lines.append(
+                f"- Renewal review: {item['name']} - {item['client']} ({item['gbp_value']} {item['cadence_label'].lower()}) "
+                f"renews {timing}."
+            )
+    elif recurring["total_count"]:
+        lines.append("- No recurring templates are inside their renewal notice window.")
+    else:
+        lines.append("- No recurring revenue templates have been created.")
 
     reconciliation = report["reconciliation"]
     lines.extend(["", "## Payment Reconciliation", ""])
@@ -8089,12 +8873,15 @@ def run_worker_cycle(
     command_outcomes: list[dict[str, Any]] = []
     rule_temples: list[dict[str, Any]] = []
     follow_up_temples: list[dict[str, Any]] = []
+    recurring_temples: list[dict[str, Any]] = []
     try:
         command_outcomes = process_command_inbox_detailed(data_dir)
         config = load_config(data_dir)
         temples = config.get("temples", []) or [{"id": DEFAULT_TEMPLE_ID}]
         for temple in temples:
             temple_id = str(temple.get("id") or DEFAULT_TEMPLE_ID)
+            recurring = process_recurring_revenue(data_dir, temple_id=temple_id)
+            recurring_temples.append(recurring)
             rules = revenue_rules_summary(data_dir, temple_id=temple_id)
             evaluated_count = record_revenue_rule_runs(data_dir, rules, temple_id=temple_id)
             follow_ups = process_follow_up_cadences(data_dir, temple_id=temple_id)
@@ -8120,6 +8907,12 @@ def run_worker_cycle(
                 "outcomes": command_outcomes[:25],
             },
             "rules": {"evaluated": 0, "triggered": 0, "blocked": 0, "temples": rule_temples},
+            "recurring_revenue": {
+                "evaluated": sum(int(item.get("evaluated", 0)) for item in recurring_temples),
+                "generated": sum(int(item.get("generated", 0)) for item in recurring_temples),
+                "blocked": sum(int(item.get("blocked", 0)) for item in recurring_temples),
+                "temples": recurring_temples,
+            },
             "follow_ups": {
                 "evaluated": sum(int(item.get("evaluated", 0)) for item in follow_up_temples),
                 "drafted": sum(int(item.get("drafted", 0)) for item in follow_up_temples),
@@ -8152,6 +8945,15 @@ def run_worker_cycle(
     approvals_required = sum(item["approval_required"] for item in rule_temples)
     pending_approvals = sum(item["pending_approvals"] for item in rule_temples)
     blocked_rules = sum(item["blocked"] for item in rule_temples)
+    recurring_evaluated = sum(int(item.get("evaluated", 0)) for item in recurring_temples)
+    recurring_generated = sum(int(item.get("generated", 0)) for item in recurring_temples)
+    recurring_blocked = sum(int(item.get("blocked", 0)) for item in recurring_temples)
+    recurring_failures = [
+        result
+        for temple in recurring_temples
+        for result in temple.get("results", [])
+        if result.get("status") == "blocked"
+    ]
     follow_ups_evaluated = sum(int(item.get("evaluated", 0)) for item in follow_up_temples)
     follow_ups_drafted = sum(int(item.get("drafted", 0)) for item in follow_up_temples)
     follow_ups_suppressed = sum(int(item.get("suppressed", 0)) for item in follow_up_temples)
@@ -8170,6 +8972,12 @@ def run_worker_cycle(
             "blocked": blocked_rules,
             "temples": rule_temples,
         },
+        "recurring_revenue": {
+            "evaluated": recurring_evaluated,
+            "generated": recurring_generated,
+            "blocked": recurring_blocked,
+            "temples": recurring_temples,
+        },
         "follow_ups": {
             "evaluated": follow_ups_evaluated,
             "drafted": follow_ups_drafted,
@@ -8183,10 +8991,16 @@ def run_worker_cycle(
         "failures": [
             {"type": "command", "message": str(item.get("error") or item["message"])}
             for item in command_failures[:10]
+        ]
+        + [
+            {"type": "recurring_revenue", "message": str(item.get("reason") or "Recurring generation blocked.")}
+            for item in recurring_failures[:10]
         ],
     }
-    status = "partial" if command_failures else "succeeded"
-    error_summary = "; ".join(str(item.get("error") or item["message"]) for item in command_failures[:5])
+    status = "partial" if command_failures or recurring_failures else "succeeded"
+    error_summary_parts = [str(item.get("error") or item["message"]) for item in command_failures[:5]]
+    error_summary_parts.extend(str(item.get("reason") or "Recurring generation blocked.") for item in recurring_failures[:5])
+    error_summary = "; ".join(error_summary_parts)
     cycle = finish_worker_cycle(
         data_dir,
         cycle_id,
@@ -8201,6 +9015,7 @@ def run_worker_cycle(
             f"Worker cycle #{cycle_id} {status} via {normalized_trigger}: "
             f"{outcome['commands']['succeeded']}/{outcome['commands']['total']} commands; "
             f"{rules_triggered}/{rules_evaluated} rules triggered; "
+            f"{recurring_generated}/{recurring_evaluated} recurring receivable(s); "
             f"{follow_ups_drafted}/{follow_ups_evaluated} follow-up draft(s); "
             f"{approvals_required} approval gate(s)"
         ),

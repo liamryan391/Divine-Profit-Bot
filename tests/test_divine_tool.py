@@ -34,6 +34,7 @@ from divine_tool.core import (
     create_account,
     create_approval_draft,
     create_lead,
+    create_recurring_revenue_template,
     create_receivable,
     create_revenue_rule,
     create_session,
@@ -65,6 +66,7 @@ from divine_tool.core import (
     parse_money_to_minor,
     process_command_inbox,
     process_follow_up_cadences,
+    process_recurring_revenue,
     record_lead_conversion,
     record_follow_up_outcome,
     record_receivable_payment,
@@ -79,6 +81,8 @@ from divine_tool.core import (
     queue_receivable_reminder,
     receivables_summary,
     reconciliation_summary,
+    recurring_occurrence_date,
+    recurring_revenue_summary,
     set_mood,
     set_quota,
     status_report,
@@ -89,6 +93,7 @@ from divine_tool.core import (
     update_client_contact_state,
     update_follow_up_cadence,
     update_receivable_status,
+    update_recurring_revenue_template_status,
     update_revenue_rule,
     worker_status,
 )
@@ -406,6 +411,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Revenue Rules", js_body)
                     self.assertIn(b"Receivables Pipeline", js_body)
                     self.assertIn(b"Collection Queue", js_body)
+                    self.assertIn(b"Retainers And Recurring Revenue", js_body)
+                    self.assertIn(b"Recurring Templates", js_body)
                     self.assertIn(b"Payment Reconciliation", js_body)
                     self.assertIn(b"Follow-Up Cadences", js_body)
                     self.assertIn(b"Reminder History", js_body)
@@ -420,6 +427,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"/api/revenue-rules", js_body)
                     self.assertIn(b"/api/receivables", js_body)
                     self.assertIn(b"/api/receivables/payment", js_body)
+                    self.assertIn(b"/api/recurring-revenue/templates", js_body)
+                    self.assertIn(b"/api/recurring-revenue/run", js_body)
                     self.assertIn(b"/api/reconciliation/import", js_body)
                     self.assertIn(b"/api/follow-ups/cadence", js_body)
                     self.assertIn(b"/api/follow-ups/run", js_body)
@@ -963,6 +972,114 @@ class DivineToolTests(unittest.TestCase):
                 ) as response:
                     summary = json.loads(response.read().decode("utf-8"))["follow_ups"]
                 self.assertEqual(summary["metrics"]["no_response_count"], 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_recurring_web_api_requires_auth_and_worker_preserves_accounting_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            session = create_session(data_dir, "creator", "strong-pass-123")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            headers = {
+                "Content-Type": "application/json",
+                "Cookie": f"divine_session={session['token']}",
+            }
+
+            def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+                request = Request(
+                    f"{base_url}{path}",
+                    data=json.dumps(payload).encode("utf-8"),
+                    method="POST",
+                    headers=headers,
+                )
+                with urlopen(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            try:
+                with self.assertRaises(HTTPError) as unauthenticated:
+                    urlopen(f"{base_url}/api/recurring-revenue")
+                self.assertEqual(unauthenticated.exception.code, 401)
+                unauthenticated.exception.close()
+
+                created = post(
+                    "/api/recurring-revenue/templates",
+                    {
+                        "name": "API Retainer",
+                        "kind": "retainer",
+                        "client": "API Client",
+                        "reference_prefix": "API-RET",
+                        "amount": "250",
+                        "cadence": "monthly",
+                        "start_on": date.today().isoformat(),
+                        "payment_terms_days": 14,
+                        "generate_ahead_days": 7,
+                    },
+                )
+                template_id = int(created["id"])
+                self.assertTrue(created["ok"])
+                self.assertEqual(created["state"]["recurring_revenue"]["active_count"], 1)
+
+                generated = post("/api/recurring-revenue/run", {})
+                self.assertEqual(generated["run"]["generated"], 1)
+                occurrence = generated["state"]["recurring_revenue"]["recent_occurrences"][0]
+                self.assertEqual(occurrence["recurring_template_id"], template_id)
+                self.assertEqual(occurrence["recurring_occurrence_number"], 1)
+
+                paused = post(
+                    f"/api/recurring-revenue/templates/{template_id}/status",
+                    {"status": "paused"},
+                )
+                self.assertEqual(paused["template"]["status"], "paused")
+                resumed = post(
+                    f"/api/recurring-revenue/templates/{template_id}/status",
+                    {"status": "active"},
+                )
+                self.assertEqual(resumed["template"]["status"], "active")
+
+                worker_template = post(
+                    "/api/recurring-revenue/templates",
+                    {
+                        "name": "Worker Subscription",
+                        "kind": "subscription",
+                        "client": "Worker Client",
+                        "reference_prefix": "WORKER-SUB",
+                        "amount": "75",
+                        "cadence": "monthly",
+                        "start_on": date.today().isoformat(),
+                    },
+                )
+                cycle = run_worker_cycle(data_dir, trigger="test", worker_name="daemon")
+                self.assertEqual(cycle["outcome"]["recurring_revenue"]["evaluated"], 2)
+                self.assertEqual(cycle["outcome"]["recurring_revenue"]["generated"], 1)
+
+                with urlopen(
+                    Request(
+                        f"{base_url}/api/recurring-revenue",
+                        headers={"Cookie": f"divine_session={session['token']}"},
+                    )
+                ) as response:
+                    summary = json.loads(response.read().decode("utf-8"))["recurring_revenue"]
+                self.assertEqual(summary["generated_receivable_count"], 2)
+                self.assertEqual(summary["total_count"], 2)
+                self.assertEqual(
+                    {item["recurring_template_id"] for item in summary["recent_occurrences"]},
+                    {template_id, int(worker_template["id"])},
+                )
+
+                ended = post(
+                    f"/api/recurring-revenue/templates/{template_id}/status",
+                    {"status": "ended"},
+                )
+                self.assertEqual(ended["template"]["status"], "ended")
+                with closing(connect(data_dir)) as conn:
+                    self.assertEqual(int(conn.execute("SELECT COUNT(*) FROM receivable_payments").fetchone()[0]), 0)
+                    self.assertEqual(int(conn.execute("SELECT COUNT(*) FROM income").fetchone()[0]), 0)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1605,6 +1722,141 @@ class DivineToolTests(unittest.TestCase):
             self.assertCountEqual(reminder_outcomes, ["queued", "blocked"])
             self.assertEqual(approvals["counts"]["pending"], 1)
 
+    def test_recurring_generation_is_bounded_idempotent_and_concurrency_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            template_id = create_recurring_revenue_template(
+                data_dir,
+                name="Month End Retainer",
+                kind="retainer",
+                client="Anchor Client",
+                reference_prefix="anchor-retainer",
+                amount_minor=parse_money_to_minor("100"),
+                cadence="monthly",
+                start_on=date(2026, 3, 31),
+                payment_terms_days=14,
+                generate_ahead_days=7,
+                total_occurrences=3,
+            )
+
+            self.assertEqual(recurring_occurrence_date(date(2026, 1, 31), "monthly", 2), date(2026, 2, 28))
+            self.assertEqual(recurring_occurrence_date(date(2026, 1, 31), "monthly", 3), date(2026, 3, 31))
+
+            first = process_recurring_revenue(data_dir, today=date(2026, 3, 24))
+            repeated = process_recurring_revenue(data_dir, today=date(2026, 3, 24))
+            self.assertEqual(first["generated"], 1)
+            self.assertEqual(repeated["generated"], 0)
+
+            barrier = threading.Barrier(2)
+            outcomes: list[int] = []
+
+            def generate_april() -> None:
+                barrier.wait()
+                outcomes.append(process_recurring_revenue(data_dir, today=date(2026, 4, 23))["generated"])
+
+            threads = [threading.Thread(target=generate_april), threading.Thread(target=generate_april)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            self.assertCountEqual(outcomes, [1, 0])
+            summary = recurring_revenue_summary(data_dir, today=date(2026, 4, 23))
+            self.assertEqual(summary["generated_receivable_count"], 2)
+            self.assertEqual(summary["rows"][0]["next_issue_on"], "2026-05-31")
+            self.assertEqual(summary["rows"][0]["remaining_occurrences"], 1)
+            receivables = receivables_summary(data_dir, today=date(2026, 4, 23))["rows"]
+            self.assertEqual(sorted(item["recurring_occurrence_number"] for item in receivables), [1, 2])
+            self.assertEqual({item["recurring_template_id"] for item in receivables}, {template_id})
+            self.assertEqual({item["due_on"] for item in receivables}, {"2026-04-14", "2026-05-14"})
+
+            update_recurring_revenue_template_status(data_dir, template_id, "paused")
+            paused = process_recurring_revenue(data_dir, today=date(2026, 5, 24))
+            self.assertEqual(paused["generated"], 0)
+            self.assertEqual(paused["results"][0]["status"], "paused")
+
+            update_recurring_revenue_template_status(data_dir, template_id, "active")
+            completed = process_recurring_revenue(data_dir, today=date(2026, 5, 24))
+            self.assertEqual(completed["generated"], 1)
+            self.assertEqual(recurring_revenue_summary(data_dir, today=date(2026, 5, 24))["ended_count"], 1)
+            with self.assertRaises(DivineToolError):
+                update_recurring_revenue_template_status(data_dir, template_id, "active")
+
+            with closing(connect(data_dir)) as conn:
+                occurrence_count = int(conn.execute("SELECT COUNT(*) FROM recurring_receivable_occurrences").fetchone()[0])
+                payment_count = int(conn.execute("SELECT COUNT(*) FROM receivable_payments").fetchone()[0])
+                income_count = int(conn.execute("SELECT COUNT(*) FROM income").fetchone()[0])
+            self.assertEqual(occurrence_count, 3)
+            self.assertEqual(payment_count, 0)
+            self.assertEqual(income_count, 0)
+
+    def test_recurring_revenue_visibility_and_renewal_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            today = date(2026, 9, 1)
+            create_recurring_revenue_template(
+                data_dir,
+                name="Operations Retainer",
+                kind="retainer",
+                client="Retainer Client",
+                reference_prefix="OPS",
+                amount_minor=parse_money_to_minor("1200"),
+                cadence="monthly",
+                start_on=date(2026, 9, 15),
+                renewal_on=date(2026, 9, 20),
+                renewal_notice_days=30,
+            )
+            paused_id = create_recurring_revenue_template(
+                data_dir,
+                name="Quarterly Subscription",
+                kind="subscription",
+                client="Subscription Client",
+                reference_prefix="SUB",
+                amount_minor=parse_money_to_minor("900"),
+                cadence="quarterly",
+                start_on=date(2026, 10, 1),
+            )
+            create_recurring_revenue_template(
+                data_dir,
+                name="Four Part Plan",
+                kind="instalment",
+                client="Instalment Client",
+                reference_prefix="PLAN",
+                amount_minor=parse_money_to_minor("100"),
+                cadence="weekly",
+                start_on=date(2026, 9, 8),
+                total_occurrences=4,
+            )
+            update_recurring_revenue_template_status(data_dir, paused_id, "paused")
+
+            summary = recurring_revenue_summary(data_dir, today=today)
+            self.assertEqual(summary["active_count"], 2)
+            self.assertEqual(summary["paused_count"], 1)
+            self.assertEqual(summary["monthly_recurring_revenue_minor"], 163333)
+            self.assertEqual(summary["expected_30_days_minor"], 160000)
+            self.assertEqual(summary["expected_90_days_minor"], 400000)
+            self.assertEqual(summary["finite_remaining_value_minor"], 40000)
+            self.assertEqual(summary["renewal_risk_count"], 1)
+            self.assertEqual(summary["renewal_risks"][0]["name"], "Operations Retainer")
+            self.assertTrue(all(item["template_name"] != "Quarterly Subscription" for item in summary["upcoming"]))
+
+            report = generate_report(data_dir, period_name="month", today=today)
+            self.assertIn("## Retainers And Recurring Revenue", report["markdown"])
+            self.assertIn("scheduled receivables, not collected cash", report["markdown"])
+            self.assertEqual(report["recurring_revenue"]["monthly_recurring_revenue_minor"], 163333)
+
+            with self.assertRaises(DivineToolError):
+                create_recurring_revenue_template(
+                    data_dir,
+                    name="Unbounded Instalments",
+                    kind="instalment",
+                    client="Unsafe Client",
+                    reference_prefix="UNSAFE",
+                    amount_minor=parse_money_to_minor("50"),
+                    cadence="monthly",
+                    start_on=today,
+                )
+
     def test_follow_up_cadence_is_idempotent_and_honors_client_suppression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -2026,6 +2278,16 @@ class DivineToolTests(unittest.TestCase):
             self.assertEqual([row["version"] for row in status["migrations"]], list(range(1, LATEST_SCHEMA_VERSION + 1)))
 
             with closing(connect(data_dir)) as conn:
+                recurring_tables = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'recurring_%'"
+                    )
+                }
+                self.assertEqual(
+                    recurring_tables,
+                    {"recurring_revenue_templates", "recurring_receivable_occurrences"},
+                )
                 with self.assertRaises(sqlite3.IntegrityError):
                     conn.execute(
                         """

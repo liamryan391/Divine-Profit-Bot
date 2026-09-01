@@ -32,6 +32,7 @@ from .core import (
     create_approval_draft,
     create_lead,
     create_receivable,
+    create_recurring_revenue_template,
     create_revenue_rule,
     create_temple,
     confirm_reconciliation_match,
@@ -60,10 +61,12 @@ from .core import (
     parse_date,
     parse_money_to_minor,
     process_follow_up_cadences,
+    process_recurring_revenue,
     record_follow_up_outcome,
     record_lead_conversion,
     record_receivable_payment,
     receivables_summary,
+    recurring_revenue_summary,
     reconciliation_summary,
     revenue_rules_summary,
     run_worker_cycle,
@@ -77,6 +80,7 @@ from .core import (
     temple_summary,
     update_lead,
     update_receivable_status,
+    update_recurring_revenue_template_status,
     update_revenue_rule,
     update_account_profile,
     update_client_contact_state,
@@ -244,6 +248,11 @@ def make_handler(
                     query = parse_qs(parsed.query)
                     limit = int(query.get("limit", ["60"])[0])
                     self.send_json({"follow_ups": follow_up_summary(data_dir, limit=limit)})
+                    return
+                if parsed.path == "/api/recurring-revenue":
+                    query = parse_qs(parsed.query)
+                    limit = int(query.get("limit", ["60"])[0])
+                    self.send_json({"recurring_revenue": recurring_revenue_summary(data_dir, limit=limit)})
                     return
                 if parsed.path == "/api/revenue-rules/summary":
                     self.send_json({"revenue_rules": revenue_rules_summary(data_dir)})
@@ -511,6 +520,61 @@ def make_handler(
                         today=parse_date(payload["date"]) if payload.get("date") else None,
                     )
                     self.send_json({"ok": True, "run": run, "state": dashboard_payload(data_dir, account)})
+                    return
+                if parsed.path == "/api/recurring-revenue/templates":
+                    template_id = create_recurring_revenue_template(
+                        data_dir,
+                        name=str(payload["name"]),
+                        kind=str(payload["kind"]),
+                        client=str(payload["client"]),
+                        reference_prefix=str(payload["reference_prefix"]),
+                        amount_minor=parse_money_to_minor(payload["amount"]),
+                        cadence=str(payload.get("cadence", "monthly")),
+                        start_on=parse_date(payload["start_on"]),
+                        currency=str(payload.get("currency", "GBP")),
+                        gbp_minor=parse_money_to_minor(payload["gbp_equivalent"])
+                        if payload.get("gbp_equivalent")
+                        else None,
+                        description=str(payload.get("description", "")),
+                        payment_terms_days=int(payload.get("payment_terms_days", 14)),
+                        generate_ahead_days=int(payload.get("generate_ahead_days", 7)),
+                        end_on=parse_date(payload["end_on"]) if payload.get("end_on") else None,
+                        renewal_on=parse_date(payload["renewal_on"])
+                        if payload.get("renewal_on")
+                        else None,
+                        renewal_notice_days=int(payload.get("renewal_notice_days", 30)),
+                        total_occurrences=int(payload["total_occurrences"])
+                        if payload.get("total_occurrences")
+                        else None,
+                        notes=str(payload.get("notes", "")),
+                    )
+                    self.send_json(
+                        {"ok": True, "id": template_id, "state": dashboard_payload(data_dir, account)}
+                    )
+                    return
+                if parsed.path == "/api/recurring-revenue/run":
+                    run = process_recurring_revenue(
+                        data_dir,
+                        today=parse_date(payload["date"]) if payload.get("date") else None,
+                        template_id=int(payload["template_id"]) if payload.get("template_id") else None,
+                    )
+                    self.send_json({"ok": True, "run": run, "state": dashboard_payload(data_dir, account)})
+                    return
+                recurring_parts = recurring_revenue_path_parts(parsed.path)
+                if (
+                    recurring_parts
+                    and len(recurring_parts) == 3
+                    and recurring_parts[0] == "templates"
+                    and recurring_parts[2] == "status"
+                ):
+                    template = update_recurring_revenue_template_status(
+                        data_dir,
+                        template_id=int(recurring_parts[1]),
+                        status=str(payload["status"]),
+                    )
+                    self.send_json(
+                        {"ok": True, "template": template, "state": dashboard_payload(data_dir, account)}
+                    )
                     return
                 follow_up_parts = follow_up_path_parts(parsed.path)
                 if follow_up_parts and len(follow_up_parts) == 2 and follow_up_parts[1] == "outcome":
@@ -1061,6 +1125,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "receivables": snapshot["receivables"],
         "reconciliation": snapshot["reconciliation"],
         "follow_ups": snapshot["follow_ups"],
+        "recurring_revenue": snapshot["recurring_revenue"],
         "revenue_rules": snapshot["revenue_rules"],
         "temples": snapshot["temples"],
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
@@ -1179,6 +1244,15 @@ def follow_up_path_parts(path: str) -> list[str] | None:
     if not path.startswith("/api/follow-ups/"):
         return None
     parts = [part for part in path.removeprefix("/api/follow-ups/").split("/") if part]
+    if not parts:
+        return None
+    return parts
+
+
+def recurring_revenue_path_parts(path: str) -> list[str] | None:
+    if not path.startswith("/api/recurring-revenue/"):
+        return None
+    parts = [part for part in path.removeprefix("/api/recurring-revenue/").split("/") if part]
     if not parts:
         return None
     return parts
