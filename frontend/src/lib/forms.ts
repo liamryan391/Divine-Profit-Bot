@@ -144,11 +144,19 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateReceivablePayment(form, issues);
   }
 
+  if (workflowKey.startsWith("/api/reconciliation/") && workflowKey.endsWith("/confirm")) {
+    requireText(form, issues, "receivable_id", "Receivable");
+  }
+
+  if (workflowKey.startsWith("/api/reconciliation/") && workflowKey.endsWith("/ignore")) {
+    requireMinLength(form, issues, "reason", "Reason", 3);
+  }
+
   if (workflowKey === "/api/revenue-rules") {
     validateRevenueRule(form, issues);
   }
 
-  if (workflowKey === "import") {
+  if (workflowKey === "import" || workflowKey === "reconciliation-import") {
     const file = fileOf(form, "file");
     if (!file) {
       issues.push({ field: "file", label: "CSV File", message: "Choose a CSV file first." });

@@ -38,6 +38,7 @@ from divine_tool.core import (
     create_revenue_rule,
     create_session,
     create_temple,
+    confirm_reconciliation_match,
     connect,
     database_status,
     destroy_session,
@@ -47,6 +48,8 @@ from divine_tool.core import (
     generate_opportunities,
     generate_report,
     import_income_csv,
+    import_reconciliation_csv,
+    ignore_reconciliation_transaction,
     lead_conversion_summary,
     lead_pipeline_summary,
     list_approval_actions,
@@ -72,6 +75,7 @@ from divine_tool.core import (
     review_approval_action,
     queue_receivable_reminder,
     receivables_summary,
+    reconciliation_summary,
     set_mood,
     set_quota,
     status_report,
@@ -397,6 +401,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Revenue Rules", js_body)
                     self.assertIn(b"Receivables Pipeline", js_body)
                     self.assertIn(b"Collection Queue", js_body)
+                    self.assertIn(b"Payment Reconciliation", js_body)
+                    self.assertIn(b"Human Review Queue", js_body)
                     self.assertIn(b"Worker Operations", js_body)
                     self.assertIn(b"Recent Worker Cycles", js_body)
                     self.assertIn(b"Restart the web server", js_body)
@@ -407,6 +413,7 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"/api/revenue-rules", js_body)
                     self.assertIn(b"/api/receivables", js_body)
                     self.assertIn(b"/api/receivables/payment", js_body)
+                    self.assertIn(b"/api/reconciliation/import", js_body)
                     self.assertIn(b"/api/worker/status", js_body)
                     self.assertIn(b"/api/daemon/run-once", js_body)
 
@@ -785,6 +792,84 @@ class DivineToolTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_reconciliation_web_api_imports_and_confirms_with_authentication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            session = create_session(data_dir, "creator", "strong-pass-123")
+            receivable_id = create_receivable(
+                data_dir,
+                client="API Buyer",
+                reference="INV-API-RECON-001",
+                amount_minor=parse_money_to_minor("80"),
+                due_on=date.today() + timedelta(days=7),
+                issued_on=date.today(),
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            json_headers = {
+                "Content-Type": "application/json",
+                "Cookie": f"divine_session={session['token']}",
+            }
+            auth_headers = {"Cookie": f"divine_session={session['token']}"}
+            try:
+                import_body = json.dumps(
+                    {
+                        "csv_text": (
+                            "Date,Amount,Currency,Reference,Payer,Description\n"
+                            f"{date.today().isoformat()},80.00,GBP,API-PAY-001,API Buyer,INV-API-RECON-001\n"
+                        ),
+                        "provider": "bank",
+                        "filename": "api-bank.csv",
+                        "dry_run": False,
+                    }
+                ).encode("utf-8")
+                with urlopen(
+                    Request(
+                        f"{base_url}/api/reconciliation/import",
+                        data=import_body,
+                        method="POST",
+                        headers=json_headers,
+                    )
+                ) as response:
+                    imported = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(imported["ok"])
+                self.assertEqual(imported["reconciliation_import"]["imported_count"], 1)
+                self.assertEqual(imported["state"]["reconciliation"]["suggested_count"], 1)
+                transaction_id = imported["state"]["reconciliation"]["rows"][0]["id"]
+
+                confirm_body = json.dumps(
+                    {"receivable_id": receivable_id, "count_as_income": True, "note": "API human confirmation"}
+                ).encode("utf-8")
+                with urlopen(
+                    Request(
+                        f"{base_url}/api/reconciliation/{transaction_id}/confirm",
+                        data=confirm_body,
+                        method="POST",
+                        headers=json_headers,
+                    )
+                ) as response:
+                    confirmed = json.loads(response.read().decode("utf-8"))
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["transaction"]["status"], "matched")
+                self.assertEqual(confirmed["transaction"]["income_treatment"], "counted")
+                self.assertEqual(confirmed["receivable"]["state"], "paid")
+                self.assertTrue(confirmed["payment"]["counted_as_income"])
+
+                with urlopen(Request(f"{base_url}/api/reconciliation", headers=auth_headers)) as response:
+                    summary = json.loads(response.read().decode("utf-8"))["reconciliation"]
+                self.assertEqual(summary["matched_count"], 1)
+                self.assertEqual(summary["review_count"], 0)
+                self.assertEqual(summary["recent_decisions"][0]["action"], "confirmed")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_api_request_body_limits_reject_oversized_json_and_csv_before_reading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -796,6 +881,7 @@ class DivineToolTests(unittest.TestCase):
                 for path, limit in (
                     ("/api/auth/login", MAX_JSON_BODY_BYTES),
                     ("/api/import/csv", MAX_CSV_IMPORT_BODY_BYTES),
+                    ("/api/reconciliation/import", MAX_CSV_IMPORT_BODY_BYTES),
                 ):
                     connection = HTTPConnection("127.0.0.1", server.server_port, timeout=3)
                     try:
@@ -1420,6 +1506,180 @@ class DivineToolTests(unittest.TestCase):
             approvals = approval_queue_summary(data_dir)
             self.assertCountEqual(reminder_outcomes, ["queued", "blocked"])
             self.assertEqual(approvals["counts"]["pending"], 1)
+
+    def test_reconciliation_import_scores_confirms_and_preserves_idempotency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            receivable_id = create_receivable(
+                data_dir,
+                client="Acme Limited",
+                reference="INV-RECON-001",
+                amount_minor=parse_money_to_minor("125"),
+                due_on=date(2026, 9, 7),
+                issued_on=date(2026, 8, 31),
+            )
+            csv_text = (
+                "Date,Amount,Currency,Reference,Payer,Description,Direction\n"
+                "2026-09-01,125.00,GBP,BANK-RECON-001,Acme Limited,Payment INV-RECON-001,Credit\n"
+                "2026-09-01,40.00,GBP,BANK-DEBIT-001,Supplier,Subscription,Debit\n"
+            )
+
+            dry_run = import_reconciliation_csv(
+                data_dir,
+                csv_text,
+                provider="bank",
+                dry_run=True,
+                filename="bank-export.csv",
+            )
+            self.assertEqual(dry_run["ready_count"], 1)
+            self.assertEqual(dry_run["skipped_count"], 1)
+            self.assertEqual(reconciliation_summary(data_dir)["total_count"], 0)
+
+            imported = import_reconciliation_csv(
+                data_dir,
+                csv_text,
+                provider="bank",
+                filename="bank-export.csv",
+            )
+            transaction = reconciliation_summary(data_dir)["rows"][0]
+            self.assertEqual(imported["imported_count"], 1)
+            self.assertEqual(transaction["status"], "suggested")
+            self.assertEqual(transaction["suggested_receivable_id"], receivable_id)
+            self.assertEqual(transaction["match_confidence"], 100)
+            self.assertIn("invoice reference appears", " ".join(transaction["match_reasons"]))
+
+            repeated = import_reconciliation_csv(
+                data_dir,
+                csv_text,
+                provider="bank",
+                filename="bank-export.csv",
+            )
+            before_confirm = reconciliation_summary(data_dir)
+            self.assertEqual(repeated["duplicate_count"], 1)
+            self.assertEqual(before_confirm["total_count"], 1)
+            self.assertEqual(before_confirm["recent_batches"][0]["repeated_of_batch_id"], imported["batch_id"])
+
+            result = confirm_reconciliation_match(
+                data_dir,
+                transaction_id=transaction["id"],
+                receivable_id=receivable_id,
+                note="Reference, client, amount, and date all agree",
+            )
+            summary = reconciliation_summary(data_dir)
+            self.assertEqual(result["receivable"]["state"], "paid")
+            self.assertEqual(result["transaction"]["income_treatment"], "not_counted")
+            self.assertEqual(summary["matched_count"], 1)
+            self.assertEqual(summary["review_count"], 0)
+            self.assertEqual(len(list_income(data_dir)), 0)
+            self.assertEqual(summary["recent_decisions"][0]["action"], "confirmed")
+            with closing(connect(data_dir)) as conn:
+                payment = conn.execute(
+                    "SELECT reconciliation_transaction_id FROM receivable_payments WHERE id = ?",
+                    (result["payment"]["id"],),
+                ).fetchone()
+            self.assertEqual(payment["reconciliation_transaction_id"], transaction["id"])
+            with self.assertRaises(DivineToolError):
+                confirm_reconciliation_match(data_dir, transaction["id"], receivable_id)
+
+            report = generate_report(data_dir, period_name="week", today=date(2026, 9, 1))
+            self.assertIn("## Payment Reconciliation", report["markdown"])
+            self.assertEqual(report["reconciliation"]["matched_count"], 1)
+
+    def test_reconciliation_ambiguous_income_choice_ignore_and_concurrency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            first_id = create_receivable(
+                data_dir,
+                client="North Studio",
+                reference="INV-NORTH-001",
+                amount_minor=parse_money_to_minor("50"),
+                due_on=date(2026, 9, 5),
+                issued_on=date(2026, 8, 25),
+            )
+            second_id = create_receivable(
+                data_dir,
+                client="South Studio",
+                reference="INV-SOUTH-001",
+                amount_minor=parse_money_to_minor("50"),
+                due_on=date(2026, 9, 5),
+                issued_on=date(2026, 8, 25),
+            )
+            import_reconciliation_csv(
+                data_dir,
+                "Date,Amount,Currency\n2026-09-05,50.00,GBP\n",
+                provider="generic",
+                filename="ambiguous.csv",
+            )
+            ambiguous = reconciliation_summary(data_dir)["rows"][0]
+            self.assertTrue(ambiguous["ambiguous"])
+            self.assertEqual(ambiguous["match_label"], "ambiguous")
+            self.assertEqual(len(ambiguous["candidates"]), 2)
+
+            counted = confirm_reconciliation_match(
+                data_dir,
+                transaction_id=ambiguous["id"],
+                receivable_id=second_id,
+                count_as_income=True,
+                note="Human selected South Studio",
+            )
+            self.assertEqual(counted["transaction"]["income_treatment"], "counted")
+            self.assertEqual(counted["payment"]["counted_income_id"], list_income(data_dir)[0]["id"])
+            self.assertEqual(counted["receivable"]["id"], second_id)
+
+            import_reconciliation_csv(
+                data_dir,
+                "Date,Amount,Currency,Reference,Description\n2026-09-06,10.00,GBP,TRANSFER-001,Internal transfer\n",
+                provider="bank",
+                filename="transfer.csv",
+            )
+            transfer = next(item for item in reconciliation_summary(data_dir)["rows"] if item["status"] != "matched")
+            ignored = ignore_reconciliation_transaction(
+                data_dir,
+                transfer["id"],
+                "Internal transfer, not customer revenue",
+            )
+            self.assertEqual(ignored["transaction"]["status"], "ignored")
+            self.assertEqual(reconciliation_summary(data_dir)["ignored_count"], 1)
+            with self.assertRaises(DivineToolError):
+                ignore_reconciliation_transaction(data_dir, transfer["id"], "again")
+
+            import_reconciliation_csv(
+                data_dir,
+                "Date,Amount,Currency,Reference,Payer\n2026-09-05,50.00,GBP,CONCURRENT-REC-001,North Studio\n",
+                provider="bank",
+                filename="concurrent.csv",
+            )
+            concurrent = next(
+                item
+                for item in reconciliation_summary(data_dir)["rows"]
+                if item["external_reference"] == "CONCURRENT-REC-001"
+            )
+            barrier = threading.Barrier(2)
+            outcomes: list[str] = []
+
+            def confirm() -> None:
+                barrier.wait()
+                try:
+                    confirm_reconciliation_match(data_dir, concurrent["id"], first_id)
+                    outcomes.append("matched")
+                except DivineToolError:
+                    outcomes.append("blocked")
+
+            threads = [threading.Thread(target=confirm), threading.Thread(target=confirm)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            final = reconciliation_summary(data_dir)
+            self.assertCountEqual(outcomes, ["matched", "blocked"])
+            self.assertEqual(final["matched_count"], 2)
+            with closing(connect(data_dir)) as conn:
+                linked_count = conn.execute(
+                    "SELECT COUNT(*) FROM receivable_payments WHERE reconciliation_transaction_id = ?",
+                    (concurrent["id"],),
+                ).fetchone()[0]
+            self.assertEqual(linked_count, 1)
 
     def test_revenue_rules_evaluate_log_and_report_without_executing_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

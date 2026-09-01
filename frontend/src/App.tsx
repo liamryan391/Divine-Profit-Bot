@@ -24,6 +24,7 @@ import type {
   ExternalSnapshot,
   ImportResult,
   LeadEntry,
+  ReconciliationImportResult,
   ReportPayload,
   RevenueRuleEntry,
   WorkerCycle,
@@ -44,6 +45,7 @@ function App() {
   const [external, setExternal] = useState<ExternalSnapshot | null>(null);
   const [report, setReport] = useState<ReportPayload | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [reconciliationImportResult, setReconciliationImportResult] = useState<ReconciliationImportResult | null>(null);
   const [activeView, setActiveView] = useState<DashboardView>(() =>
     typeof window === "undefined" ? defaultDashboardView : viewFromHash(window.location.hash),
   );
@@ -259,6 +261,8 @@ function App() {
       setDashboard(null);
       setExternal(null);
       setReport(null);
+      setImportResult(null);
+      setReconciliationImportResult(null);
       showToast("Signed out");
     } catch (error) {
       handleApiError(error);
@@ -300,6 +304,8 @@ function App() {
       );
       applyDashboard(payload.state);
       setReport(null);
+      setImportResult(null);
+      setReconciliationImportResult(null);
       await refreshExternalConnections(false);
       showToast(`Temple switched to ${payload.temple.name}`);
     } catch (error) {
@@ -364,6 +370,66 @@ function App() {
       showToast(dryRun?.checked ? "Import dry run complete" : "CSV import complete");
     } catch (error) {
       setWorkflowFeedback("import", { tone: "error", message: errorMessage(error) });
+      handleApiError(error);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function importReconciliationCsv(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!validateBeforeSubmit(form, "reconciliation-import", "Reading payment evidence...")) {
+      return;
+    }
+    const fileInput = form.elements.namedItem("file") as HTMLInputElement | null;
+    const file = fileInput?.files?.[0];
+    if (!file) {
+      return;
+    }
+    if (file.size > MAX_CSV_FILE_BYTES) {
+      setWorkflowFeedback("reconciliation-import", {
+        tone: "error",
+        message: "CSV files must be 4 MiB or smaller.",
+      });
+      showToast("CSV file is too large");
+      return;
+    }
+    const provider = form.elements.namedItem("provider") as HTMLSelectElement | null;
+    const dryRun = form.elements.namedItem("dry_run") as HTMLInputElement | null;
+    if (!dryRun?.checked && !window.confirm("Import these rows as payment evidence? This cannot move money or change an external account.")) {
+      setWorkflowFeedback("reconciliation-import", { tone: "warning", message: "Payment evidence import cancelled." });
+      return;
+    }
+    setBusy("reconciliation-import");
+    try {
+      const payload = await apiRequest<{
+        ok: boolean;
+        reconciliation_import: ReconciliationImportResult;
+        state: DashboardPayload;
+      }>("/api/reconciliation/import", {
+        method: "POST",
+        body: JSON.stringify({
+          csv_text: await file.text(),
+          filename: file.name,
+          provider: provider?.value || "generic",
+          dry_run: Boolean(dryRun?.checked),
+        }),
+      });
+      applyDashboard(payload.state);
+      setReconciliationImportResult(payload.reconciliation_import);
+      setWorkflowFeedback("reconciliation-import", {
+        tone: "success",
+        message: dryRun?.checked ? "Payment evidence dry run complete." : "Payment evidence imported.",
+        details: [
+          `${dryRun?.checked ? payload.reconciliation_import.ready_count : payload.reconciliation_import.imported_count} ${dryRun?.checked ? "ready" : "imported"}`,
+          `${payload.reconciliation_import.duplicate_count} duplicate`,
+          `${payload.reconciliation_import.skipped_count} skipped`,
+        ],
+      });
+      showToast(dryRun?.checked ? "Reconciliation dry run complete" : "Payment evidence imported");
+    } catch (error) {
+      setWorkflowFeedback("reconciliation-import", { tone: "error", message: errorMessage(error) });
       handleApiError(error);
     } finally {
       setBusy("");
@@ -557,10 +623,12 @@ function App() {
         external={external}
         report={reportView}
         importResult={importResult}
+        reconciliationImportResult={reconciliationImportResult}
         busy={busy}
         feedback={formFeedback}
         onJsonForm={(event, path, success, resetForm) => void handleJsonForm(event, path, success, resetForm)}
         onImport={(event) => void importCsv(event)}
+        onReconciliationImport={(event) => void importReconciliationCsv(event)}
         onReviewApproval={reviewApproval}
         onAdvanceLead={advanceLead}
         onRevenueRuleStatus={updateRevenueRuleStatus}

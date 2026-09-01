@@ -3,6 +3,7 @@ import {
   Archive,
   ArrowRight,
   BarChart3,
+  Ban,
   Banknote,
   BellRing,
   Check,
@@ -11,14 +12,17 @@ import {
   ClipboardList,
   Coins,
   Download,
+  FileCheck2,
   FileText,
   Gauge,
   KeyRound,
   Landmark,
+  ListChecks,
   Mail,
   Plus,
   RefreshCcw,
   ReceiptText,
+  SearchCheck,
   Send,
   Settings,
   ShieldAlert,
@@ -39,6 +43,9 @@ import type {
   LeadEntry,
   Opportunity,
   ReceivableEntry,
+  ReconciliationImportResult,
+  ReconciliationReceivableOption,
+  ReconciliationTransaction,
   ReportPayload,
   RevenueRuleEntry,
   RevenueRulesSummary,
@@ -960,6 +967,290 @@ export function ReceivablesPanel({
         </section>
       ) : null}
     </section>
+  );
+}
+
+export function ReconciliationPanel({
+  dashboard,
+  importResult,
+  busy,
+  feedback,
+  onSubmit,
+  onImport,
+}: {
+  dashboard: DashboardPayload;
+  importResult: ReconciliationImportResult | null;
+  busy: string;
+  feedback: WorkflowFeedbackMap;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+  onImport: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const summary = dashboard.reconciliation;
+  if (!summary) {
+    return (
+      <section className="temple-panel mt-4 min-w-0">
+        <div className="section-heading">
+          <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+            <ListChecks aria-hidden="true" className="text-temple-gold" size={20} />
+            Payment Reconciliation
+          </h2>
+          <Badge>Server update required</Badge>
+        </div>
+        <EmptyRow>Restart the web server to load the v3.2 reconciliation API and schema.</EmptyRow>
+      </section>
+    );
+  }
+  const reviewRows = summary.rows.filter((item) => item.can_decide);
+  return (
+    <section className="temple-panel mt-4 min-w-0">
+      <div className="section-heading">
+        <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+          <ListChecks aria-hidden="true" className="text-temple-gold" size={20} />
+          Payment Reconciliation
+        </h2>
+        <Badge>{summary.review_count} awaiting review</Badge>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <MiniMetric label="Awaiting Review" value={`${summary.awaiting_review} - ${summary.review_count}`} />
+        <MiniMetric label="Suggested" value={String(summary.suggested_count)} />
+        <MiniMetric label="Ambiguous" value={String(summary.ambiguous_count)} />
+        <MiniMetric label="Matched" value={`${summary.matched} - ${summary.matched_count}`} />
+      </div>
+
+      <div className="mt-5 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+        <section className="min-w-0">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Import Payment Evidence</h3>
+          <form noValidate className="grid gap-3 sm:grid-cols-2" onSubmit={onImport}>
+            <div className="sm:col-span-2">
+              <Field label="Bank Or Provider CSV" name="file" type="file" accept=".csv,text/csv" required />
+            </div>
+            <SelectField label="Provider" name="provider" defaultValue="bank">
+              <option value="bank">Bank export</option>
+              <option value="stripe">Stripe</option>
+              <option value="paypal">PayPal</option>
+              <option value="square">Square</option>
+              <option value="generic">Generic CSV</option>
+            </SelectField>
+            <label className="flex min-h-11 items-center gap-3 rounded-lg border border-temple-line bg-[#0b1424] px-3 text-sm font-black text-temple-text">
+              <input className="h-5 w-5 accent-[#ffd24a]" type="checkbox" name="dry_run" defaultChecked />
+              Dry run first
+            </label>
+            <div className="sm:col-span-2">
+              <FormNotice feedback={feedback["reconciliation-import"]} />
+            </div>
+            <div className="sm:col-span-2">
+              <Button icon={FileCheck2} disabled={busy === "reconciliation-import"} type="submit">
+                {busy === "reconciliation-import" ? "Reviewing..." : "Review CSV"}
+              </Button>
+            </div>
+          </form>
+          <p className="mt-3 text-sm leading-6 text-temple-muted">
+            Incoming rows need a date and amount. Non-GBP rows also need a GBP equivalent. Debit and refund rows are skipped.
+          </p>
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Latest Import Review</h3>
+          {importResult ? (
+            <div className="grid gap-3">
+              <div className="grid gap-2 sm:grid-cols-4">
+                <MiniMetric label={importResult.dry_run ? "Ready" : "Imported"} value={String(importResult.dry_run ? importResult.ready_count : importResult.imported_count)} />
+                <MiniMetric label="Duplicate" value={String(importResult.duplicate_count)} />
+                <MiniMetric label="Skipped" value={String(importResult.skipped_count)} />
+                <MiniMetric label="Batch" value={importResult.batch_id ? `#${importResult.batch_id}` : "Preview"} />
+              </div>
+              <div className="divide-y divide-temple-line border-y border-temple-line">
+                {importResult.rows.slice(0, 6).map((row, index) => (
+                  <div key={`${row.row_number || index}-${row.id || row.existing_id || row.status}`} className="grid min-w-0 gap-1 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+                    <Badge>{row.status}</Badge>
+                    <span className="min-w-0 break-words text-sm text-temple-muted">
+                      Row {row.row_number || index + 2}: {row.payer || row.reason || "Payment evidence"}
+                    </span>
+                    <strong className="break-words text-sm">
+                      {row.gbp_value || "--"}{row.match_confidence !== undefined ? ` - ${row.match_confidence}/100` : ""}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <EmptyRow>Run a dry review to preview duplicate checks and match scores.</EmptyRow>
+          )}
+        </section>
+      </div>
+
+      <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black uppercase text-temple-muted">Human Review Queue</h3>
+          <Badge>{reviewRows.length} shown</Badge>
+        </div>
+        {reviewRows.length ? (
+          <div className="divide-y divide-temple-line border-y border-temple-line">
+            {reviewRows.map((item) => (
+              <ReconciliationRow
+                key={item.id}
+                item={item}
+                options={summary.receivable_options}
+                busy={busy}
+                feedback={feedback}
+                onSubmit={onSubmit}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyRow>No imported payment evidence is waiting for a decision.</EmptyRow>
+        )}
+      </section>
+
+      <div className="mt-6 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-2">
+        <section className="min-w-0">
+          <h3 className="mb-2 text-sm font-black uppercase text-temple-muted">Recent Decisions</h3>
+          {summary.recent_decisions.length ? (
+            <div className="divide-y divide-temple-line border-y border-temple-line">
+              {summary.recent_decisions.slice(0, 8).map((decision) => (
+                <div key={decision.id} className="grid min-w-0 gap-1 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <strong className="block break-words">{decision.action_label} evidence #{decision.reconciliation_transaction_id}</strong>
+                    <span className="block break-words text-sm text-temple-muted">
+                      {decision.receivable_reference ? `${decision.receivable_reference} - ${decision.receivable_client || "client"}` : decision.note}
+                    </span>
+                  </div>
+                  <Badge>{decision.payment_id ? `Payment #${decision.payment_id}` : "No ledger change"}</Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyRow>No reconciliation decisions recorded yet.</EmptyRow>
+          )}
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <h3 className="mb-2 text-sm font-black uppercase text-temple-muted">Import Audit</h3>
+          {summary.recent_batches.length ? (
+            <div className="divide-y divide-temple-line border-y border-temple-line">
+              {summary.recent_batches.map((batch) => (
+                <div key={batch.id} className="grid min-w-0 gap-1 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <strong className="block break-words">Batch #{batch.id} - {batch.filename || batch.provider}</strong>
+                    <span className="block break-words text-sm text-temple-muted">
+                      {batch.imported_count} imported, {batch.duplicate_count} duplicate, {batch.skipped_count} skipped
+                    </span>
+                  </div>
+                  <Badge>{batch.repeated_of_batch_id ? `Repeat of #${batch.repeated_of_batch_id}` : batch.provider}</Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyRow>No reconciliation import batches recorded yet.</EmptyRow>
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function ReconciliationRow({
+  item,
+  options,
+  busy,
+  feedback,
+  onSubmit,
+}: {
+  item: ReconciliationTransaction;
+  options: ReconciliationReceivableOption[];
+  busy: string;
+  feedback: WorkflowFeedbackMap;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string) => void;
+}) {
+  const confirmPath = `/api/reconciliation/${item.id}/confirm`;
+  const ignorePath = `/api/reconciliation/${item.id}/ignore`;
+  const selectedId = item.suggested_receivable_id && options.some((option) => option.id === item.suggested_receivable_id)
+    ? String(item.suggested_receivable_id)
+    : "";
+  const confirmBusy = busy === confirmPath;
+  const ignoreBusy = busy === ignorePath;
+
+  function confirmMatch(event: FormEvent<HTMLFormElement>) {
+    if (!window.confirm(`Confirm this imported payment against the selected receivable?`)) {
+      event.preventDefault();
+      return;
+    }
+    onSubmit(event, confirmPath, "Payment match confirmed");
+  }
+
+  function ignoreEvidence(event: FormEvent<HTMLFormElement>) {
+    if (!window.confirm("Ignore this imported transaction as non-receivable evidence?")) {
+      event.preventDefault();
+      return;
+    }
+    onSubmit(event, ignorePath, "Payment evidence ignored");
+  }
+
+  return (
+    <article className="grid min-w-0 gap-4 py-5 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <strong className="break-words">#{item.id} {item.external_reference || `${item.provider} transaction`}</strong>
+          <Badge>{item.match_label_display}</Badge>
+          <Badge>{item.match_confidence}/100</Badge>
+        </div>
+        <strong className="mt-2 block break-words text-xl text-temple-green">{item.gbp_value}</strong>
+        <span className="mt-1 block break-words text-sm text-temple-muted">
+          {item.payer || "Unknown payer"} - {shortDate(item.occurred_on)} - {item.provider}
+        </span>
+        {item.description ? <span className="mt-1 block break-words text-sm text-temple-muted">{item.description}</span> : null}
+        <div className="mt-3 h-2 overflow-hidden rounded-lg bg-[#0b1120]" role="progressbar" aria-label={`Match confidence for evidence ${item.id}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.match_confidence}>
+          <div className={cx("h-full", item.ambiguous ? "bg-temple-gold" : item.match_confidence >= 80 ? "bg-temple-green" : "bg-temple-blue")} style={{ width: `${Math.min(item.match_confidence, 100)}%` }} />
+        </div>
+        {item.match_reasons.length ? (
+          <ul className="mt-3 grid gap-1 pl-4 text-sm text-temple-muted">
+            {item.match_reasons.map((reason) => <li key={reason} className="list-disc">{reason}</li>)}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-temple-muted">No receivable reached the suggestion threshold. Choose manually or ignore with a reason.</p>
+        )}
+        {item.candidates.length > 1 ? (
+          <div className="mt-3 grid gap-1 text-sm text-temple-muted">
+            {item.candidates.slice(0, 3).map((candidate) => (
+              <span key={candidate.receivable_id} className="break-words">
+                #{candidate.receivable_id} {candidate.reference} - {candidate.client}: {candidate.score}/100
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="min-w-0 grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(190px,0.7fr)]">
+        <form noValidate className="grid min-w-0 gap-3" onSubmit={confirmMatch}>
+          <SelectField label="Receivable" name="receivable_id" defaultValue={selectedId}>
+            <option value="">Select a receivable</option>
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>
+                #{option.id} {option.reference} - {option.client} - {option.outstanding}{option.already_counted ? " - booked" : ""}
+              </option>
+            ))}
+          </SelectField>
+          <Field label="Decision Note" name="note" placeholder="Why this evidence belongs to the invoice" />
+          <label className="flex min-h-11 items-center gap-3 rounded-lg border border-temple-line bg-[#0b1424] px-3 text-sm font-black text-temple-text">
+            <input className="h-5 w-5 accent-[#ffd24a]" type="checkbox" name="count_as_income" />
+            Count as new income
+          </label>
+          <FormNotice feedback={feedback[confirmPath]} />
+          <Button icon={SearchCheck} disabled={confirmBusy || !options.length} type="submit">
+            {confirmBusy ? "Confirming..." : "Confirm Match"}
+          </Button>
+        </form>
+
+        <form noValidate className="grid min-w-0 content-start gap-3 lg:border-l lg:border-temple-line lg:pl-4" onSubmit={ignoreEvidence}>
+          <Field label="Ignore Reason" name="reason" placeholder="Refund, transfer, or unrelated credit" required />
+          <FormNotice feedback={feedback[ignorePath]} />
+          <Button icon={Ban} variant="ghost" disabled={ignoreBusy} type="submit">
+            {ignoreBusy ? "Ignoring..." : "Ignore Evidence"}
+          </Button>
+        </form>
+      </div>
+    </article>
   );
 }
 

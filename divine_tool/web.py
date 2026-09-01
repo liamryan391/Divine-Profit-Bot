@@ -34,6 +34,7 @@ from .core import (
     create_receivable,
     create_revenue_rule,
     create_temple,
+    confirm_reconciliation_match,
     dashboard_snapshot,
     destroy_session,
     enqueue_command,
@@ -43,6 +44,8 @@ from .core import (
     generate_opportunities,
     generate_report,
     import_income_csv,
+    import_reconciliation_csv,
+    ignore_reconciliation_transaction,
     lead_conversion_summary,
     list_approval_actions,
     list_events,
@@ -58,6 +61,7 @@ from .core import (
     record_lead_conversion,
     record_receivable_payment,
     receivables_summary,
+    reconciliation_summary,
     revenue_rules_summary,
     run_worker_cycle,
     review_approval_action,
@@ -224,6 +228,12 @@ def make_handler(
                     status = query.get("status", ["all"])[0]
                     limit = int(query.get("limit", ["60"])[0])
                     self.send_json({"receivables": receivables_summary(data_dir, status=status, limit=limit)})
+                    return
+                if parsed.path == "/api/reconciliation":
+                    query = parse_qs(parsed.query)
+                    status = query.get("status", ["all"])[0]
+                    limit = int(query.get("limit", ["60"])[0])
+                    self.send_json({"reconciliation": reconciliation_summary(data_dir, status=status, limit=limit)})
                     return
                 if parsed.path == "/api/revenue-rules/summary":
                     self.send_json({"revenue_rules": revenue_rules_summary(data_dir)})
@@ -431,6 +441,63 @@ def make_handler(
                             "ok": True,
                             "payment": result["payment"],
                             "receivable": result["receivable"],
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
+                    return
+                if parsed.path == "/api/reconciliation/import":
+                    csv_text = str(payload["csv_text"])
+                    if len(csv_text.encode("utf-8")) > MAX_CSV_TEXT_BYTES:
+                        raise RequestPolicyError(
+                            "CSV content exceeds the 4 MiB import limit.",
+                            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        )
+                    result = import_reconciliation_csv(
+                        data_dir,
+                        csv_text=csv_text,
+                        provider=str(payload.get("provider", "generic")),
+                        dry_run=bool_payload(payload.get("dry_run", False)),
+                        filename=str(payload.get("filename", "")),
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "reconciliation_import": result,
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
+                    return
+                reconciliation_parts = reconciliation_path_parts(parsed.path)
+                if reconciliation_parts and len(reconciliation_parts) == 2 and reconciliation_parts[1] == "confirm":
+                    result = confirm_reconciliation_match(
+                        data_dir,
+                        transaction_id=int(reconciliation_parts[0]),
+                        receivable_id=int(payload["receivable_id"]),
+                        count_as_income=bool_payload(payload.get("count_as_income", False)),
+                        note=str(payload.get("note", "")),
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "decision_id": result["decision_id"],
+                            "transaction": result["transaction"],
+                            "payment": result["payment"],
+                            "receivable": result["receivable"],
+                            "state": dashboard_payload(data_dir, account),
+                        }
+                    )
+                    return
+                if reconciliation_parts and len(reconciliation_parts) == 2 and reconciliation_parts[1] == "ignore":
+                    result = ignore_reconciliation_transaction(
+                        data_dir,
+                        transaction_id=int(reconciliation_parts[0]),
+                        reason=str(payload["reason"]),
+                    )
+                    self.send_json(
+                        {
+                            "ok": True,
+                            "decision_id": result["decision_id"],
+                            "transaction": result["transaction"],
                             "state": dashboard_payload(data_dir, account),
                         }
                     )
@@ -671,7 +738,11 @@ def make_handler(
                 self.send_internal_error(exc)
 
         def request_body_limit(self, path: str) -> int:
-            return MAX_CSV_IMPORT_BODY_BYTES if path == "/api/import/csv" else MAX_JSON_BODY_BYTES
+            return (
+                MAX_CSV_IMPORT_BODY_BYTES
+                if path in {"/api/import/csv", "/api/reconciliation/import"}
+                else MAX_JSON_BODY_BYTES
+            )
 
         def read_json(self, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict[str, Any]:
             if self.headers.get("Transfer-Encoding"):
@@ -931,6 +1002,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "leads": snapshot["leads"],
         "conversions": snapshot["conversions"],
         "receivables": snapshot["receivables"],
+        "reconciliation": snapshot["reconciliation"],
         "revenue_rules": snapshot["revenue_rules"],
         "temples": snapshot["temples"],
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
@@ -1031,6 +1103,15 @@ def receivable_path_parts(path: str) -> list[str] | None:
     if not path.startswith("/api/receivables/"):
         return None
     parts = [part for part in path.removeprefix("/api/receivables/").split("/") if part]
+    if not parts:
+        return None
+    return parts
+
+
+def reconciliation_path_parts(path: str) -> list[str] | None:
+    if not path.startswith("/api/reconciliation/"):
+        return None
+    parts = [part for part in path.removeprefix("/api/reconciliation/").split("/") if part]
     if not parts:
         return None
     return parts

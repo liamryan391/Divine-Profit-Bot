@@ -256,6 +256,12 @@ OPEN_LEAD_STAGES = {"new", "contacted", "qualified", "proposal"}
 RECEIVABLE_STATUSES = {"open", "paid", "void"}
 RECEIVABLE_FILTERS = RECEIVABLE_STATUSES | {"all", "overdue", "due_soon", "partial"}
 RECEIVABLE_DUE_SOON_DAYS = 7
+RECONCILIATION_PROVIDERS = {"bank", "generic", "paypal", "square", "stripe"}
+RECONCILIATION_STATUSES = {"unmatched", "suggested", "matched", "ignored"}
+RECONCILIATION_FILTERS = RECONCILIATION_STATUSES | {"all", "review"}
+RECONCILIATION_SUGGESTION_SCORE = 50
+RECONCILIATION_HIGH_CONFIDENCE_SCORE = 80
+RECONCILIATION_AMBIGUITY_MARGIN = 15
 DEFAULT_TEMPLE_ID = "main"
 REVENUE_RULE_TYPES = {"promote", "pause", "require_approval", "block"}
 REVENUE_RULE_STATUSES = {"active", "paused", "retired"}
@@ -680,6 +686,114 @@ def migrate_receivables(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_payment_reconciliation(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reconciliation_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            provider TEXT NOT NULL,
+            filename TEXT NOT NULL DEFAULT '',
+            content_fingerprint TEXT NOT NULL,
+            repeated_of_batch_id INTEGER,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            duplicate_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(repeated_of_batch_id) REFERENCES reconciliation_batches(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_batches_temple_created "
+        "ON reconciliation_batches(temple_id, created_at DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_batches_fingerprint "
+        "ON reconciliation_batches(temple_id, content_fingerprint)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reconciliation_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            batch_id INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            external_reference TEXT NOT NULL DEFAULT '',
+            amount_minor INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'GBP',
+            gbp_minor INTEGER NOT NULL,
+            occurred_on TEXT NOT NULL,
+            payer TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'unmatched',
+            suggested_receivable_id INTEGER,
+            match_confidence INTEGER NOT NULL DEFAULT 0,
+            match_label TEXT NOT NULL DEFAULT 'unmatched',
+            match_reasons_json TEXT NOT NULL DEFAULT '[]',
+            candidates_json TEXT NOT NULL DEFAULT '[]',
+            matched_receivable_id INTEGER,
+            matched_payment_id INTEGER,
+            income_treatment TEXT NOT NULL DEFAULT 'pending',
+            decision_note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES reconciliation_batches(id),
+            FOREIGN KEY(suggested_receivable_id) REFERENCES receivables(id),
+            FOREIGN KEY(matched_receivable_id) REFERENCES receivables(id),
+            FOREIGN KEY(matched_payment_id) REFERENCES receivable_payments(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_transactions_temple_fingerprint "
+        "ON reconciliation_transactions(temple_id, fingerprint)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_transactions_temple_status "
+        "ON reconciliation_transactions(temple_id, status, occurred_on DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_transactions_batch "
+        "ON reconciliation_transactions(batch_id, id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reconciliation_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            reconciliation_transaction_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            receivable_id INTEGER,
+            payment_id INTEGER,
+            count_as_income INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(reconciliation_transaction_id) REFERENCES reconciliation_transactions(id),
+            FOREIGN KEY(receivable_id) REFERENCES receivables(id),
+            FOREIGN KEY(payment_id) REFERENCES receivable_payments(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_decisions_transaction "
+        "ON reconciliation_decisions(reconciliation_transaction_id, created_at DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reconciliation_decisions_temple_created "
+        "ON reconciliation_decisions(temple_id, created_at DESC, id DESC)"
+    )
+    ensure_column(conn, "receivable_payments", "reconciliation_transaction_id", "INTEGER")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_receivable_payments_reconciliation_transaction "
+        "ON receivable_payments(reconciliation_transaction_id) "
+        "WHERE reconciliation_transaction_id IS NOT NULL"
+    )
+
+
 SCHEMA_MIGRATIONS = (
     SchemaMigration(1, "core_ledger", migrate_core_ledger),
     SchemaMigration(2, "approval_actions", migrate_approval_actions),
@@ -689,6 +803,7 @@ SCHEMA_MIGRATIONS = (
     SchemaMigration(6, "authentication_hardening", migrate_authentication_hardening),
     SchemaMigration(7, "worker_cycle_observability", migrate_worker_cycle_observability),
     SchemaMigration(8, "receivables", migrate_receivables),
+    SchemaMigration(9, "payment_reconciliation", migrate_payment_reconciliation),
 )
 LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
 
@@ -3301,103 +3416,21 @@ def record_receivable_payment(
     occurred = (occurred_on or date.today()).isoformat()
     created = now_iso()
     cleaned_reference = payment_reference.strip()
-    counted_income_id: int | None = None
     with db(data_dir) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT * FROM receivables WHERE id = ? AND temple_id = ?",
-            (receivable_id, scoped_temple_id),
-        ).fetchone()
-        if row is None:
-            raise DivineToolError(f"Receivable #{receivable_id} was not found.")
-        current = receivable_to_dict(row)
-        if current["state"] == "void":
-            raise DivineToolError("Void receivables cannot accept payments.")
-        if current["state"] == "paid":
-            raise DivineToolError("This receivable is already paid.")
-        invoice_currency = str(row["currency"]).upper()
-        if normalized_currency != invoice_currency:
-            raise DivineToolError(f"Payment currency must match the receivable currency ({invoice_currency}).")
-        outstanding_gbp = int(current["outstanding_gbp_minor"])
-        if payment_gbp > outstanding_gbp:
-            raise DivineToolError(
-                f"Payment exceeds the outstanding balance of {format_money(outstanding_gbp)}."
-            )
-        if count_as_income and row["source_income_id"]:
-            raise DivineToolError(
-                f"This receivable is already counted as income #{row['source_income_id']}; record collection without counting it again."
-            )
-        if cleaned_reference:
-            duplicate = conn.execute(
-                "SELECT id FROM receivable_payments WHERE temple_id = ? AND payment_reference = ?",
-                (scoped_temple_id, cleaned_reference),
-            ).fetchone()
-            if duplicate is not None:
-                raise DivineToolError(
-                    f"Payment reference {cleaned_reference!r} already exists as payment #{duplicate['id']}."
-                )
-        if count_as_income:
-            income_source = f"Receivable {row['reference']} payment from {row['client']}"
-            income_note = note.strip() or f"Collected against receivable #{receivable_id}"
-            income_cur = conn.execute(
-                """
-                INSERT INTO income
-                    (temple_id, amount_minor, currency, gbp_minor, lead_id, receivable_id, strategy,
-                     import_fingerprint, source, note, occurred_at, created_at)
-                VALUES (?, ?, ?, ?, NULL, ?, '', '', ?, ?, ?, ?)
-                """,
-                (
-                    scoped_temple_id,
-                    amount_minor,
-                    normalized_currency,
-                    payment_gbp,
-                    receivable_id,
-                    income_source,
-                    income_note,
-                    occurred,
-                    created,
-                ),
-            )
-            counted_income_id = int(income_cur.lastrowid)
-        payment_cur = conn.execute(
-            """
-            INSERT INTO receivable_payments
-                (receivable_id, temple_id, amount_minor, currency, gbp_minor, counted_income_id,
-                 payment_reference, occurred_on, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                receivable_id,
-                scoped_temple_id,
-                amount_minor,
-                normalized_currency,
-                payment_gbp,
-                counted_income_id,
-                cleaned_reference,
-                occurred,
-                note.strip(),
-                created,
-            ),
+        payment_row, row, counted_income_id = _record_receivable_payment_in_transaction(
+            conn,
+            receivable_id=receivable_id,
+            scoped_temple_id=scoped_temple_id,
+            amount_minor=amount_minor,
+            normalized_currency=normalized_currency,
+            payment_gbp=payment_gbp,
+            occurred=occurred,
+            cleaned_reference=cleaned_reference,
+            note=note,
+            count_as_income=count_as_income,
+            created=created,
         )
-        new_paid_gbp = int(row["paid_gbp_minor"]) + payment_gbp
-        new_status = "paid" if new_paid_gbp >= int(row["gbp_minor"]) else "open"
-        conn.execute(
-            """
-            UPDATE receivables
-            SET paid_gbp_minor = ?, status = ?, updated_at = ?
-            WHERE id = ? AND temple_id = ?
-            """,
-            (new_paid_gbp, new_status, created, receivable_id, scoped_temple_id),
-        )
-        payment_row = conn.execute(
-            """
-            SELECT p.*, r.reference, r.client
-            FROM receivable_payments p
-            JOIN receivables r ON r.id = p.receivable_id AND r.temple_id = p.temple_id
-            WHERE p.id = ?
-            """,
-            (int(payment_cur.lastrowid),),
-        ).fetchone()
         conn.commit()
     ledger_note = f" and counted as income #{counted_income_id}" if counted_income_id else ""
     log_event(
@@ -3411,6 +3444,130 @@ def record_receivable_payment(
         "receivable": get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id),
         "summary": receivables_summary(data_dir, temple_id=scoped_temple_id),
     }
+
+
+def _record_receivable_payment_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    receivable_id: int,
+    scoped_temple_id: str,
+    amount_minor: int,
+    normalized_currency: str,
+    payment_gbp: int,
+    occurred: str,
+    cleaned_reference: str,
+    note: str,
+    count_as_income: bool,
+    created: str,
+    reconciliation_transaction_id: int | None = None,
+) -> tuple[sqlite3.Row, sqlite3.Row, int | None]:
+    row = conn.execute(
+        "SELECT * FROM receivables WHERE id = ? AND temple_id = ?",
+        (receivable_id, scoped_temple_id),
+    ).fetchone()
+    if row is None:
+        raise DivineToolError(f"Receivable #{receivable_id} was not found.")
+    current = receivable_to_dict(row)
+    if current["state"] == "void":
+        raise DivineToolError("Void receivables cannot accept payments.")
+    if current["state"] == "paid":
+        raise DivineToolError("This receivable is already paid.")
+    invoice_currency = str(row["currency"]).upper()
+    if normalized_currency != invoice_currency:
+        raise DivineToolError(f"Payment currency must match the receivable currency ({invoice_currency}).")
+    outstanding_gbp = int(current["outstanding_gbp_minor"])
+    if payment_gbp > outstanding_gbp:
+        raise DivineToolError(
+            f"Payment exceeds the outstanding balance of {format_money(outstanding_gbp)}."
+        )
+    if count_as_income and row["source_income_id"]:
+        raise DivineToolError(
+            f"This receivable is already counted as income #{row['source_income_id']}; record collection without counting it again."
+        )
+    if cleaned_reference:
+        duplicate = conn.execute(
+            "SELECT id FROM receivable_payments WHERE temple_id = ? AND payment_reference = ?",
+            (scoped_temple_id, cleaned_reference),
+        ).fetchone()
+        if duplicate is not None:
+            raise DivineToolError(
+                f"Payment reference {cleaned_reference!r} already exists as payment #{duplicate['id']}."
+            )
+    if reconciliation_transaction_id is not None:
+        duplicate = conn.execute(
+            "SELECT id FROM receivable_payments WHERE reconciliation_transaction_id = ?",
+            (reconciliation_transaction_id,),
+        ).fetchone()
+        if duplicate is not None:
+            raise DivineToolError(
+                f"Reconciliation transaction #{reconciliation_transaction_id} is already linked to payment #{duplicate['id']}."
+            )
+
+    counted_income_id: int | None = None
+    if count_as_income:
+        income_source = f"Receivable {row['reference']} payment from {row['client']}"
+        income_note = note.strip() or f"Collected against receivable #{receivable_id}"
+        income_cur = conn.execute(
+            """
+            INSERT INTO income
+                (temple_id, amount_minor, currency, gbp_minor, lead_id, receivable_id, strategy,
+                 import_fingerprint, source, note, occurred_at, created_at)
+            VALUES (?, ?, ?, ?, NULL, ?, '', '', ?, ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                amount_minor,
+                normalized_currency,
+                payment_gbp,
+                receivable_id,
+                income_source,
+                income_note,
+                occurred,
+                created,
+            ),
+        )
+        counted_income_id = int(income_cur.lastrowid)
+    payment_cur = conn.execute(
+        """
+        INSERT INTO receivable_payments
+            (receivable_id, temple_id, amount_minor, currency, gbp_minor, counted_income_id,
+             payment_reference, occurred_on, note, created_at, reconciliation_transaction_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            receivable_id,
+            scoped_temple_id,
+            amount_minor,
+            normalized_currency,
+            payment_gbp,
+            counted_income_id,
+            cleaned_reference,
+            occurred,
+            note.strip(),
+            created,
+            reconciliation_transaction_id,
+        ),
+    )
+    new_paid_gbp = int(row["paid_gbp_minor"]) + payment_gbp
+    new_status = "paid" if new_paid_gbp >= int(row["gbp_minor"]) else "open"
+    conn.execute(
+        """
+        UPDATE receivables
+        SET paid_gbp_minor = ?, status = ?, updated_at = ?
+        WHERE id = ? AND temple_id = ?
+        """,
+        (new_paid_gbp, new_status, created, receivable_id, scoped_temple_id),
+    )
+    payment_row = conn.execute(
+        """
+        SELECT p.*, r.reference, r.client
+        FROM receivable_payments p
+        JOIN receivables r ON r.id = p.receivable_id AND r.temple_id = p.temple_id
+        WHERE p.id = ?
+        """,
+        (int(payment_cur.lastrowid),),
+    ).fetchone()
+    return payment_row, row, counted_income_id
 
 
 def queue_receivable_reminder(
@@ -3493,6 +3650,808 @@ def update_receivable_status(
         temple_id=scoped_temple_id,
     )
     return get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id)
+
+
+def normalize_reconciliation_provider(value: str) -> str:
+    provider = slugify(value.strip() or "generic")
+    if provider not in RECONCILIATION_PROVIDERS:
+        choices = ", ".join(sorted(RECONCILIATION_PROVIDERS))
+        raise DivineToolError(f"Reconciliation provider must be one of: {choices}.")
+    return provider
+
+
+def reconciliation_fingerprint(
+    provider: str,
+    external_reference: str,
+    amount_minor: int,
+    currency: str,
+    gbp_minor: int,
+    occurred_on: str,
+    payer: str,
+    description: str,
+) -> str:
+    reference = external_reference.strip().lower()
+    if reference:
+        payload = f"{provider}|reference|{reference}"
+    else:
+        payload = "|".join(
+            [
+                provider,
+                str(amount_minor),
+                currency.upper(),
+                str(gbp_minor),
+                occurred_on,
+                normalize_header(payer),
+                normalize_header(description),
+            ]
+        )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def parse_reconciliation_row(row: dict[str, str], provider: str) -> dict[str, Any]:
+    direction = first_present(row, ["direction", "type", "transaction_type", "credit_debit"]).lower()
+    credit_value = first_present(row, ["credit", "money_in", "paid_in", "deposit", "credit_amount"])
+    debit_value = first_present(row, ["debit", "money_out", "paid_out", "withdrawal", "debit_amount"])
+    amount_value = credit_value or first_present(
+        row,
+        ["amount", "gross", "gross_amount", "net", "net_amount", "value", "total", "paid", "payout"],
+    )
+    date_value = first_present(
+        row,
+        ["date", "occurred_on", "occurred_at", "transaction_date", "paid_at", "created", "created_at"],
+    )
+    currency = first_present(row, ["currency", "currency_code", "ccy"]) or "GBP"
+    gbp_equivalent = first_present(row, ["gbp_equivalent", "gbp", "gbp_amount", "amount_gbp", "net_gbp"])
+    external_reference = first_present(
+        row,
+        ["transaction_id", "payment_id", "id", "reference", "ref", "bank_reference", "order_id"],
+    )
+    payer = first_present(row, ["payer", "customer", "client", "sender", "name", "counterparty"])
+    description = first_present(row, ["description", "memo", "note", "notes", "details", "narrative"])
+
+    if direction in {"debit", "out", "outgoing", "withdrawal", "charge", "refund"}:
+        return import_skip("Outgoing or debit transaction.")
+    if debit_value and not credit_value and not amount_value:
+        return import_skip("Outgoing or debit transaction.")
+    if not amount_value:
+        return import_skip("Missing incoming amount.")
+    if not date_value:
+        return import_skip("Missing transaction date.")
+    try:
+        amount_minor = parse_money_to_minor(clean_money_value(amount_value))
+        occurred = parse_import_date(date_value)
+    except DivineToolError as exc:
+        return import_skip(str(exc))
+    if amount_minor <= 0:
+        return import_skip("Amount is not a positive incoming payment.")
+    normalized_currency = currency.strip().upper()
+    if not normalized_currency or len(normalized_currency) > 10:
+        return import_skip("Currency code must be 10 characters or fewer.")
+    try:
+        gbp_minor = (
+            amount_minor
+            if normalized_currency == "GBP"
+            else parse_money_to_minor(clean_money_value(gbp_equivalent))
+        )
+    except DivineToolError:
+        return import_skip("Non-GBP transaction needs a GBP equivalent column.")
+    if gbp_minor <= 0:
+        return import_skip("GBP equivalent must be positive.")
+    fingerprint = reconciliation_fingerprint(
+        provider,
+        external_reference,
+        amount_minor,
+        normalized_currency,
+        gbp_minor,
+        occurred.isoformat(),
+        payer,
+        description,
+    )
+    return {
+        "status": "parsed",
+        "provider": provider,
+        "external_reference": external_reference,
+        "amount_minor": amount_minor,
+        "currency": normalized_currency,
+        "gbp_minor": gbp_minor,
+        "occurred_on": occurred.isoformat(),
+        "payer": payer,
+        "description": description,
+        "fingerprint": fingerprint,
+    }
+
+
+def reconciliation_receivable_candidates(conn: sqlite3.Connection, temple_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT r.*, COALESCE(SUM(p.amount_minor), 0) AS paid_amount_minor
+        FROM receivables r
+        LEFT JOIN receivable_payments p
+          ON p.receivable_id = r.id AND p.temple_id = r.temple_id
+        WHERE r.temple_id = ? AND r.status <> 'void' AND r.paid_gbp_minor < r.gbp_minor
+        GROUP BY r.id
+        ORDER BY r.due_on ASC, r.id DESC
+        """,
+        (temple_id,),
+    )
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        item = receivable_to_dict(row)
+        item["outstanding_amount_minor"] = max(int(row["amount_minor"]) - int(row["paid_amount_minor"]), 0)
+        candidates.append(item)
+    return candidates
+
+
+def reconciliation_match_tokens(value: str) -> set[str]:
+    ignored = {"and", "co", "company", "inc", "limited", "llc", "ltd", "plc", "the"}
+    words: list[str] = []
+    current: list[str] = []
+    for char in value.lower():
+        if char.isalnum():
+            current.append(char)
+        elif current:
+            words.append("".join(current))
+            current = []
+    if current:
+        words.append("".join(current))
+    return {word for word in words if len(word) >= 3 and word not in ignored}
+
+
+def score_reconciliation_matches(
+    transaction: dict[str, Any],
+    receivables: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ranked: list[dict[str, Any]] = []
+    evidence_text = " ".join(
+        [
+            str(transaction.get("external_reference") or ""),
+            str(transaction.get("payer") or ""),
+            str(transaction.get("description") or ""),
+        ]
+    )
+    normalized_evidence = normalize_header(evidence_text)
+    payer_tokens = reconciliation_match_tokens(str(transaction.get("payer") or ""))
+    occurred = date.fromisoformat(str(transaction["occurred_on"]))
+
+    for receivable in receivables:
+        score = 0
+        reasons: list[str] = []
+        currency_matches = str(transaction["currency"]).upper() == str(receivable["currency"]).upper()
+        if currency_matches:
+            score += 10
+            reasons.append("currency matches")
+        else:
+            reasons.append(f"currency differs from {receivable['currency']}")
+
+        if currency_matches and int(transaction["amount_minor"]) == int(receivable["outstanding_amount_minor"]):
+            score += 35
+            reasons.append("native amount exactly matches the outstanding balance")
+        elif currency_matches and int(transaction["amount_minor"]) <= int(receivable["outstanding_amount_minor"]):
+            score += 15
+            reasons.append("native amount fits as a partial collection")
+        if int(transaction["gbp_minor"]) == int(receivable["outstanding_gbp_minor"]):
+            score += 20
+            reasons.append("GBP value exactly matches the outstanding balance")
+        elif int(transaction["gbp_minor"]) <= int(receivable["outstanding_gbp_minor"]):
+            score += 8
+            reasons.append("GBP value fits as a partial collection")
+
+        reference = normalize_header(str(receivable["reference"]))
+        if len(reference) >= 3 and reference in normalized_evidence:
+            score += 30
+            reasons.append("invoice reference appears in transaction evidence")
+
+        client = str(receivable["client"])
+        normalized_client = normalize_header(client)
+        if len(normalized_client) >= 3 and normalized_client in normalized_evidence:
+            score += 20
+            reasons.append("client name appears in transaction evidence")
+        else:
+            client_tokens = reconciliation_match_tokens(client)
+            shared_tokens = payer_tokens & client_tokens
+            if shared_tokens:
+                score += min(15, 5 + len(shared_tokens) * 5)
+                reasons.append("payer and client names share identifying words")
+
+        issued = date.fromisoformat(str(receivable["issued_on"]))
+        due = date.fromisoformat(str(receivable["due_on"]))
+        days_from_due = abs((occurred - due).days)
+        if issued <= occurred <= due + timedelta(days=14):
+            score += 10
+            reasons.append("transaction date fits the invoice collection window")
+        elif days_from_due <= 30:
+            score += 5
+            reasons.append("transaction date is within 30 days of the due date")
+        elif occurred < issued:
+            reasons.append("transaction predates the invoice")
+
+        if not currency_matches:
+            score = min(score, RECONCILIATION_SUGGESTION_SCORE - 1)
+        ranked.append(
+            {
+                "receivable_id": int(receivable["id"]),
+                "reference": str(receivable["reference"]),
+                "client": client,
+                "currency": str(receivable["currency"]),
+                "outstanding": str(receivable["outstanding"]),
+                "outstanding_gbp_minor": int(receivable["outstanding_gbp_minor"]),
+                "already_counted": bool(receivable["already_counted"]),
+                "score": min(score, 100),
+                "reasons": reasons,
+                "compatible": currency_matches,
+            }
+        )
+
+    ranked.sort(key=lambda item: (-int(item["score"]), int(item["receivable_id"])))
+    top = ranked[0] if ranked else None
+    second = ranked[1] if len(ranked) > 1 else None
+    top_score = int(top["score"]) if top else 0
+    ambiguous = bool(
+        top
+        and second
+        and top_score >= RECONCILIATION_SUGGESTION_SCORE
+        and top_score - int(second["score"]) < RECONCILIATION_AMBIGUITY_MARGIN
+    )
+    if not top or top_score < RECONCILIATION_SUGGESTION_SCORE:
+        label = "unmatched"
+        suggested_id = None
+        reasons = []
+    elif ambiguous:
+        label = "ambiguous"
+        suggested_id = int(top["receivable_id"])
+        reasons = list(top["reasons"])
+    elif top_score >= RECONCILIATION_HIGH_CONFIDENCE_SCORE:
+        label = "high"
+        suggested_id = int(top["receivable_id"])
+        reasons = list(top["reasons"])
+    else:
+        label = "possible"
+        suggested_id = int(top["receivable_id"])
+        reasons = list(top["reasons"])
+    return {
+        "status": "suggested" if suggested_id is not None else "unmatched",
+        "suggested_receivable_id": suggested_id,
+        "match_confidence": top_score,
+        "match_label": label,
+        "match_reasons": reasons,
+        "candidates": ranked[:3],
+    }
+
+
+def import_reconciliation_csv(
+    data_dir: Path,
+    csv_text: str,
+    provider: str = "generic",
+    dry_run: bool = False,
+    filename: str = "",
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_provider = normalize_reconciliation_provider(provider)
+    reader = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")))
+    if not reader.fieldnames:
+        raise DivineToolError("Reconciliation CSV needs a header row.")
+    parsed_rows: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(reader, start=2):
+        row = {str(key or "").strip(): str(value or "").strip() for key, value in raw_row.items()}
+        parsed = parse_reconciliation_row(row, normalized_provider)
+        parsed["row_number"] = index
+        parsed_rows.append(parsed)
+    if not parsed_rows:
+        raise DivineToolError("Reconciliation CSV needs at least one transaction row.")
+
+    result: dict[str, Any] = {
+        "provider": normalized_provider,
+        "filename": filename,
+        "dry_run": dry_run,
+        "batch_id": None,
+        "row_count": len(parsed_rows),
+        "ready_count": 0,
+        "imported_count": 0,
+        "duplicate_count": 0,
+        "skipped_count": 0,
+        "rows": [],
+    }
+    content_fingerprint = hashlib.sha256(
+        f"{normalized_provider}|{csv_text.lstrip(chr(0xfeff))}".encode("utf-8")
+    ).hexdigest()
+    seen_fingerprints: dict[str, int] = {}
+    created = now_iso()
+    with db(data_dir) as conn:
+        receivables = reconciliation_receivable_candidates(conn, scoped_temple_id)
+        if not dry_run:
+            conn.execute("BEGIN IMMEDIATE")
+            repeated = conn.execute(
+                """
+                SELECT id FROM reconciliation_batches
+                WHERE temple_id = ? AND content_fingerprint = ?
+                ORDER BY id ASC LIMIT 1
+                """,
+                (scoped_temple_id, content_fingerprint),
+            ).fetchone()
+            batch_cur = conn.execute(
+                """
+                INSERT INTO reconciliation_batches
+                    (temple_id, provider, filename, content_fingerprint, repeated_of_batch_id, row_count,
+                     imported_count, duplicate_count, skipped_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)
+                """,
+                (
+                    scoped_temple_id,
+                    normalized_provider,
+                    filename.strip(),
+                    content_fingerprint,
+                    int(repeated["id"]) if repeated else None,
+                    len(parsed_rows),
+                    created,
+                ),
+            )
+            result["batch_id"] = int(batch_cur.lastrowid)
+
+        for parsed in parsed_rows:
+            if parsed.get("status") == "skipped":
+                result["skipped_count"] += 1
+                result["rows"].append(parsed)
+                continue
+            fingerprint = str(parsed["fingerprint"])
+            existing = conn.execute(
+                """
+                SELECT id FROM reconciliation_transactions
+                WHERE temple_id = ? AND fingerprint = ?
+                LIMIT 1
+                """,
+                (scoped_temple_id, fingerprint),
+            ).fetchone()
+            if existing is not None:
+                parsed["status"] = "duplicate"
+                parsed["existing_id"] = int(existing["id"])
+                result["duplicate_count"] += 1
+                result["rows"].append(parsed)
+                continue
+            if fingerprint in seen_fingerprints:
+                parsed["status"] = "duplicate"
+                parsed["reason"] = f"Matches row {seen_fingerprints[fingerprint]} in this CSV."
+                result["duplicate_count"] += 1
+                result["rows"].append(parsed)
+                continue
+            seen_fingerprints[fingerprint] = int(parsed["row_number"])
+            match = score_reconciliation_matches(parsed, receivables)
+            parsed.update(match)
+            parsed["amount"] = format_money(int(parsed["amount_minor"]), str(parsed["currency"]))
+            parsed["gbp_value"] = format_money(int(parsed["gbp_minor"]))
+            if dry_run:
+                parsed["status"] = "ready"
+                parsed["suggested_status"] = match["status"]
+                result["ready_count"] += 1
+                result["rows"].append(parsed)
+                continue
+            transaction_cur = conn.execute(
+                """
+                INSERT INTO reconciliation_transactions
+                    (temple_id, batch_id, fingerprint, provider, external_reference, amount_minor, currency,
+                     gbp_minor, occurred_on, payer, description, status, suggested_receivable_id,
+                     match_confidence, match_label, match_reasons_json, candidates_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scoped_temple_id,
+                    int(result["batch_id"]),
+                    fingerprint,
+                    normalized_provider,
+                    str(parsed["external_reference"]),
+                    int(parsed["amount_minor"]),
+                    str(parsed["currency"]),
+                    int(parsed["gbp_minor"]),
+                    str(parsed["occurred_on"]),
+                    str(parsed["payer"]),
+                    str(parsed["description"]),
+                    str(match["status"]),
+                    match["suggested_receivable_id"],
+                    int(match["match_confidence"]),
+                    str(match["match_label"]),
+                    json.dumps(match["match_reasons"], sort_keys=True),
+                    json.dumps(match["candidates"], sort_keys=True),
+                    created,
+                    created,
+                ),
+            )
+            parsed["id"] = int(transaction_cur.lastrowid)
+            parsed["status"] = str(match["status"])
+            result["imported_count"] += 1
+            result["rows"].append(parsed)
+
+        if not dry_run:
+            conn.execute(
+                """
+                UPDATE reconciliation_batches
+                SET imported_count = ?, duplicate_count = ?, skipped_count = ?
+                WHERE id = ? AND temple_id = ?
+                """,
+                (
+                    result["imported_count"],
+                    result["duplicate_count"],
+                    result["skipped_count"],
+                    result["batch_id"],
+                    scoped_temple_id,
+                ),
+            )
+            conn.commit()
+    if not dry_run:
+        log_event(
+            data_dir,
+            (
+                f"Payment evidence imported: {result['imported_count']} new, "
+                f"{result['duplicate_count']} duplicate, {result['skipped_count']} skipped"
+            ),
+            "reconciliation",
+            temple_id=scoped_temple_id,
+        )
+    return result
+
+
+def reconciliation_transaction_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+    for source_key, target_key, fallback in (
+        ("match_reasons_json", "match_reasons", []),
+        ("candidates_json", "candidates", []),
+    ):
+        try:
+            item[target_key] = json.loads(str(item.pop(source_key, "") or json.dumps(fallback)))
+        except json.JSONDecodeError:
+            item[target_key] = fallback
+    item.update(
+        {
+            "amount": format_money(int(item["amount_minor"]), str(item["currency"])),
+            "gbp_value": format_money(int(item["gbp_minor"])),
+            "status_label": title_case_from_key(str(item["status"])),
+            "match_label_display": title_case_from_key(str(item.get("match_label") or "unmatched")),
+            "ambiguous": str(item.get("match_label")) == "ambiguous",
+            "can_decide": str(item["status"]) in {"unmatched", "suggested"},
+        }
+    )
+    return item
+
+
+def reconciliation_decision_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
+    try:
+        item["evidence"] = json.loads(str(item.pop("evidence_json", "") or "{}"))
+    except json.JSONDecodeError:
+        item["evidence"] = {}
+    item["count_as_income"] = bool(item.get("count_as_income"))
+    item["action_label"] = title_case_from_key(str(item["action"]))
+    return item
+
+
+def reconciliation_summary(
+    data_dir: Path,
+    status: str = "all",
+    limit: int = 60,
+    temple_id: str | None = None,
+    *,
+    state_ready: bool = False,
+) -> dict[str, Any]:
+    if not state_ready:
+        ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_status = status.strip().lower().replace("-", "_") or "all"
+    if normalized_status not in RECONCILIATION_FILTERS:
+        raise DivineToolError("Reconciliation status must be all, review, unmatched, suggested, matched, or ignored.")
+    display_limit = max(min(int(limit), 200), 1)
+    with db(data_dir) as conn:
+        aggregate = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN status = 'unmatched' THEN 1 ELSE 0 END) AS unmatched_count,
+                SUM(CASE WHEN status = 'suggested' THEN 1 ELSE 0 END) AS suggested_count,
+                SUM(CASE WHEN status = 'matched' THEN 1 ELSE 0 END) AS matched_count,
+                SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored_count,
+                SUM(CASE WHEN match_label = 'ambiguous' AND status IN ('unmatched', 'suggested') THEN 1 ELSE 0 END) AS ambiguous_count,
+                COALESCE(SUM(gbp_minor), 0) AS imported_minor,
+                COALESCE(SUM(CASE WHEN status IN ('unmatched', 'suggested') THEN gbp_minor ELSE 0 END), 0) AS review_minor,
+                COALESCE(SUM(CASE WHEN status = 'matched' THEN gbp_minor ELSE 0 END), 0) AS matched_minor
+            FROM reconciliation_transactions
+            WHERE temple_id = ?
+            """,
+            (scoped_temple_id,),
+        ).fetchone()
+        where = "temple_id = ?"
+        params: list[Any] = [scoped_temple_id]
+        if normalized_status == "review":
+            where += " AND status IN ('unmatched', 'suggested')"
+        elif normalized_status != "all":
+            where += " AND status = ?"
+            params.append(normalized_status)
+        rows = list(
+            conn.execute(
+                f"""
+                SELECT * FROM reconciliation_transactions
+                WHERE {where}
+                ORDER BY
+                    CASE status WHEN 'suggested' THEN 0 WHEN 'unmatched' THEN 1 WHEN 'matched' THEN 2 ELSE 3 END,
+                    occurred_on DESC, id DESC
+                LIMIT ?
+                """,
+                (*params, display_limit),
+            )
+        )
+        decisions = list(
+            conn.execute(
+                """
+                SELECT d.*, t.provider, t.external_reference, t.gbp_minor,
+                       r.reference AS receivable_reference, r.client AS receivable_client
+                FROM reconciliation_decisions d
+                JOIN reconciliation_transactions t ON t.id = d.reconciliation_transaction_id
+                LEFT JOIN receivables r ON r.id = d.receivable_id AND r.temple_id = d.temple_id
+                WHERE d.temple_id = ?
+                ORDER BY d.created_at DESC, d.id DESC
+                LIMIT 20
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        batches = [
+            row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT * FROM reconciliation_batches
+                WHERE temple_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 8
+                """,
+                (scoped_temple_id,),
+            )
+        ]
+        receivables = reconciliation_receivable_candidates(conn, scoped_temple_id)
+    total_count = int(aggregate["total_count"] or 0)
+    unmatched_count = int(aggregate["unmatched_count"] or 0)
+    suggested_count = int(aggregate["suggested_count"] or 0)
+    matched_count = int(aggregate["matched_count"] or 0)
+    ignored_count = int(aggregate["ignored_count"] or 0)
+    receivable_options = [
+        {
+            "id": int(item["id"]),
+            "reference": str(item["reference"]),
+            "client": str(item["client"]),
+            "currency": str(item["currency"]),
+            "outstanding": str(item["outstanding"]),
+            "outstanding_gbp_minor": int(item["outstanding_gbp_minor"]),
+            "already_counted": bool(item["already_counted"]),
+        }
+        for item in receivables
+    ]
+    return {
+        "temple_id": scoped_temple_id,
+        "total_count": total_count,
+        "unmatched_count": unmatched_count,
+        "suggested_count": suggested_count,
+        "matched_count": matched_count,
+        "ignored_count": ignored_count,
+        "ambiguous_count": int(aggregate["ambiguous_count"] or 0),
+        "review_count": unmatched_count + suggested_count,
+        "imported": format_money(int(aggregate["imported_minor"] or 0)),
+        "imported_minor": int(aggregate["imported_minor"] or 0),
+        "awaiting_review": format_money(int(aggregate["review_minor"] or 0)),
+        "awaiting_review_minor": int(aggregate["review_minor"] or 0),
+        "matched": format_money(int(aggregate["matched_minor"] or 0)),
+        "matched_minor": int(aggregate["matched_minor"] or 0),
+        "filter": normalized_status,
+        "returned_count": len(rows),
+        "rows": [reconciliation_transaction_to_dict(row) for row in rows],
+        "recent_decisions": [reconciliation_decision_to_dict(row) for row in decisions],
+        "recent_batches": batches,
+        "receivable_options": receivable_options,
+        "policy": [
+            "Imports are read-only evidence and never change an external bank or payment account.",
+            "Match scores are suggestions; a human must confirm every receivable and income treatment.",
+            "Unique fingerprints and payment links prevent the same transaction from being reconciled twice.",
+        ],
+    }
+
+
+def get_reconciliation_transaction(
+    data_dir: Path,
+    transaction_id: int,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM reconciliation_transactions WHERE id = ? AND temple_id = ?",
+            (transaction_id, scoped_temple_id),
+        ).fetchone()
+    if row is None:
+        raise DivineToolError(f"Reconciliation transaction #{transaction_id} was not found.")
+    return reconciliation_transaction_to_dict(row)
+
+
+def confirm_reconciliation_match(
+    data_dir: Path,
+    transaction_id: int,
+    receivable_id: int,
+    count_as_income: bool = False,
+    note: str = "",
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    created = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        transaction = conn.execute(
+            "SELECT * FROM reconciliation_transactions WHERE id = ? AND temple_id = ?",
+            (transaction_id, scoped_temple_id),
+        ).fetchone()
+        if transaction is None:
+            raise DivineToolError(f"Reconciliation transaction #{transaction_id} was not found.")
+        if str(transaction["status"]) not in {"unmatched", "suggested"}:
+            raise DivineToolError(
+                f"Reconciliation transaction #{transaction_id} is already {transaction['status']}."
+            )
+        payment_reference = f"reconciliation:{transaction_id}"
+        payment_note = note.strip() or (
+            f"Reconciled {transaction['provider']} evidence"
+            + (f" {transaction['external_reference']}" if transaction["external_reference"] else "")
+        )
+        payment_row, receivable_row, counted_income_id = _record_receivable_payment_in_transaction(
+            conn,
+            receivable_id=receivable_id,
+            scoped_temple_id=scoped_temple_id,
+            amount_minor=int(transaction["amount_minor"]),
+            normalized_currency=str(transaction["currency"]),
+            payment_gbp=int(transaction["gbp_minor"]),
+            occurred=str(transaction["occurred_on"]),
+            cleaned_reference=payment_reference,
+            note=payment_note,
+            count_as_income=count_as_income,
+            created=created,
+            reconciliation_transaction_id=transaction_id,
+        )
+        if receivable_row["source_income_id"]:
+            income_treatment = "already_booked"
+        elif counted_income_id:
+            income_treatment = "counted"
+        else:
+            income_treatment = "not_counted"
+        evidence = {
+            "fingerprint": str(transaction["fingerprint"]),
+            "provider": str(transaction["provider"]),
+            "external_reference": str(transaction["external_reference"]),
+            "amount_minor": int(transaction["amount_minor"]),
+            "currency": str(transaction["currency"]),
+            "gbp_minor": int(transaction["gbp_minor"]),
+            "occurred_on": str(transaction["occurred_on"]),
+            "suggested_receivable_id": transaction["suggested_receivable_id"],
+            "match_confidence": int(transaction["match_confidence"]),
+            "match_label": str(transaction["match_label"]),
+            "match_reasons": json.loads(str(transaction["match_reasons_json"] or "[]")),
+            "selected_receivable_id": receivable_id,
+            "income_treatment": income_treatment,
+        }
+        conn.execute(
+            """
+            UPDATE reconciliation_transactions
+            SET status = 'matched', matched_receivable_id = ?, matched_payment_id = ?,
+                income_treatment = ?, decision_note = ?, updated_at = ?
+            WHERE id = ? AND temple_id = ?
+            """,
+            (
+                receivable_id,
+                int(payment_row["id"]),
+                income_treatment,
+                note.strip(),
+                created,
+                transaction_id,
+                scoped_temple_id,
+            ),
+        )
+        decision_cur = conn.execute(
+            """
+            INSERT INTO reconciliation_decisions
+                (temple_id, reconciliation_transaction_id, action, receivable_id, payment_id,
+                 count_as_income, note, evidence_json, created_at)
+            VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                transaction_id,
+                receivable_id,
+                int(payment_row["id"]),
+                1 if count_as_income else 0,
+                note.strip(),
+                json.dumps(evidence, sort_keys=True),
+                created,
+            ),
+        )
+        conn.commit()
+    log_event(
+        data_dir,
+        (
+            f"Payment evidence #{transaction_id} matched to receivable {receivable_row['reference']} "
+            f"as payment #{payment_row['id']} ({income_treatment.replace('_', ' ')})"
+        ),
+        "reconciliation",
+        temple_id=scoped_temple_id,
+    )
+    return {
+        "decision_id": int(decision_cur.lastrowid),
+        "transaction": get_reconciliation_transaction(data_dir, transaction_id, temple_id=scoped_temple_id),
+        "payment": receivable_payment_to_dict(payment_row),
+        "receivable": get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id),
+        "summary": reconciliation_summary(data_dir, temple_id=scoped_temple_id),
+    }
+
+
+def ignore_reconciliation_transaction(
+    data_dir: Path,
+    transaction_id: int,
+    reason: str,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_reason = reason.strip()
+    if len(cleaned_reason) < 3:
+        raise DivineToolError("Ignoring payment evidence requires a short reason.")
+    created = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        transaction = conn.execute(
+            "SELECT * FROM reconciliation_transactions WHERE id = ? AND temple_id = ?",
+            (transaction_id, scoped_temple_id),
+        ).fetchone()
+        if transaction is None:
+            raise DivineToolError(f"Reconciliation transaction #{transaction_id} was not found.")
+        if str(transaction["status"]) not in {"unmatched", "suggested"}:
+            raise DivineToolError(
+                f"Reconciliation transaction #{transaction_id} is already {transaction['status']}."
+            )
+        evidence = {
+            "fingerprint": str(transaction["fingerprint"]),
+            "provider": str(transaction["provider"]),
+            "external_reference": str(transaction["external_reference"]),
+            "gbp_minor": int(transaction["gbp_minor"]),
+            "suggested_receivable_id": transaction["suggested_receivable_id"],
+            "match_confidence": int(transaction["match_confidence"]),
+            "match_label": str(transaction["match_label"]),
+        }
+        conn.execute(
+            """
+            UPDATE reconciliation_transactions
+            SET status = 'ignored', income_treatment = 'ignored', decision_note = ?, updated_at = ?
+            WHERE id = ? AND temple_id = ?
+            """,
+            (cleaned_reason, created, transaction_id, scoped_temple_id),
+        )
+        decision_cur = conn.execute(
+            """
+            INSERT INTO reconciliation_decisions
+                (temple_id, reconciliation_transaction_id, action, count_as_income, note, evidence_json, created_at)
+            VALUES (?, ?, 'ignored', 0, ?, ?, ?)
+            """,
+            (
+                scoped_temple_id,
+                transaction_id,
+                cleaned_reason,
+                json.dumps(evidence, sort_keys=True),
+                created,
+            ),
+        )
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Payment evidence #{transaction_id} ignored: {cleaned_reason}",
+        "reconciliation",
+        temple_id=scoped_temple_id,
+    )
+    return {
+        "decision_id": int(decision_cur.lastrowid),
+        "transaction": get_reconciliation_transaction(data_dir, transaction_id, temple_id=scoped_temple_id),
+        "summary": reconciliation_summary(data_dir, temple_id=scoped_temple_id),
+    }
 
 
 def create_lead(
@@ -5377,6 +6336,12 @@ def generate_report(
         temple_id=scoped_temple_id,
         state_ready=True,
     )
+    reconciliation = reconciliation_summary(
+        data_dir,
+        limit=25,
+        temple_id=scoped_temple_id,
+        state_ready=True,
+    )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
             channel.get("name", "Revenue channel")
@@ -5441,6 +6406,7 @@ def generate_report(
         "strategy_roi": roi,
         "conversions": conversions,
         "receivables": receivables,
+        "reconciliation": reconciliation,
         "revenue_rules": revenue_rules,
         "opportunities": opportunities[:5],
         "upgrade_recommendations": upgrades,
@@ -5491,6 +6457,11 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
     receivables = receivables_summary(
         data_dir,
         today=snapshot_date,
+        temple_id=active_temple_id,
+        state_ready=True,
+    )
+    reconciliation = reconciliation_summary(
+        data_dir,
         temple_id=active_temple_id,
         state_ready=True,
     )
@@ -5554,6 +6525,7 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         "leads": leads,
         "conversions": conversions,
         "receivables": receivables,
+        "reconciliation": reconciliation,
         "revenue_rules": revenue_rules,
         "temples": temples,
     }
@@ -5693,6 +6665,28 @@ def format_report_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append("- No receivables are overdue or due soon.")
+
+    reconciliation = report["reconciliation"]
+    lines.extend(["", "## Payment Reconciliation", ""])
+    lines.append(
+        f"- Awaiting review: {reconciliation['awaiting_review']} across "
+        f"{reconciliation['review_count']} imported transaction(s)."
+    )
+    lines.append(
+        f"- Matched: {reconciliation['matched']} across {reconciliation['matched_count']} transaction(s); "
+        f"{reconciliation['ambiguous_count']} ambiguous suggestion(s) still need a human decision."
+    )
+    review_transactions = [
+        transaction
+        for transaction in reconciliation["rows"]
+        if transaction["status"] in {"unmatched", "suggested"}
+    ]
+    for transaction in review_transactions[:5]:
+        reference = transaction["external_reference"] or f"transaction #{transaction['id']}"
+        lines.append(
+            f"- {reference}: {transaction['gbp_value']} from {transaction['payer'] or 'unknown payer'} "
+            f"({transaction['match_label_display']}, {transaction['match_confidence']}/100)."
+        )
 
     rules = report["revenue_rules"]
     lines.extend(["", "## Revenue Rules", ""])

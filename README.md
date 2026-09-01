@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v3.1.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v3.2.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -39,6 +39,9 @@ python -m divine_tool receivable add "Client Ltd" INV-001 750 --due 2026-09-14
 python -m divine_tool receivable list --status overdue
 python -m divine_tool receivable pay 1 250 --reference BANK-001
 python -m divine_tool receivable remind 1
+python -m divine_tool reconcile import .\bank-export.csv --provider bank --dry-run
+python -m divine_tool reconcile list --status review
+python -m divine_tool reconcile confirm 1 1 --note "Reference and amount verified"
 python -m divine_tool account status
 python -m divine_tool deploy preflight
 python -m divine_tool upgrade
@@ -83,7 +86,7 @@ Start-Process python -ArgumentList "-m divine_tool daemon --interval 300" -Windo
 By default, state lives in `.divine_tool/`:
 
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
-- `divine_tool.sqlite3`: income, leads, receivables, payments, rules, accounts, events, worker-cycle history, and other durable application state.
+- `divine_tool.sqlite3`: income, leads, receivables, payments, reconciliation evidence, rules, accounts, events, worker-cycle history, and other durable application state.
 - `commands.jsonl`: daemon command inbox.
 - `commands.processed.jsonl`: processed daemon commands.
 - `commands.failed.jsonl`: failed daemon commands.
@@ -127,7 +130,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 - Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 - Componentized React layout shell with shared cards, panels, fields, buttons, badges, toolbars, and dashboard sections.
-- Hash-based navigation for overview, temples, strategies, imports, approvals, reports, and settings views.
+- Hash-based navigation for overview, temples, strategies, leads, receivables, reconciliation, imports, approvals, reports, and settings views.
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
@@ -135,6 +138,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Revenue Rules for turning pipeline, conversion, follow-up, loss, and opportunity evidence into explicit promote, pause, approval, or block decisions.
 - Receivables Pipeline for invoices and other money owed, due and overdue exposure, partial or full collections, and human-approved payment reminders.
 - Double-counting protection for receivables linked to booked lead income, with explicit opt-in income recording for standalone collections.
+- Payment Reconciliation for read-only bank/provider CSV evidence, explainable receivable suggestions, explicit confirmation or ignore decisions, duplicate protection, and a complete batch/decision audit trail.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 - Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
@@ -157,6 +161,22 @@ Stage 6.1 keeps billed revenue and collected cash visible without silently infla
 
 Core API routes are `GET/POST /api/receivables`, `POST /api/receivables/payment`, `POST /api/receivables/{id}/reminder`, and `POST /api/receivables/{id}/status`. Reminder requests create pending approval drafts; they do not send external messages. Receivables, payments, approvals, and income remain scoped to the active temple.
 
+## Payment Reconciliation
+
+Stage 6.2 imports incoming bank and payment-provider CSV rows as local evidence only. It never signs in to, writes to, or changes an external financial account. Each row receives a temple-scoped fingerprint and explainable candidate scores based on native amount, GBP value, currency, invoice reference, client or payer words, and transaction date.
+
+Every match still requires a human decision. Confirming a match records the imported evidence, receivable payment, balance update, and optional income entry in one SQLite transaction. Linked lead income cannot be counted again, repeated files do not duplicate transactions, and concurrent confirmation attempts cannot create a second payment.
+
+```powershell
+python -m divine_tool reconcile import .\bank-export.csv --provider bank --dry-run
+python -m divine_tool reconcile import .\bank-export.csv --provider bank
+python -m divine_tool reconcile list --status review
+python -m divine_tool reconcile confirm 1 4 --count-as-income --note "Verified against invoice"
+python -m divine_tool reconcile ignore 2 --reason "Internal transfer"
+```
+
+Core API routes are `GET /api/reconciliation`, `POST /api/reconciliation/import`, `POST /api/reconciliation/{id}/confirm`, and `POST /api/reconciliation/{id}/ignore`. CSV imports accept common date, amount, currency, reference, payer, and description headings; non-GBP rows require a GBP-equivalent column.
+
 ## Database Reliability
 
 Every application connection uses SQLite WAL mode, enforces foreign keys, and waits up to 10 seconds for a contested write lock. This lets the threaded web server and daemon share the same state database without failing immediately during short overlapping writes.
@@ -175,7 +195,7 @@ Each new archive carries file sizes and SHA-256 checksums. The backup command re
 
 ## Dashboard Performance
 
-The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
+The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, reconciliation, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
 
 The 10-second browser poll calls only `GET /api/worker/status`. Full weekly and monthly reports are generated only through `GET /api/report?period=week|month` when requested.
 
@@ -196,6 +216,8 @@ This gate validates the application and local reference environment. A public ho
 
 Stage 6.1 release `v3.1.0` passed all 39 automated tests, the production frontend build and static QA, Python compilation, Docker Compose validation, schema-v8 deployment preflight, and SQLite integrity checks on 31 August 2026. Isolated browser verification created a receivable, recorded a partial collection with explicit income treatment, queued a human-approved reminder, rendered every primary route at 390 x 844 without document overflow, and produced no console warnings or errors.
 
+Stage 6.2 release `v3.2.0` passes all 42 automated tests, including exact and ambiguous scoring, duplicate imports, authenticated decisions, audit history, and concurrent confirmation protection. The production dashboard build and static QA also pass against schema v9; deployment and visual evidence are recorded in the Stage 6.2 roadmap gate.
+
 ## Worker Operations
 
 The continuous daemon, `daemon --once`, and the dashboard's Run Worker Cycle action all use the same cycle implementation. Every cycle processes claimed commands, evaluates and records active revenue rules for every temple, counts approval gates and pending approvals, and stores its duration and failures in SQLite.
@@ -214,7 +236,7 @@ The daemon service uses an `unless-stopped` restart policy. A command inbox clai
 
 ## API And Authentication Security
 
-The web boundary rejects oversized bodies before reading them. Ordinary JSON requests are limited to 256 KiB; the CSV import request envelope is limited to 5 MiB and its decoded CSV content to 4 MiB. The React importer checks the same 4 MiB file limit before reading a selected file.
+The web boundary rejects oversized bodies before reading them. Ordinary JSON requests are limited to 256 KiB; income and reconciliation CSV request envelopes are limited to 5 MiB and decoded CSV content to 4 MiB. Both React importers check the same 4 MiB file limit before reading a selected file.
 
 Failed sign-ins are tracked by both normalized username and client source. Five failures within 15 minutes trigger a 15-minute lockout by default, returned as HTTP `429` with `Retry-After`. Failures and throttled attempts are written to the authenticated Temple Log without passwords or session tokens. A successful sign-in or local password reset clears pending throttle rows; the audit events remain.
 
@@ -262,7 +284,7 @@ Run the static frontend QA check after a build:
 npm run qa:static
 ```
 
-The QA check verifies the generated HTML, CSS, and JS asset references, the responsive/accessibility hooks, and the `#/leads` Lead Pipeline route.
+The QA check verifies the generated HTML, CSS, and JS asset references, responsive/accessibility hooks, and the Lead, Receivables, and Reconciliation workflows.
 
 ## Lead Pipeline
 
@@ -492,4 +514,4 @@ python -m divine_tool report --period week
 python -m divine_tool report --period month --output monthly-report.md
 ```
 
-Reports include quota progress, missed-quota review, strategy ROI, priority opportunities, upgrade recommendations, and recent income entries.
+Reports include quota progress, missed-quota review, strategy ROI, receivables, payment reconciliation exposure, priority opportunities, upgrade recommendations, and recent income entries.

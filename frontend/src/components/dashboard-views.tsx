@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import type { WorkflowFeedbackMap } from "../lib/forms";
 import type { DashboardView } from "../lib/navigation";
 import { capitalize, runningStrategyCount } from "../lib/format";
-import type { DashboardPayload, ExternalSnapshot, ImportResult, ReportPayload } from "../types";
+import type { DashboardPayload, ExternalSnapshot, ImportResult, ReconciliationImportResult, ReportPayload } from "../types";
 import {
   AccountRecoveryPanel,
   ApprovalQueuePanel,
@@ -18,6 +18,7 @@ import {
   QuotaProgressPanel,
   RecentIncomePanel,
   ReceivablesPanel,
+  ReconciliationPanel,
   RevenueRulesPanel,
   ReportForgePanel,
   StrategiesPanel,
@@ -39,10 +40,12 @@ interface DashboardViewContentProps {
   external: ExternalSnapshot | null;
   report: ReportPayload;
   importResult: ImportResult | null;
+  reconciliationImportResult: ReconciliationImportResult | null;
   busy: string;
   feedback: WorkflowFeedbackMap;
   onJsonForm: JsonFormHandler;
   onImport: (event: FormEvent<HTMLFormElement>) => void;
+  onReconciliationImport: (event: FormEvent<HTMLFormElement>) => void;
   onReviewApproval: (id: number, decision: string) => Promise<void>;
   onAdvanceLead: (id: number, stage: string) => Promise<void>;
   onRevenueRuleStatus: (id: number, status: string) => Promise<void>;
@@ -62,6 +65,7 @@ export function DashboardViewContent(props: DashboardViewContentProps) {
       {props.view === "strategies" ? <StrategiesView {...props} /> : null}
       {props.view === "leads" ? <LeadsView {...props} /> : null}
       {props.view === "receivables" ? <ReceivablesView {...props} /> : null}
+      {props.view === "reconciliation" ? <ReconciliationView {...props} /> : null}
       {props.view === "imports" ? <ImportsView {...props} /> : null}
       {props.view === "approvals" ? <ApprovalsView {...props} /> : null}
       {props.view === "reports" ? <ReportsView {...props} /> : null}
@@ -100,7 +104,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: payment reconciliation"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: follow-up cadences"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
@@ -184,6 +188,26 @@ function ReceivablesView({ dashboard, busy, feedback, onJsonForm, onReceivableAc
         <RecentIncomePanel dashboard={dashboard} />
       </DashboardGrid>
     </>
+  );
+}
+
+function ReconciliationView({
+  dashboard,
+  reconciliationImportResult,
+  busy,
+  feedback,
+  onJsonForm,
+  onReconciliationImport,
+}: DashboardViewContentProps) {
+  return (
+    <ReconciliationPanel
+      dashboard={dashboard}
+      importResult={reconciliationImportResult}
+      busy={busy}
+      feedback={feedback}
+      onSubmit={onJsonForm}
+      onImport={onReconciliationImport}
+    />
   );
 }
 

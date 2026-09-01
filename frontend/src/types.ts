@@ -416,6 +416,143 @@ export interface ReceivablesSummary {
   policy: string[];
 }
 
+export interface ReconciliationCandidate {
+  receivable_id: number;
+  reference: string;
+  client: string;
+  currency: string;
+  outstanding: string;
+  outstanding_gbp_minor: number;
+  already_counted: boolean;
+  score: number;
+  reasons: string[];
+  compatible: boolean;
+}
+
+export interface ReconciliationTransaction {
+  id: number;
+  temple_id: string;
+  batch_id: number;
+  provider: string;
+  external_reference: string;
+  amount_minor: number;
+  currency: string;
+  gbp_minor: number;
+  amount: string;
+  gbp_value: string;
+  occurred_on: string;
+  payer: string;
+  description: string;
+  status: string;
+  status_label: string;
+  suggested_receivable_id?: number | null;
+  match_confidence: number;
+  match_label: string;
+  match_label_display: string;
+  match_reasons: string[];
+  candidates: ReconciliationCandidate[];
+  matched_receivable_id?: number | null;
+  matched_payment_id?: number | null;
+  income_treatment: string;
+  decision_note?: string;
+  ambiguous: boolean;
+  can_decide: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReconciliationDecision {
+  id: number;
+  reconciliation_transaction_id: number;
+  action: string;
+  action_label: string;
+  receivable_id?: number | null;
+  payment_id?: number | null;
+  count_as_income: boolean;
+  note: string;
+  provider: string;
+  external_reference: string;
+  gbp_minor: number;
+  receivable_reference?: string | null;
+  receivable_client?: string | null;
+  created_at: string;
+  evidence: JsonMap;
+}
+
+export interface ReconciliationBatch {
+  id: number;
+  provider: string;
+  filename: string;
+  repeated_of_batch_id?: number | null;
+  row_count: number;
+  imported_count: number;
+  duplicate_count: number;
+  skipped_count: number;
+  created_at: string;
+}
+
+export interface ReconciliationReceivableOption {
+  id: number;
+  reference: string;
+  client: string;
+  currency: string;
+  outstanding: string;
+  outstanding_gbp_minor: number;
+  already_counted: boolean;
+}
+
+export interface ReconciliationSummary {
+  temple_id: string;
+  total_count: number;
+  unmatched_count: number;
+  suggested_count: number;
+  matched_count: number;
+  ignored_count: number;
+  ambiguous_count: number;
+  review_count: number;
+  imported: string;
+  imported_minor: number;
+  awaiting_review: string;
+  awaiting_review_minor: number;
+  matched: string;
+  matched_minor: number;
+  filter: string;
+  returned_count: number;
+  rows: ReconciliationTransaction[];
+  recent_decisions: ReconciliationDecision[];
+  recent_batches: ReconciliationBatch[];
+  receivable_options: ReconciliationReceivableOption[];
+  policy: string[];
+}
+
+export interface ReconciliationImportRow {
+  row_number?: number;
+  id?: number;
+  status: string;
+  suggested_status?: string;
+  reason?: string;
+  existing_id?: number;
+  amount?: string;
+  gbp_value?: string;
+  payer?: string;
+  match_confidence?: number;
+  match_label?: string;
+  suggested_receivable_id?: number | null;
+}
+
+export interface ReconciliationImportResult {
+  provider: string;
+  filename: string;
+  dry_run: boolean;
+  batch_id?: number | null;
+  row_count: number;
+  ready_count: number;
+  imported_count: number;
+  duplicate_count: number;
+  skipped_count: number;
+  rows: ReconciliationImportRow[];
+}
+
 export interface RevenueRuleEvaluation {
   triggered: boolean;
   decision: string;
@@ -532,6 +669,7 @@ export interface DashboardPayload {
   leads: LeadPipelineSummary;
   conversions?: ConversionSummary;
   receivables: ReceivablesSummary;
+  reconciliation?: ReconciliationSummary;
   revenue_rules?: RevenueRulesSummary;
   temples: TempleSummary;
   auth: AuthStatus;

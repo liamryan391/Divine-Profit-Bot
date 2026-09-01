@@ -1,6 +1,6 @@
 [project]
 name = "divine-tool"
-version = "3.1.0"
+version = "3.2.0"
 description = "A lawful revenue quota tracker and background command daemon."
 requires-python = ">=3.10"
 dependencies = []

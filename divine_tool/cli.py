@@ -25,10 +25,13 @@ from .core import (
     ensure_state,
     external_connections_snapshot,
     format_money,
+    confirm_reconciliation_match,
     generate_opportunities,
     generate_report,
     generate_upgrades,
     import_income_csv,
+    import_reconciliation_csv,
+    ignore_reconciliation_transaction,
     list_approval_actions,
     list_accounts,
     list_exceptions,
@@ -39,6 +42,7 @@ from .core import (
     parse_money_to_minor,
     queue_receivable_reminder,
     receivables_summary,
+    reconciliation_summary,
     record_receivable_payment,
     reset_account_password,
     run_worker_cycle,
@@ -202,6 +206,36 @@ def build_parser() -> argparse.ArgumentParser:
     receivable_status.add_argument("id", type=int)
     receivable_status.add_argument("status", choices=["open", "void"])
     receivable_status.set_defaults(func=cmd_receivable_status)
+
+    reconcile = sub.add_parser("reconcile", help="Import and review payment evidence.")
+    reconcile_sub = reconcile.add_subparsers(required=True)
+    reconcile_list = reconcile_sub.add_parser("list", help="List reconciliation transactions and totals.")
+    reconcile_list.add_argument(
+        "--status",
+        choices=["all", "review", "unmatched", "suggested", "matched", "ignored"],
+        default="review",
+    )
+    reconcile_list.add_argument("--limit", type=int, default=60)
+    reconcile_list.set_defaults(func=cmd_reconcile_list)
+    reconcile_import = reconcile_sub.add_parser("import", help="Import a bank or provider CSV as payment evidence.")
+    reconcile_import.add_argument("file", help="CSV file path.")
+    reconcile_import.add_argument(
+        "--provider",
+        choices=["bank", "generic", "paypal", "square", "stripe"],
+        default="generic",
+    )
+    reconcile_import.add_argument("--dry-run", action="store_true", help="Preview matches without writing evidence.")
+    reconcile_import.set_defaults(func=cmd_reconcile_import)
+    reconcile_confirm = reconcile_sub.add_parser("confirm", help="Confirm a transaction-to-receivable match.")
+    reconcile_confirm.add_argument("transaction_id", type=int)
+    reconcile_confirm.add_argument("receivable_id", type=int)
+    reconcile_confirm.add_argument("--count-as-income", action="store_true")
+    reconcile_confirm.add_argument("--note", default="")
+    reconcile_confirm.set_defaults(func=cmd_reconcile_confirm)
+    reconcile_ignore = reconcile_sub.add_parser("ignore", help="Ignore non-receivable payment evidence.")
+    reconcile_ignore.add_argument("transaction_id", type=int)
+    reconcile_ignore.add_argument("--reason", required=True)
+    reconcile_ignore.set_defaults(func=cmd_reconcile_ignore)
 
     approval = sub.add_parser("approval", help="Create and review human-approved action drafts.")
     approval_sub = approval.add_subparsers(required=True)
@@ -592,6 +626,79 @@ def cmd_receivable_remind(args: argparse.Namespace, data_dir: Path) -> int:
 def cmd_receivable_status(args: argparse.Namespace, data_dir: Path) -> int:
     receivable = update_receivable_status(data_dir, args.id, args.status)
     print(f"Receivable #{receivable['id']} marked {receivable['state_label']}.")
+    return 0
+
+
+def cmd_reconcile_list(args: argparse.Namespace, data_dir: Path) -> int:
+    summary = reconciliation_summary(data_dir, status=args.status, limit=args.limit)
+    print(
+        f"Reconciliation: {summary['review_count']} awaiting review ({summary['awaiting_review']}); "
+        f"{summary['matched_count']} matched ({summary['matched']})."
+    )
+    if not summary["rows"]:
+        print("No reconciliation transactions found.")
+        return 0
+    for item in summary["rows"]:
+        reference = item["external_reference"] or f"transaction-{item['id']}"
+        suggestion = (
+            f" -> receivable #{item['suggested_receivable_id']} at {item['match_confidence']}/100"
+            if item.get("suggested_receivable_id")
+            else ""
+        )
+        print(
+            f"#{item['id']} {item['status_label']}: {reference} - {item['gbp_value']} - "
+            f"{item['payer'] or 'unknown payer'}{suggestion}"
+        )
+    return 0
+
+
+def cmd_reconcile_import(args: argparse.Namespace, data_dir: Path) -> int:
+    path = Path(args.file).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        raise DivineToolError(f"CSV file was not found: {path}")
+    result = import_reconciliation_csv(
+        data_dir,
+        csv_text=path.read_text(encoding="utf-8-sig"),
+        provider=args.provider,
+        dry_run=args.dry_run,
+        filename=path.name,
+    )
+    mode = "ready" if args.dry_run else "imported"
+    count = result["ready_count"] if args.dry_run else result["imported_count"]
+    print(
+        f"Reconciliation import: {count} {mode}, {result['duplicate_count']} duplicate, "
+        f"{result['skipped_count']} skipped."
+    )
+    if result.get("batch_id"):
+        print(f"Audit batch: #{result['batch_id']}.")
+    return 0
+
+
+def cmd_reconcile_confirm(args: argparse.Namespace, data_dir: Path) -> int:
+    result = confirm_reconciliation_match(
+        data_dir,
+        transaction_id=args.transaction_id,
+        receivable_id=args.receivable_id,
+        count_as_income=args.count_as_income,
+        note=args.note,
+    )
+    transaction = result["transaction"]
+    receivable = result["receivable"]
+    print(
+        f"Matched evidence #{transaction['id']} to receivable #{receivable['id']} "
+        f"as payment #{result['payment']['id']}."
+    )
+    print(f"Income treatment: {transaction['income_treatment'].replace('_', ' ')}.")
+    return 0
+
+
+def cmd_reconcile_ignore(args: argparse.Namespace, data_dir: Path) -> int:
+    result = ignore_reconciliation_transaction(
+        data_dir,
+        transaction_id=args.transaction_id,
+        reason=args.reason,
+    )
+    print(f"Ignored reconciliation evidence #{result['transaction']['id']}; decision #{result['decision_id']} recorded.")
     return 0
 
 

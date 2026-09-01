@@ -31,10 +31,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v2.9.1`: tested backup restore and failure drills.
 - `v3.0.0`: Backend Roadmap 3.0 completion gate.
 - `v3.1.0`: Phase 6 Receivables Pipeline with collection tracking and human-approved reminders.
+- `v3.2.0`: Phase 6 Payment Reconciliation with read-only transaction evidence, explainable matching, human confirmation, and audit history.
 
 ## Current Status
 
-Current version: `v3.1.0`.
+Current version: `v3.2.0`.
 
 Completed:
 
@@ -96,6 +97,7 @@ Completed:
 - Backend Roadmap 3.0 Stage 3.0.6: shipped checksum-backed backups, verified offline restores, pre-restore safety copies, integrity checks, and isolated failure drills.
 - Backend Roadmap 3.0 Stage 3.0.7: passed the operational release gate and shipped `v3.0.0`.
 - Phase 6 Stage 6.1: shipped the Receivables Pipeline with temple-scoped invoices, due and overdue exposure, partial and full payments, double-counting protection, reports, CLI/API controls, and human-approved reminder drafts.
+- Phase 6 Stage 6.2: shipped read-only payment evidence imports, explainable receivable matching, explicit income treatment, idempotent confirmation, authenticated UI/API/CLI controls, and complete batch/decision audit history.
 
 ## Phase 0: Foundation
 
@@ -437,7 +439,7 @@ Sequencing rule:
 - Roadmap 2.0 reached its completion gate before Phase 5 resumed.
 - Phase 5 Stages 5.1 through 5.3 are now shipped.
 - Backend Roadmap 3.0 resolved the Phase 5 operational blockers and passed its release gate; Phase 6 is now unblocked.
-- Phase 6 is active; Stage 6.1 is shipped and Stage 6.2 is next.
+- Phase 6 is active; Stages 6.1 and 6.2 are shipped, and Stage 6.3 is next.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -841,7 +843,7 @@ Evidence collected on 31 August 2026:
 
 ### Stage 6.2: Payment Reconciliation
 
-Status: planned.
+Status: complete.
 
 Deliverables:
 
@@ -851,6 +853,16 @@ Deliverables:
 - Preserve idempotency and a complete reconciliation audit trail.
 
 Release target: `v3.2.0`.
+
+Release status: shipped.
+
+Evidence collected on 1 September 2026:
+
+- Schema v9 stores temple-scoped import batches, transaction fingerprints, persisted candidate evidence, receivable/payment links, and immutable confirmation or ignore decisions.
+- Matching scores explain native amount, GBP value, currency, invoice reference, client/payer, and date evidence; ambiguous and unmatched rows remain in the human review queue.
+- Confirmation, optional income treatment, balance updates, and audit decisions commit atomically; repeated imports and concurrent confirmations cannot create duplicate transactions, payments, or income.
+- All 42 automated tests pass, including dry-run, debit filtering, exact and ambiguous matching, authenticated API decisions, reporting, and concurrency coverage.
+- Production frontend build and static QA pass with the Reconcile workspace included. Deployment preflight, integrity, and desktop/mobile browser evidence complete the release gate.
 
 ### Stage 6.3: Follow-Up Cadences
 
@@ -947,12 +959,15 @@ The tool is fully operational for protected local use when the Creator can:
 - Track billed money through open, due, overdue, partial, paid, and void receivable states.
 - Record collections without double-counting lead income.
 - Queue receivable reminders as drafts that still require human approval.
+- Import bank or payment-provider evidence without changing an external account.
+- Review explainable match candidates and explicitly confirm or ignore each transaction.
+- Audit every reconciliation batch and decision without duplicating payments or income.
 
 ## Recommended Next Build Step
 
-Build Phase 6 Stage 6.2: Payment Reconciliation.
+Build Phase 6 Stage 6.3: Follow-Up Cadences.
 
-- Import transaction evidence without granting the tool authority to move money.
-- Propose exact and probable receivable matches with visible reasons and confidence.
-- Require the Creator to confirm ambiguous matches and income treatment.
-- Prove duplicate imports and repeated confirmations cannot create duplicate payments or income.
+- Configure due-soon and overdue reminder schedules without autonomous dispatch.
+- Preserve reminder history, suppression rules, and client contact state.
+- Require human approval before every external message.
+- Measure collection timing and reminder outcomes for later retention work.
