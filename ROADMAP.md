@@ -32,10 +32,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v3.0.0`: Backend Roadmap 3.0 completion gate.
 - `v3.1.0`: Phase 6 Receivables Pipeline with collection tracking and human-approved reminders.
 - `v3.2.0`: Phase 6 Payment Reconciliation with read-only transaction evidence, explainable matching, human confirmation, and audit history.
+- `v3.3.0`: Phase 6 Follow-Up Cadences with configurable schedules, contact suppression, approval-gated drafts, and collection outcomes.
 
 ## Current Status
 
-Current version: `v3.2.0`.
+Current version: `v3.3.0`.
 
 Completed:
 
@@ -439,7 +440,7 @@ Sequencing rule:
 - Roadmap 2.0 reached its completion gate before Phase 5 resumed.
 - Phase 5 Stages 5.1 through 5.3 are now shipped.
 - Backend Roadmap 3.0 resolved the Phase 5 operational blockers and passed its release gate; Phase 6 is now unblocked.
-- Phase 6 is active; Stages 6.1 and 6.2 are shipped, and Stage 6.3 is next.
+- Phase 6 is active; Stages 6.1 through 6.3 are shipped, and Stage 6.4 is next.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -866,7 +867,7 @@ Evidence collected on 1 September 2026:
 
 ### Stage 6.3: Follow-Up Cadences
 
-Status: planned.
+Status: complete.
 
 Deliverables:
 
@@ -876,6 +877,17 @@ Deliverables:
 - Collection-time and reminder-outcome measurements.
 
 Release target: `v3.3.0`.
+
+Release status: shipped.
+
+Evidence collected on 1 September 2026:
+
+- Schema v10 stores one configurable cadence per temple, client-level active, paused, or do-not-contact state, and a durable reminder-event history linked to receivables and approval drafts.
+- The daemon and manual run command share one idempotent processor. Due-soon and overdue steps can create approval drafts only; suppressed clients receive no draft, and no path sends an external message.
+- Approval transitions update reminder history and last-contact state. Payments cancel stale drafts, preserve booked-income protection, and update the latest completed reminder with partial or paid outcomes.
+- Collection reporting includes response outcomes, collection value after completed reminders, average issue-to-collection days, and average overdue collection days without claiming unsupported causality.
+- All 45 automated tests pass, including schedule idempotency, suppression release, approval gating, authenticated API operations, payment-linked outcomes, stale-draft cancellation, reports, migrations, and concurrency regression coverage.
+- Production frontend build and static QA pass with the Follow-Ups workspace included. Schema-v10 preflight, integrity checks, and authenticated desktop/mobile visual evidence complete the release gate.
 
 ### Stage 6.4: Retainers And Recurring Revenue
 
@@ -962,12 +974,15 @@ The tool is fully operational for protected local use when the Creator can:
 - Import bank or payment-provider evidence without changing an external account.
 - Review explainable match candidates and explicitly confirm or ignore each transaction.
 - Audit every reconciliation batch and decision without duplicating payments or income.
+- Configure due-soon and overdue reminder schedules per temple.
+- Pause or suppress client contact before any reminder draft is created.
+- Review reminder history and collection outcomes without bypassing human approval.
 
 ## Recommended Next Build Step
 
-Build Phase 6 Stage 6.3: Follow-Up Cadences.
+Build Phase 6 Stage 6.4: Retainers And Recurring Revenue.
 
-- Configure due-soon and overdue reminder schedules without autonomous dispatch.
-- Preserve reminder history, suppression rules, and client contact state.
-- Require human approval before every external message.
-- Measure collection timing and reminder outcomes for later retention work.
+- Add recurring receivable templates for retainers, subscriptions, and instalments.
+- Generate recurring invoices inside controlled windows with duplicate prevention.
+- Add pause, end, renewal-risk, and expected recurring revenue visibility.
+- Preserve the existing approval, reconciliation, follow-up, and income-counting boundaries.

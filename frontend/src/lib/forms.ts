@@ -20,6 +20,7 @@ const MONEY_RE = /^\d+(?:[.,]\d+)?$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TEMPLE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,38}[a-z0-9]$/;
 const PERCENT_RE = /^\d+(?:[.,]\d+)?$/;
+const DAY_LIST_RE = /^\d+(?:\s*,\s*\d+)*$/;
 
 export function clearWorkflowFormValidity(form: HTMLFormElement) {
   for (const element of Array.from(form.elements)) {
@@ -144,6 +145,18 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
     validateReceivablePayment(form, issues);
   }
 
+  if (workflowKey === "/api/follow-ups/cadence") {
+    validateFollowUpCadence(form, issues);
+  }
+
+  if (workflowKey === "/api/follow-ups/client") {
+    validateFollowUpClient(form, issues);
+  }
+
+  if (workflowKey.startsWith("/api/follow-ups/") && workflowKey.endsWith("/outcome")) {
+    validateFollowUpOutcome(form, issues);
+  }
+
   if (workflowKey.startsWith("/api/reconciliation/") && workflowKey.endsWith("/confirm")) {
     requireText(form, issues, "receivable_id", "Receivable");
   }
@@ -166,6 +179,60 @@ export function validateWorkflowForm(form: HTMLFormElement, workflowKey: string)
   }
 
   return dedupeIssues(issues);
+}
+
+function validateFollowUpCadence(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  for (const [field, label] of [["due_soon_days", "Days Before Due"], ["overdue_days", "Days Overdue"]] as const) {
+    const value = valueOf(form, field);
+    if (!value) {
+      issues.push({ field, label, message: "Required." });
+    } else if (!DAY_LIST_RE.test(value)) {
+      issues.push({ field, label, message: "Use whole-day offsets separated by commas, such as 3, 7, 14." });
+    } else if (value.split(",").some((part) => Number(part.trim()) > 365)) {
+      issues.push({ field, label, message: "Each day offset must be 365 or less." });
+    }
+  }
+  requireIntegerRange(form, issues, "minimum_gap_days", "Minimum Gap", 0, 90);
+  requireIntegerRange(form, issues, "max_reminders", "Maximum Reminders", 1, 100);
+  requireIntegerRange(form, issues, "stop_after_overdue_days", "Stop After Overdue Days", 1, 3650);
+}
+
+function validateFollowUpClient(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "client", "Client");
+  requireText(form, issues, "status", "Contact Status");
+  const status = valueOf(form, "status");
+  const until = valueOf(form, "suppress_until");
+  if (until && Number.isNaN(new Date(`${until}T00:00:00`).getTime())) {
+    issues.push({ field: "suppress_until", label: "Suppress Until", message: "Use a valid date." });
+  }
+  if (status !== "active") {
+    requireMinLength(form, issues, "reason", "Reason", 3);
+  }
+}
+
+function validateFollowUpOutcome(form: HTMLFormElement, issues: WorkflowIssue[]) {
+  requireText(form, issues, "outcome", "Outcome");
+  const outcome = valueOf(form, "outcome");
+  if (["disputed", "wrong_contact", "other"].includes(outcome)) {
+    requireMinLength(form, issues, "note", "Outcome Note", 3);
+  }
+}
+
+function requireIntegerRange(
+  form: HTMLFormElement,
+  issues: WorkflowIssue[],
+  field: string,
+  label: string,
+  minimum: number,
+  maximum: number,
+) {
+  const value = valueOf(form, field);
+  const numeric = Number(value);
+  if (!value) {
+    issues.push({ field, label, message: "Required." });
+  } else if (!Number.isInteger(numeric) || numeric < minimum || numeric > maximum) {
+    issues.push({ field, label, message: `Enter a whole number from ${minimum} to ${maximum}.` });
+  }
 }
 
 function validateLead(form: HTMLFormElement, issues: WorkflowIssue[]) {

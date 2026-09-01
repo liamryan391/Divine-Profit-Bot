@@ -256,6 +256,20 @@ OPEN_LEAD_STAGES = {"new", "contacted", "qualified", "proposal"}
 RECEIVABLE_STATUSES = {"open", "paid", "void"}
 RECEIVABLE_FILTERS = RECEIVABLE_STATUSES | {"all", "overdue", "due_soon", "partial"}
 RECEIVABLE_DUE_SOON_DAYS = 7
+FOLLOW_UP_EVENT_STATUSES = {"drafted", "approved", "rejected", "completed", "suppressed", "cancelled"}
+FOLLOW_UP_OUTCOMES = {
+    "pending",
+    "no_response",
+    "payment_promised",
+    "partial_payment",
+    "paid",
+    "disputed",
+    "wrong_contact",
+    "other",
+}
+CLIENT_CONTACT_STATUSES = {"active", "paused", "do_not_contact"}
+DEFAULT_DUE_SOON_FOLLOW_UP_DAYS = (3, 0)
+DEFAULT_OVERDUE_FOLLOW_UP_DAYS = (3, 7, 14, 30)
 RECONCILIATION_PROVIDERS = {"bank", "generic", "paypal", "square", "stripe"}
 RECONCILIATION_STATUSES = {"unmatched", "suggested", "matched", "ignored"}
 RECONCILIATION_FILTERS = RECONCILIATION_STATUSES | {"all", "review"}
@@ -794,6 +808,95 @@ def migrate_payment_reconciliation(conn: sqlite3.Connection) -> None:
     )
 
 
+def migrate_follow_up_cadences(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS follow_up_cadences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main' UNIQUE,
+            name TEXT NOT NULL DEFAULT 'Standard collection cadence',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            due_soon_days_json TEXT NOT NULL DEFAULT '[3, 0]',
+            overdue_days_json TEXT NOT NULL DEFAULT '[3, 7, 14, 30]',
+            minimum_gap_days INTEGER NOT NULL DEFAULT 2,
+            max_reminders INTEGER NOT NULL DEFAULT 6,
+            stop_after_overdue_days INTEGER NOT NULL DEFAULT 60,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_contact_states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            client_key TEXT NOT NULL,
+            client TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            suppress_until TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            last_contact_at TEXT NOT NULL DEFAULT '',
+            last_outcome TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(temple_id, client_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_client_contact_states_temple_status "
+        "ON client_contact_states(temple_id, status, client)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS follow_up_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            temple_id TEXT NOT NULL DEFAULT 'main',
+            receivable_id INTEGER NOT NULL,
+            cadence_id INTEGER,
+            approval_id INTEGER,
+            source TEXT NOT NULL DEFAULT 'cadence',
+            cadence_kind TEXT NOT NULL,
+            offset_days INTEGER NOT NULL DEFAULT 0,
+            scheduled_for TEXT NOT NULL,
+            client_key TEXT NOT NULL,
+            client TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'drafted',
+            suppression_reason TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT 'pending',
+            outcome_note TEXT NOT NULL DEFAULT '',
+            drafted_at TEXT NOT NULL DEFAULT '',
+            reviewed_at TEXT NOT NULL DEFAULT '',
+            outcome_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(receivable_id) REFERENCES receivables(id),
+            FOREIGN KEY(cadence_id) REFERENCES follow_up_cadences(id),
+            FOREIGN KEY(approval_id) REFERENCES approval_actions(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_follow_up_events_cadence_step "
+        "ON follow_up_events(temple_id, receivable_id, cadence_kind, offset_days, scheduled_for) "
+        "WHERE source = 'cadence'"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_follow_up_events_temple_status "
+        "ON follow_up_events(temple_id, status, scheduled_for DESC, id DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_follow_up_events_receivable "
+        "ON follow_up_events(receivable_id, created_at DESC, id DESC)"
+    )
+    ensure_column(conn, "approval_actions", "follow_up_event_id", "INTEGER")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_actions_follow_up_event "
+        "ON approval_actions(follow_up_event_id) WHERE follow_up_event_id IS NOT NULL"
+    )
+
+
 SCHEMA_MIGRATIONS = (
     SchemaMigration(1, "core_ledger", migrate_core_ledger),
     SchemaMigration(2, "approval_actions", migrate_approval_actions),
@@ -804,6 +907,7 @@ SCHEMA_MIGRATIONS = (
     SchemaMigration(7, "worker_cycle_observability", migrate_worker_cycle_observability),
     SchemaMigration(8, "receivables", migrate_receivables),
     SchemaMigration(9, "payment_reconciliation", migrate_payment_reconciliation),
+    SchemaMigration(10, "follow_up_cadences", migrate_follow_up_cadences),
 )
 LATEST_SCHEMA_VERSION = SCHEMA_MIGRATIONS[-1].version
 
@@ -2821,8 +2925,10 @@ def title_case_from_key(value: str) -> str:
     return " ".join(part.capitalize() for part in str(value).replace("_", " ").split())
 
 
-def create_approval_draft(
-    data_dir: Path,
+def _insert_approval_draft(
+    conn: sqlite3.Connection,
+    *,
+    scoped_temple_id: str,
     kind: str,
     target: str = "",
     strategy: str = "",
@@ -2835,11 +2941,10 @@ def create_approval_draft(
     channel: str = "",
     context: str = "",
     tone: str = "polite",
-    temple_id: str | None = None,
     receivable_id: int | None = None,
-) -> int:
-    ensure_state(data_dir)
-    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    follow_up_event_id: int | None = None,
+    created_at: str | None = None,
+) -> tuple[int, str]:
     kind = kind.strip().lower().replace("-", "_")
     if kind not in APPROVAL_KINDS:
         raise DivineToolError("Draft kind must be invoice_reminder, outreach, or content_prompt.")
@@ -2857,28 +2962,69 @@ def create_approval_draft(
         "tone": tone.strip() or "polite",
     }
     title, body, normalized_target = build_action_draft(kind, target.strip(), metadata)
-    created = now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO approval_actions
+            (temple_id, receivable_id, follow_up_event_id, kind, title, target, strategy,
+             body, metadata_json, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        """,
+        (
+            scoped_temple_id,
+            receivable_id,
+            follow_up_event_id,
+            kind,
+            title,
+            normalized_target,
+            strategy.strip(),
+            body,
+            json.dumps(metadata, sort_keys=True),
+            created_at or now_iso(),
+        ),
+    )
+    return int(cur.lastrowid), title
+
+
+def create_approval_draft(
+    data_dir: Path,
+    kind: str,
+    target: str = "",
+    strategy: str = "",
+    amount_minor: int | None = None,
+    due_on: date | None = None,
+    invoice: str = "",
+    offer: str = "",
+    topic: str = "",
+    goal: str = "",
+    channel: str = "",
+    context: str = "",
+    tone: str = "polite",
+    temple_id: str | None = None,
+    receivable_id: int | None = None,
+    follow_up_event_id: int | None = None,
+) -> int:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
     with db(data_dir) as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO approval_actions
-                (temple_id, receivable_id, kind, title, target, strategy, body, metadata_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-            """,
-            (
-                scoped_temple_id,
-                receivable_id,
-                kind,
-                title,
-                normalized_target,
-                strategy.strip(),
-                body,
-                json.dumps(metadata, sort_keys=True),
-                created,
-            ),
+        action_id, title = _insert_approval_draft(
+            conn,
+            scoped_temple_id=scoped_temple_id,
+            kind=kind,
+            target=target,
+            strategy=strategy,
+            amount_minor=amount_minor,
+            due_on=due_on,
+            invoice=invoice,
+            offer=offer,
+            topic=topic,
+            goal=goal,
+            channel=channel,
+            context=context,
+            tone=tone,
+            receivable_id=receivable_id,
+            follow_up_event_id=follow_up_event_id,
         )
         conn.commit()
-        action_id = int(cur.lastrowid)
     log_event(data_dir, f"Draft queued for approval: {title}", "approval", temple_id=scoped_temple_id)
     return action_id
 
@@ -3070,6 +3216,43 @@ def review_approval_action(
             """,
             (new_status, reviewed, note.strip(), action_id),
         )
+        follow_up_event_id = row["follow_up_event_id"]
+        if follow_up_event_id is not None:
+            conn.execute(
+                """
+                UPDATE follow_up_events
+                SET status = ?, reviewed_at = ?, updated_at = ?
+                WHERE id = ? AND temple_id = ?
+                """,
+                (new_status, reviewed, reviewed, int(follow_up_event_id), scoped_temple_id),
+            )
+            if new_status == "completed":
+                event = conn.execute(
+                    "SELECT client_key, client FROM follow_up_events WHERE id = ? AND temple_id = ?",
+                    (int(follow_up_event_id), scoped_temple_id),
+                ).fetchone()
+                if event is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO client_contact_states
+                            (temple_id, client_key, client, status, suppress_until, reason,
+                             last_contact_at, last_outcome, created_at, updated_at)
+                        VALUES (?, ?, ?, 'active', '', '', ?, 'pending', ?, ?)
+                        ON CONFLICT(temple_id, client_key) DO UPDATE SET
+                            client = excluded.client,
+                            last_contact_at = excluded.last_contact_at,
+                            last_outcome = excluded.last_outcome,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            scoped_temple_id,
+                            str(event["client_key"]),
+                            str(event["client"]),
+                            reviewed,
+                            reviewed,
+                            reviewed,
+                        ),
+                    )
         conn.commit()
         updated = conn.execute(
             "SELECT * FROM approval_actions WHERE id = ? AND temple_id = ?",
@@ -3558,6 +3741,21 @@ def _record_receivable_payment_in_transaction(
         """,
         (new_paid_gbp, new_status, created, receivable_id, scoped_temple_id),
     )
+    _cancel_active_receivable_reminders_in_transaction(
+        conn,
+        receivable_id=receivable_id,
+        scoped_temple_id=scoped_temple_id,
+        reviewed_at=created,
+        reason="Receivable balance changed after payment; create a fresh reminder if needed.",
+    )
+    _mark_follow_up_payment_outcome_in_transaction(
+        conn,
+        receivable_id=receivable_id,
+        scoped_temple_id=scoped_temple_id,
+        outcome="paid" if new_status == "paid" else "partial_payment",
+        occurred=occurred,
+        updated_at=created,
+    )
     payment_row = conn.execute(
         """
         SELECT p.*, r.reference, r.client
@@ -3570,6 +3768,626 @@ def _record_receivable_payment_in_transaction(
     return payment_row, row, counted_income_id
 
 
+def normalize_follow_up_days(
+    value: str | list[int] | tuple[int, ...],
+    label: str,
+    *,
+    descending: bool = False,
+) -> list[int]:
+    raw_values: list[Any]
+    if isinstance(value, str):
+        raw_values = [part.strip() for part in value.split(",") if part.strip()]
+    else:
+        raw_values = list(value)
+    if not raw_values:
+        raise DivineToolError(f"{label} must include at least one day offset.")
+    try:
+        days = sorted({int(item) for item in raw_values}, reverse=descending)
+    except (TypeError, ValueError) as exc:
+        raise DivineToolError(f"{label} must be a comma-separated list of whole days.") from exc
+    if any(item < 0 or item > 365 for item in days):
+        raise DivineToolError(f"{label} offsets must be between 0 and 365 days.")
+    return days
+
+
+def follow_up_client_key(client: str) -> str:
+    normalized = " ".join(client.casefold().split())
+    if len(normalized) < 2:
+        raise DivineToolError("Client name must be at least 2 characters.")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+
+
+def follow_up_cadence_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = row_to_dict(row)
+    try:
+        due_soon = normalize_follow_up_days(
+            json.loads(str(item.pop("due_soon_days_json"))),
+            "Due-soon cadence",
+            descending=True,
+        )
+    except (json.JSONDecodeError, DivineToolError):
+        due_soon = list(DEFAULT_DUE_SOON_FOLLOW_UP_DAYS)
+    try:
+        overdue = normalize_follow_up_days(
+            json.loads(str(item.pop("overdue_days_json"))),
+            "Overdue cadence",
+        )
+    except (json.JSONDecodeError, DivineToolError):
+        overdue = list(DEFAULT_OVERDUE_FOLLOW_UP_DAYS)
+    item["enabled"] = bool(item["enabled"])
+    item["due_soon_days"] = due_soon
+    item["overdue_days"] = overdue
+    item["due_soon_display"] = ", ".join(str(value) for value in due_soon)
+    item["overdue_display"] = ", ".join(str(value) for value in overdue)
+    return item
+
+
+def _ensure_follow_up_cadence_in_transaction(conn: sqlite3.Connection, scoped_temple_id: str) -> sqlite3.Row:
+    created = now_iso()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO follow_up_cadences
+            (temple_id, name, enabled, due_soon_days_json, overdue_days_json,
+             minimum_gap_days, max_reminders, stop_after_overdue_days, created_at, updated_at)
+        VALUES (?, 'Standard collection cadence', 1, '[3, 0]', '[3, 7, 14, 30]', 2, 6, 60, ?, ?)
+        """,
+        (scoped_temple_id, created, created),
+    )
+    row = conn.execute(
+        "SELECT * FROM follow_up_cadences WHERE temple_id = ?",
+        (scoped_temple_id,),
+    ).fetchone()
+    if row is None:
+        raise DivineToolError("Follow-up cadence could not be initialized.")
+    return row
+
+
+def ensure_follow_up_cadence(data_dir: Path, temple_id: str | None = None) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    with db(data_dir) as conn:
+        row = conn.execute(
+            "SELECT * FROM follow_up_cadences WHERE temple_id = ?",
+            (scoped_temple_id,),
+        ).fetchone()
+    if row is not None:
+        return follow_up_cadence_to_dict(row)
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _ensure_follow_up_cadence_in_transaction(conn, scoped_temple_id)
+        conn.commit()
+    return follow_up_cadence_to_dict(row)
+
+
+def update_follow_up_cadence(
+    data_dir: Path,
+    *,
+    due_soon_days: str | list[int] | tuple[int, ...],
+    overdue_days: str | list[int] | tuple[int, ...],
+    minimum_gap_days: int,
+    max_reminders: int,
+    stop_after_overdue_days: int,
+    enabled: bool = True,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    due_soon = normalize_follow_up_days(due_soon_days, "Due-soon cadence", descending=True)
+    overdue = normalize_follow_up_days(overdue_days, "Overdue cadence")
+    minimum_gap_days = int(minimum_gap_days)
+    max_reminders = int(max_reminders)
+    stop_after_overdue_days = int(stop_after_overdue_days)
+    if minimum_gap_days < 0 or minimum_gap_days > 90:
+        raise DivineToolError("Minimum contact gap must be between 0 and 90 days.")
+    if max_reminders < 1 or max_reminders > 100:
+        raise DivineToolError("Maximum reminders must be between 1 and 100.")
+    if stop_after_overdue_days < 1 or stop_after_overdue_days > 3650:
+        raise DivineToolError("Stop-after window must be between 1 and 3650 overdue days.")
+    updated = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_follow_up_cadence_in_transaction(conn, scoped_temple_id)
+        conn.execute(
+            """
+            UPDATE follow_up_cadences
+            SET enabled = ?, due_soon_days_json = ?, overdue_days_json = ?, minimum_gap_days = ?,
+                max_reminders = ?, stop_after_overdue_days = ?, updated_at = ?
+            WHERE temple_id = ?
+            """,
+            (
+                int(bool(enabled)),
+                json.dumps(due_soon),
+                json.dumps(overdue),
+                minimum_gap_days,
+                max_reminders,
+                stop_after_overdue_days,
+                updated,
+                scoped_temple_id,
+            ),
+        )
+        row = conn.execute("SELECT * FROM follow_up_cadences WHERE temple_id = ?", (scoped_temple_id,)).fetchone()
+        conn.commit()
+    log_event(data_dir, "Follow-up cadence configuration updated", "follow_up", temple_id=scoped_temple_id)
+    return follow_up_cadence_to_dict(row)
+
+
+def client_contact_state_to_dict(
+    row: sqlite3.Row | dict[str, Any],
+    today: date | None = None,
+) -> dict[str, Any]:
+    item = row_to_dict(row)
+    review_date = today or date.today()
+    pause_expired = (
+        str(item["status"]) == "paused"
+        and bool(item["suppress_until"])
+        and str(item["suppress_until"]) < review_date.isoformat()
+    )
+    item["effective_status"] = "active" if pause_expired else str(item["status"])
+    item["status_label"] = "Active (pause expired)" if pause_expired else title_case_from_key(str(item["status"]))
+    item["suppressed"] = item["effective_status"] != "active"
+    return item
+
+
+def update_client_contact_state(
+    data_dir: Path,
+    client: str,
+    status: str,
+    suppress_until: date | None = None,
+    reason: str = "",
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    cleaned_client = " ".join(client.split())
+    client_key = follow_up_client_key(cleaned_client)
+    normalized_status = status.strip().lower().replace("-", "_")
+    if normalized_status not in CLIENT_CONTACT_STATUSES:
+        raise DivineToolError("Client contact status must be active, paused, or do_not_contact.")
+    if normalized_status == "active":
+        suppress_until = None
+        reason = ""
+    updated = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT * FROM client_contact_states WHERE temple_id = ? AND client_key = ?",
+            (scoped_temple_id, client_key),
+        ).fetchone()
+        last_contact_at = str(existing["last_contact_at"]) if existing else ""
+        last_outcome = str(existing["last_outcome"]) if existing else ""
+        created_at = str(existing["created_at"]) if existing else updated
+        conn.execute(
+            """
+            INSERT INTO client_contact_states
+                (temple_id, client_key, client, status, suppress_until, reason,
+                 last_contact_at, last_outcome, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(temple_id, client_key) DO UPDATE SET
+                client = excluded.client,
+                status = excluded.status,
+                suppress_until = excluded.suppress_until,
+                reason = excluded.reason,
+                updated_at = excluded.updated_at
+            """,
+            (
+                scoped_temple_id,
+                client_key,
+                cleaned_client,
+                normalized_status,
+                suppress_until.isoformat() if suppress_until else "",
+                reason.strip(),
+                last_contact_at,
+                last_outcome,
+                created_at,
+                updated,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM client_contact_states WHERE temple_id = ? AND client_key = ?",
+            (scoped_temple_id, client_key),
+        ).fetchone()
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Client contact state updated: {cleaned_client} is {normalized_status.replace('_', ' ')}",
+        "follow_up",
+        temple_id=scoped_temple_id,
+    )
+    return client_contact_state_to_dict(row)
+
+
+def _follow_up_schedule(cadence: dict[str, Any], due_on: date) -> list[dict[str, Any]]:
+    schedule = [
+        {
+            "cadence_kind": "due_soon",
+            "offset_days": int(offset),
+            "scheduled_for": due_on - timedelta(days=int(offset)),
+        }
+        for offset in cadence["due_soon_days"]
+    ]
+    schedule.extend(
+        {
+            "cadence_kind": "overdue",
+            "offset_days": int(offset),
+            "scheduled_for": due_on + timedelta(days=int(offset)),
+        }
+        for offset in cadence["overdue_days"]
+    )
+    return sorted(schedule, key=lambda item: (item["scheduled_for"], item["cadence_kind"], item["offset_days"]))
+
+
+def _follow_up_suppression_reason(
+    conn: sqlite3.Connection,
+    *,
+    scoped_temple_id: str,
+    receivable: dict[str, Any],
+    cadence: dict[str, Any],
+    today: date,
+    automatic: bool,
+) -> str:
+    if automatic and not cadence["enabled"]:
+        return "Cadence is disabled."
+    if receivable["status"] != "open" or int(receivable["outstanding_gbp_minor"]) <= 0:
+        return "Receivable is not open with an outstanding balance."
+    client_key = follow_up_client_key(str(receivable["client"]))
+    state = conn.execute(
+        "SELECT * FROM client_contact_states WHERE temple_id = ? AND client_key = ?",
+        (scoped_temple_id, client_key),
+    ).fetchone()
+    if state is not None:
+        contact_status = str(state["status"])
+        suppress_until = str(state["suppress_until"])
+        if contact_status == "do_not_contact":
+            return f"Client is marked do not contact{': ' + str(state['reason']) if state['reason'] else '.'}"
+        if contact_status == "paused" and (not suppress_until or suppress_until >= today.isoformat()):
+            suffix = f" until {suppress_until}" if suppress_until else ""
+            return f"Client contact is paused{suffix}{': ' + str(state['reason']) if state['reason'] else '.'}"
+    due_on = date.fromisoformat(str(receivable["due_on"]))
+    if (today - due_on).days > int(cadence["stop_after_overdue_days"]):
+        return f"Receivable is outside the {cadence['stop_after_overdue_days']}-day overdue cadence window."
+    active = conn.execute(
+        """
+        SELECT id, status FROM approval_actions
+        WHERE temple_id = ? AND receivable_id = ? AND status IN ('pending', 'approved')
+        ORDER BY id DESC LIMIT 1
+        """,
+        (scoped_temple_id, int(receivable["id"])),
+    ).fetchone()
+    if active is not None:
+        return f"Reminder draft #{active['id']} is already {active['status']}."
+    completed_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS count FROM follow_up_events
+            WHERE temple_id = ? AND receivable_id = ? AND status = 'completed'
+            """,
+            (scoped_temple_id, int(receivable["id"])),
+        ).fetchone()["count"]
+    )
+    if completed_count >= int(cadence["max_reminders"]):
+        return f"Maximum of {cadence['max_reminders']} completed reminders reached."
+    last_contact = conn.execute(
+        """
+        SELECT reviewed_at FROM follow_up_events
+        WHERE temple_id = ? AND receivable_id = ? AND status = 'completed' AND reviewed_at <> ''
+        ORDER BY reviewed_at DESC, id DESC LIMIT 1
+        """,
+        (scoped_temple_id, int(receivable["id"])),
+    ).fetchone()
+    if last_contact is not None and int(cadence["minimum_gap_days"]) > 0:
+        try:
+            last_contact_date = date.fromisoformat(str(last_contact["reviewed_at"])[:10])
+            elapsed = (today - last_contact_date).days
+            if elapsed < int(cadence["minimum_gap_days"]):
+                return f"Minimum contact gap has {int(cadence['minimum_gap_days']) - elapsed} day(s) remaining."
+        except ValueError:
+            pass
+    return ""
+
+
+def _insert_follow_up_event(
+    conn: sqlite3.Connection,
+    *,
+    scoped_temple_id: str,
+    receivable: dict[str, Any],
+    cadence_id: int,
+    source: str,
+    cadence_kind: str,
+    offset_days: int,
+    scheduled_for: date,
+    status: str,
+    suppression_reason: str,
+    created_at: str,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO follow_up_events
+            (temple_id, receivable_id, cadence_id, source, cadence_kind, offset_days,
+             scheduled_for, client_key, client, status, suppression_reason, outcome,
+             drafted_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+        """,
+        (
+            scoped_temple_id,
+            int(receivable["id"]),
+            cadence_id,
+            source,
+            cadence_kind,
+            offset_days,
+            scheduled_for.isoformat(),
+            follow_up_client_key(str(receivable["client"])),
+            str(receivable["client"]),
+            status,
+            suppression_reason,
+            created_at,
+            created_at,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _draft_follow_up_event(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    scoped_temple_id: str,
+    receivable: dict[str, Any],
+    created_at: str,
+) -> int:
+    action_id, _title = _insert_approval_draft(
+        conn,
+        scoped_temple_id=scoped_temple_id,
+        kind="invoice_reminder",
+        target=str(receivable["client"]),
+        amount_minor=int(receivable["outstanding_gbp_minor"]),
+        due_on=date.fromisoformat(str(receivable["due_on"])),
+        invoice=str(receivable["reference"]),
+        context=f"Outstanding receivable #{receivable['id']}",
+        receivable_id=int(receivable["id"]),
+        follow_up_event_id=event_id,
+        created_at=created_at,
+    )
+    conn.execute(
+        """
+        UPDATE follow_up_events
+        SET approval_id = ?, status = 'drafted', suppression_reason = '',
+            drafted_at = ?, updated_at = ?
+        WHERE id = ? AND temple_id = ?
+        """,
+        (action_id, created_at, created_at, event_id, scoped_temple_id),
+    )
+    return action_id
+
+
+def process_follow_up_cadences(
+    data_dir: Path,
+    today: date | None = None,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    run_date = today or date.today()
+    created = now_iso()
+    results: list[dict[str, Any]] = []
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cadence_row = _ensure_follow_up_cadence_in_transaction(conn, scoped_temple_id)
+        cadence = follow_up_cadence_to_dict(cadence_row)
+        if not cadence["enabled"]:
+            conn.commit()
+            return {
+                "temple_id": scoped_temple_id,
+                "status": "disabled",
+                "evaluated": 0,
+                "drafted": 0,
+                "suppressed": 0,
+                "existing": 0,
+                "approvals_created": 0,
+                "items": [],
+            }
+        receivable_rows = list(
+            conn.execute(
+                """
+                SELECT * FROM receivables
+                WHERE temple_id = ? AND status = 'open' AND paid_gbp_minor < gbp_minor
+                ORDER BY due_on ASC, id ASC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        for row in receivable_rows:
+            receivable = receivable_to_dict(row, today=run_date)
+            due_steps = [
+                step
+                for step in _follow_up_schedule(cadence, date.fromisoformat(str(receivable["due_on"])))
+                if step["scheduled_for"] <= run_date
+            ]
+            if not due_steps:
+                continue
+            step = due_steps[-1]
+            existing = conn.execute(
+                """
+                SELECT * FROM follow_up_events
+                WHERE temple_id = ? AND receivable_id = ? AND source = 'cadence'
+                  AND cadence_kind = ? AND offset_days = ? AND scheduled_for = ?
+                """,
+                (
+                    scoped_temple_id,
+                    int(receivable["id"]),
+                    str(step["cadence_kind"]),
+                    int(step["offset_days"]),
+                    step["scheduled_for"].isoformat(),
+                ),
+            ).fetchone()
+            suppression_reason = _follow_up_suppression_reason(
+                conn,
+                scoped_temple_id=scoped_temple_id,
+                receivable=receivable,
+                cadence=cadence,
+                today=run_date,
+                automatic=True,
+            )
+            if existing is not None:
+                if str(existing["status"]) == "suppressed" and not suppression_reason:
+                    action_id = _draft_follow_up_event(
+                        conn,
+                        event_id=int(existing["id"]),
+                        scoped_temple_id=scoped_temple_id,
+                        receivable=receivable,
+                        created_at=created,
+                    )
+                    results.append(
+                        {
+                            "receivable_id": int(receivable["id"]),
+                            "event_id": int(existing["id"]),
+                            "approval_id": action_id,
+                            "status": "drafted",
+                        }
+                    )
+                else:
+                    if str(existing["status"]) == "suppressed" and suppression_reason:
+                        conn.execute(
+                            "UPDATE follow_up_events SET suppression_reason = ?, updated_at = ? WHERE id = ?",
+                            (suppression_reason, created, int(existing["id"])),
+                        )
+                    existing_status = "suppressed" if str(existing["status"]) == "suppressed" else "existing"
+                    results.append(
+                        {
+                            "receivable_id": int(receivable["id"]),
+                            "event_id": int(existing["id"]),
+                            "approval_id": existing["approval_id"],
+                            "status": existing_status,
+                            "reason": suppression_reason if existing_status == "suppressed" else "",
+                        }
+                    )
+                continue
+            event_id = _insert_follow_up_event(
+                conn,
+                scoped_temple_id=scoped_temple_id,
+                receivable=receivable,
+                cadence_id=int(cadence["id"]),
+                source="cadence",
+                cadence_kind=str(step["cadence_kind"]),
+                offset_days=int(step["offset_days"]),
+                scheduled_for=step["scheduled_for"],
+                status="suppressed" if suppression_reason else "drafted",
+                suppression_reason=suppression_reason,
+                created_at=created,
+            )
+            action_id: int | None = None
+            if not suppression_reason:
+                action_id = _draft_follow_up_event(
+                    conn,
+                    event_id=event_id,
+                    scoped_temple_id=scoped_temple_id,
+                    receivable=receivable,
+                    created_at=created,
+                )
+            results.append(
+                {
+                    "receivable_id": int(receivable["id"]),
+                    "event_id": event_id,
+                    "approval_id": action_id,
+                    "status": "suppressed" if suppression_reason else "drafted",
+                    "reason": suppression_reason,
+                }
+            )
+        conn.commit()
+    drafted = sum(1 for item in results if item["status"] == "drafted")
+    suppressed = sum(1 for item in results if item["status"] == "suppressed")
+    existing_count = sum(1 for item in results if item["status"] == "existing")
+    if drafted or suppressed:
+        log_event(
+            data_dir,
+            f"Follow-up cadence reviewed {len(results)} due receivable(s): {drafted} draft(s), {suppressed} suppressed",
+            "follow_up",
+            "warning" if suppressed and not drafted else "info",
+            temple_id=scoped_temple_id,
+        )
+    return {
+        "temple_id": scoped_temple_id,
+        "status": "processed",
+        "evaluated": len(results),
+        "drafted": drafted,
+        "suppressed": suppressed,
+        "existing": existing_count,
+        "approvals_created": drafted,
+        "items": results,
+    }
+
+
+def _cancel_active_receivable_reminders_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    receivable_id: int,
+    scoped_temple_id: str,
+    reviewed_at: str,
+    reason: str,
+) -> None:
+    active_rows = list(
+        conn.execute(
+            """
+            SELECT id, follow_up_event_id FROM approval_actions
+            WHERE temple_id = ? AND receivable_id = ? AND status IN ('pending', 'approved')
+            """,
+            (scoped_temple_id, receivable_id),
+        )
+    )
+    if not active_rows:
+        return
+    action_ids = [int(row["id"]) for row in active_rows]
+    placeholders = ",".join("?" for _ in action_ids)
+    conn.execute(
+        f"UPDATE approval_actions SET status = 'rejected', reviewed_at = ?, decision_note = ? WHERE id IN ({placeholders})",
+        (reviewed_at, reason, *action_ids),
+    )
+    event_ids = [int(row["follow_up_event_id"]) for row in active_rows if row["follow_up_event_id"] is not None]
+    if event_ids:
+        event_placeholders = ",".join("?" for _ in event_ids)
+        conn.execute(
+            f"UPDATE follow_up_events SET status = 'cancelled', reviewed_at = ?, updated_at = ? WHERE id IN ({event_placeholders})",
+            (reviewed_at, reviewed_at, *event_ids),
+        )
+
+
+def _mark_follow_up_payment_outcome_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    receivable_id: int,
+    scoped_temple_id: str,
+    outcome: str,
+    occurred: str,
+    updated_at: str,
+) -> None:
+    event = conn.execute(
+        """
+        SELECT * FROM follow_up_events
+        WHERE temple_id = ? AND receivable_id = ? AND status = 'completed'
+          AND substr(reviewed_at, 1, 10) <= ?
+        ORDER BY reviewed_at DESC, id DESC LIMIT 1
+        """,
+        (scoped_temple_id, receivable_id, occurred),
+    ).fetchone()
+    if event is None:
+        return
+    conn.execute(
+        """
+        UPDATE follow_up_events
+        SET outcome = ?, outcome_note = ?, outcome_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (outcome, f"Payment recorded on {occurred}.", updated_at, updated_at, int(event["id"])),
+    )
+    conn.execute(
+        """
+        UPDATE client_contact_states
+        SET last_outcome = ?, updated_at = ?
+        WHERE temple_id = ? AND client_key = ?
+        """,
+        (outcome, updated_at, scoped_temple_id, str(event["client_key"])),
+    )
+
+
 def queue_receivable_reminder(
     data_dir: Path,
     receivable_id: int,
@@ -3577,40 +4395,415 @@ def queue_receivable_reminder(
 ) -> dict[str, Any]:
     ensure_state(data_dir)
     scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
-    receivable = get_receivable(data_dir, receivable_id, temple_id=scoped_temple_id)
-    if not receivable["can_remind"]:
-        raise DivineToolError("Only open receivables with an outstanding balance can queue reminders.")
+    created = now_iso()
     with db(data_dir) as conn:
-        existing = conn.execute(
-            """
-            SELECT id, status FROM approval_actions
-            WHERE temple_id = ? AND receivable_id = ? AND status IN ('pending', 'approved')
-            ORDER BY id DESC LIMIT 1
-            """,
-            (scoped_temple_id, receivable_id),
+        conn.execute("BEGIN IMMEDIATE")
+        cadence_row = _ensure_follow_up_cadence_in_transaction(conn, scoped_temple_id)
+        cadence = follow_up_cadence_to_dict(cadence_row)
+        row = conn.execute(
+            "SELECT * FROM receivables WHERE id = ? AND temple_id = ?",
+            (receivable_id, scoped_temple_id),
         ).fetchone()
-    if existing is not None:
-        raise DivineToolError(
-            f"Receivable #{receivable_id} already has {existing['status']} reminder draft #{existing['id']}."
+        if row is None:
+            raise DivineToolError(f"Receivable #{receivable_id} was not found.")
+        receivable = receivable_to_dict(row)
+        reason = _follow_up_suppression_reason(
+            conn,
+            scoped_temple_id=scoped_temple_id,
+            receivable=receivable,
+            cadence=cadence,
+            today=date.today(),
+            automatic=False,
         )
-    try:
-        action_id = create_approval_draft(
-            data_dir,
-            kind="invoice_reminder",
-            target=str(receivable["client"]),
-            amount_minor=int(receivable["outstanding_gbp_minor"]),
-            due_on=date.fromisoformat(str(receivable["due_on"])),
-            invoice=str(receivable["reference"]),
-            context=f"Outstanding receivable #{receivable_id}",
-            temple_id=scoped_temple_id,
-            receivable_id=receivable_id,
+        if reason:
+            conn.rollback()
+            raise DivineToolError(reason)
+        event_id = _insert_follow_up_event(
+            conn,
+            scoped_temple_id=scoped_temple_id,
+            receivable=receivable,
+            cadence_id=int(cadence["id"]),
+            source="manual",
+            cadence_kind="manual",
+            offset_days=0,
+            scheduled_for=date.today(),
+            status="drafted",
+            suppression_reason="",
+            created_at=created,
         )
-    except sqlite3.IntegrityError as exc:
-        raise DivineToolError(f"Receivable #{receivable_id} already has an active reminder draft.") from exc
+        action_id = _draft_follow_up_event(
+            conn,
+            event_id=event_id,
+            scoped_temple_id=scoped_temple_id,
+            receivable=receivable,
+            created_at=created,
+        )
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Manual follow-up draft queued for receivable #{receivable_id}",
+        "follow_up",
+        temple_id=scoped_temple_id,
+    )
     return {
         "approval_id": action_id,
+        "event_id": event_id,
         "receivable": receivable,
         "approvals": approval_queue_summary(data_dir, temple_id=scoped_temple_id),
+    }
+
+
+def follow_up_event_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = row_to_dict(row)
+    item["status_label"] = title_case_from_key(str(item["status"]))
+    item["outcome_label"] = title_case_from_key(str(item["outcome"]))
+    cadence_kind = str(item["cadence_kind"])
+    offset_days = int(item["offset_days"])
+    if cadence_kind == "due_soon":
+        item["schedule_label"] = "Due date" if offset_days == 0 else f"{offset_days} day(s) before due"
+    elif cadence_kind == "overdue":
+        item["schedule_label"] = f"{offset_days} day(s) overdue"
+    else:
+        item["schedule_label"] = "Manual reminder"
+    item["approval_required"] = True
+    item["can_record_outcome"] = str(item["status"]) == "completed"
+    if "outstanding_gbp_minor" in item:
+        item["outstanding"] = format_money(int(item["outstanding_gbp_minor"]))
+    return item
+
+
+def _follow_up_metrics_in_transaction(
+    conn: sqlite3.Connection,
+    scoped_temple_id: str,
+) -> dict[str, Any]:
+    outcome_counts = {
+        str(row["outcome"]): int(row["count"])
+        for row in conn.execute(
+            """
+            SELECT outcome, COUNT(*) AS count FROM follow_up_events
+            WHERE temple_id = ? AND status = 'completed'
+            GROUP BY outcome
+            """,
+            (scoped_temple_id,),
+        )
+    }
+    for outcome in FOLLOW_UP_OUTCOMES:
+        outcome_counts.setdefault(outcome, 0)
+    completed_count = sum(outcome_counts.values())
+    response_count = sum(
+        count for outcome, count in outcome_counts.items() if outcome not in {"pending", "no_response"}
+    )
+    assisted_minor = int(
+        conn.execute(
+            """
+            SELECT COALESCE(SUM(p.gbp_minor), 0) AS total
+            FROM receivable_payments p
+            WHERE p.temple_id = ?
+              AND EXISTS (
+                  SELECT 1 FROM follow_up_events f
+                  WHERE f.temple_id = p.temple_id
+                    AND f.receivable_id = p.receivable_id
+                    AND f.status = 'completed'
+                    AND substr(f.reviewed_at, 1, 10) <= p.occurred_on
+              )
+            """,
+            (scoped_temple_id,),
+        ).fetchone()["total"]
+    )
+    collection_rows = list(
+        conn.execute(
+            """
+            SELECT r.id, r.issued_on, r.due_on, MAX(p.occurred_on) AS collected_on
+            FROM receivables r
+            JOIN receivable_payments p ON p.receivable_id = r.id AND p.temple_id = r.temple_id
+            WHERE r.temple_id = ? AND r.status = 'paid'
+            GROUP BY r.id, r.issued_on, r.due_on
+            """,
+            (scoped_temple_id,),
+        )
+    )
+    collection_days: list[int] = []
+    overdue_days: list[int] = []
+    assisted_paid_count = 0
+    for row in collection_rows:
+        try:
+            collected_on = date.fromisoformat(str(row["collected_on"]))
+            collection_days.append(max((collected_on - date.fromisoformat(str(row["issued_on"]))).days, 0))
+            overdue_days.append(max((collected_on - date.fromisoformat(str(row["due_on"]))).days, 0))
+            assisted = conn.execute(
+                """
+                SELECT 1 FROM follow_up_events
+                WHERE temple_id = ? AND receivable_id = ? AND status = 'completed'
+                  AND substr(reviewed_at, 1, 10) <= ?
+                LIMIT 1
+                """,
+                (scoped_temple_id, int(row["id"]), collected_on.isoformat()),
+            ).fetchone()
+            assisted_paid_count += int(assisted is not None)
+        except ValueError:
+            continue
+    return {
+        "completed_reminders": completed_count,
+        "response_count": response_count,
+        "response_rate_pct": round(response_count / completed_count * 100, 1) if completed_count else 0.0,
+        "payment_promised_count": outcome_counts["payment_promised"],
+        "partial_payment_count": outcome_counts["partial_payment"],
+        "paid_count": outcome_counts["paid"],
+        "no_response_count": outcome_counts["no_response"],
+        "collected_after_reminder": format_money(assisted_minor),
+        "collected_after_reminder_minor": assisted_minor,
+        "assisted_paid_receivables": assisted_paid_count,
+        "average_collection_days": round(sum(collection_days) / len(collection_days), 1) if collection_days else 0.0,
+        "average_overdue_days": round(sum(overdue_days) / len(overdue_days), 1) if overdue_days else 0.0,
+        "outcomes": outcome_counts,
+    }
+
+
+def follow_up_summary(
+    data_dir: Path,
+    *,
+    limit: int = 30,
+    today: date | None = None,
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    run_date = today or date.today()
+    display_limit = max(min(int(limit), 100), 1)
+    cadence = ensure_follow_up_cadence(data_dir, temple_id=scoped_temple_id)
+    with db(data_dir) as conn:
+        counts = {
+            str(row["status"]): int(row["count"])
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS count FROM follow_up_events WHERE temple_id = ? GROUP BY status",
+                (scoped_temple_id,),
+            )
+        }
+        for status in FOLLOW_UP_EVENT_STATUSES:
+            counts.setdefault(status, 0)
+        event_rows = list(
+            conn.execute(
+                """
+                SELECT f.*, r.reference, r.due_on, r.issued_on, r.gbp_minor AS receivable_gbp_minor,
+                       r.paid_gbp_minor, (r.gbp_minor - r.paid_gbp_minor) AS outstanding_gbp_minor
+                FROM follow_up_events f
+                JOIN receivables r ON r.id = f.receivable_id AND r.temple_id = f.temple_id
+                WHERE f.temple_id = ?
+                ORDER BY f.created_at DESC, f.id DESC
+                LIMIT ?
+                """,
+                (scoped_temple_id, display_limit),
+            )
+        )
+        contact_rows = list(
+            conn.execute(
+                """
+                SELECT * FROM client_contact_states
+                WHERE temple_id = ?
+                ORDER BY CASE status WHEN 'do_not_contact' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                         client ASC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        receivable_rows = list(
+            conn.execute(
+                """
+                SELECT * FROM receivables
+                WHERE temple_id = ? AND status = 'open' AND paid_gbp_minor < gbp_minor
+                ORDER BY due_on ASC, id ASC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        existing_rows = list(
+            conn.execute(
+                """
+                SELECT * FROM follow_up_events
+                WHERE temple_id = ? AND source = 'cadence'
+                ORDER BY scheduled_for ASC, id ASC
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        metrics = _follow_up_metrics_in_transaction(conn, scoped_temple_id)
+        existing_by_step = {
+            (
+                int(row["receivable_id"]),
+                str(row["cadence_kind"]),
+                int(row["offset_days"]),
+                str(row["scheduled_for"]),
+            ): row
+            for row in existing_rows
+        }
+        upcoming: list[dict[str, Any]] = []
+        for row in receivable_rows:
+            receivable = receivable_to_dict(row, today=run_date)
+            schedule = _follow_up_schedule(cadence, date.fromisoformat(str(receivable["due_on"])))
+            chosen: dict[str, Any] | None = None
+            chosen_event: sqlite3.Row | None = None
+            for step in reversed([item for item in schedule if item["scheduled_for"] <= run_date]):
+                event = existing_by_step.get(
+                    (
+                        int(receivable["id"]),
+                        str(step["cadence_kind"]),
+                        int(step["offset_days"]),
+                        step["scheduled_for"].isoformat(),
+                    )
+                )
+                if event is None or str(event["status"]) == "suppressed":
+                    chosen = step
+                    chosen_event = event
+                    break
+            if chosen is None:
+                for step in schedule:
+                    if step["scheduled_for"] > run_date:
+                        chosen = step
+                        chosen_event = existing_by_step.get(
+                            (
+                                int(receivable["id"]),
+                                str(step["cadence_kind"]),
+                                int(step["offset_days"]),
+                                step["scheduled_for"].isoformat(),
+                            )
+                        )
+                        break
+            if chosen is None:
+                continue
+            suppression_reason = _follow_up_suppression_reason(
+                conn,
+                scoped_temple_id=scoped_temple_id,
+                receivable=receivable,
+                cadence=cadence,
+                today=run_date,
+                automatic=True,
+            )
+            event_status = str(chosen_event["status"]) if chosen_event is not None else ""
+            schedule_status = event_status or ("due" if chosen["scheduled_for"] <= run_date else "scheduled")
+            upcoming.append(
+                {
+                    "receivable_id": int(receivable["id"]),
+                    "reference": str(receivable["reference"]),
+                    "client": str(receivable["client"]),
+                    "outstanding": str(receivable["outstanding"]),
+                    "outstanding_gbp_minor": int(receivable["outstanding_gbp_minor"]),
+                    "due_on": str(receivable["due_on"]),
+                    "cadence_kind": str(chosen["cadence_kind"]),
+                    "offset_days": int(chosen["offset_days"]),
+                    "scheduled_for": chosen["scheduled_for"].isoformat(),
+                    "days_until": (chosen["scheduled_for"] - run_date).days,
+                    "status": schedule_status,
+                    "status_label": title_case_from_key(schedule_status),
+                    "suppression_reason": suppression_reason,
+                }
+            )
+    upcoming.sort(key=lambda item: (0 if item["days_until"] <= 0 else 1, item["scheduled_for"], item["receivable_id"]))
+    return {
+        "temple_id": scoped_temple_id,
+        "cadence": cadence,
+        "counts": counts,
+        "due_count": sum(1 for item in upcoming if item["days_until"] <= 0 and item["status"] in {"due", "suppressed"}),
+        "suppressed_client_count": sum(
+            1 for row in contact_rows if client_contact_state_to_dict(row, today=run_date)["suppressed"]
+        ),
+        "upcoming": upcoming[:12],
+        "recent": [follow_up_event_to_dict(row) for row in event_rows],
+        "client_states": [client_contact_state_to_dict(row, today=run_date) for row in contact_rows],
+        "metrics": metrics,
+        "policy": [
+            "Cadence processing creates drafts only; it never sends an external message.",
+            "Every reminder must be approved and then marked complete by a human.",
+            "Paused and do-not-contact clients are suppressed before a draft is created.",
+            "Payments cancel stale active drafts and update the latest completed reminder outcome.",
+        ],
+    }
+
+
+def record_follow_up_outcome(
+    data_dir: Path,
+    event_id: int,
+    outcome: str,
+    note: str = "",
+    temple_id: str | None = None,
+) -> dict[str, Any]:
+    ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    normalized_outcome = outcome.strip().lower().replace("-", "_")
+    if normalized_outcome not in FOLLOW_UP_OUTCOMES or normalized_outcome == "pending":
+        choices = ", ".join(sorted(FOLLOW_UP_OUTCOMES - {"pending"}))
+        raise DivineToolError(f"Reminder outcome must be one of: {choices}.")
+    updated = now_iso()
+    with db(data_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        event = conn.execute(
+            """
+            SELECT f.*, r.reference, r.status AS receivable_status, r.paid_gbp_minor, r.gbp_minor,
+                   (r.gbp_minor - r.paid_gbp_minor) AS outstanding_gbp_minor, r.due_on, r.issued_on
+            FROM follow_up_events f
+            JOIN receivables r ON r.id = f.receivable_id AND r.temple_id = f.temple_id
+            WHERE f.id = ? AND f.temple_id = ?
+            """,
+            (event_id, scoped_temple_id),
+        ).fetchone()
+        if event is None:
+            raise DivineToolError(f"Follow-up event #{event_id} was not found.")
+        if str(event["status"]) != "completed":
+            raise DivineToolError("Approve and complete the reminder before recording its outcome.")
+        if normalized_outcome == "paid" and int(event["paid_gbp_minor"]) < int(event["gbp_minor"]):
+            raise DivineToolError("The receivable must be fully paid before recording a paid outcome.")
+        if normalized_outcome == "partial_payment" and int(event["paid_gbp_minor"]) <= 0:
+            raise DivineToolError("Record a receivable payment before using the partial-payment outcome.")
+        if normalized_outcome in {"disputed", "wrong_contact", "other"} and len(note.strip()) < 3:
+            raise DivineToolError("Add a short note for disputed, wrong-contact, or other outcomes.")
+        conn.execute(
+            """
+            UPDATE follow_up_events
+            SET outcome = ?, outcome_note = ?, outcome_at = ?, updated_at = ?
+            WHERE id = ? AND temple_id = ?
+            """,
+            (normalized_outcome, note.strip(), updated, updated, event_id, scoped_temple_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO client_contact_states
+                (temple_id, client_key, client, status, suppress_until, reason,
+                 last_contact_at, last_outcome, created_at, updated_at)
+            VALUES (?, ?, ?, 'active', '', '', ?, ?, ?, ?)
+            ON CONFLICT(temple_id, client_key) DO UPDATE SET
+                client = excluded.client,
+                last_outcome = excluded.last_outcome,
+                updated_at = excluded.updated_at
+            """,
+            (
+                scoped_temple_id,
+                str(event["client_key"]),
+                str(event["client"]),
+                str(event["reviewed_at"]),
+                normalized_outcome,
+                updated,
+                updated,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT f.*, r.reference, r.due_on, r.issued_on, r.gbp_minor AS receivable_gbp_minor,
+                   r.paid_gbp_minor, (r.gbp_minor - r.paid_gbp_minor) AS outstanding_gbp_minor
+            FROM follow_up_events f
+            JOIN receivables r ON r.id = f.receivable_id AND r.temple_id = f.temple_id
+            WHERE f.id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+        conn.commit()
+    log_event(
+        data_dir,
+        f"Follow-up event #{event_id} outcome recorded: {normalized_outcome.replace('_', ' ')}",
+        "follow_up",
+        temple_id=scoped_temple_id,
+    )
+    return {
+        "event": follow_up_event_to_dict(row),
+        "summary": follow_up_summary(data_dir, temple_id=scoped_temple_id),
     }
 
 
@@ -3642,6 +4835,14 @@ def update_receivable_status(
             "UPDATE receivables SET status = ?, updated_at = ? WHERE id = ? AND temple_id = ?",
             (normalized_status, updated, receivable_id, scoped_temple_id),
         )
+        if normalized_status == "void":
+            _cancel_active_receivable_reminders_in_transaction(
+                conn,
+                receivable_id=receivable_id,
+                scoped_temple_id=scoped_temple_id,
+                reviewed_at=updated,
+                reason="Receivable was voided before reminder completion.",
+            )
         conn.commit()
     log_event(
         data_dir,
@@ -6283,11 +7484,11 @@ def generate_upgrades(
     report = report if report is not None else status_report(data_dir, today, temple_id=temple_id)
     if report["remaining_minor"] == 0:
         return [
-            "Reconcile imported bank or payment-provider transactions against open receivables.",
-            "Add configurable follow-up cadences while keeping every outbound reminder human-approved.",
             "Model retainers and recurring receivables for predictable monthly revenue.",
             "Forecast expected cash dates from open receivables and historical payment timing.",
-            "Measure which approved reminders shorten collection time without duplicating booked income.",
+            "Review reminder outcomes and tune cadence timing without weakening human approval.",
+            "Add client-specific cadence templates for recurring collection patterns.",
+            "Compare collection speed before and after completed reminders.",
         ]
     return [
         "Quota is not satisfied yet, so upgrades stay focused on revenue recovery.",
@@ -6341,6 +7542,12 @@ def generate_report(
         limit=25,
         temple_id=scoped_temple_id,
         state_ready=True,
+    )
+    follow_ups = follow_up_summary(
+        data_dir,
+        limit=25,
+        today=today,
+        temple_id=scoped_temple_id,
     )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
@@ -6407,6 +7614,7 @@ def generate_report(
         "conversions": conversions,
         "receivables": receivables,
         "reconciliation": reconciliation,
+        "follow_ups": follow_ups,
         "revenue_rules": revenue_rules,
         "opportunities": opportunities[:5],
         "upgrade_recommendations": upgrades,
@@ -6464,6 +7672,11 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         data_dir,
         temple_id=active_temple_id,
         state_ready=True,
+    )
+    follow_ups = follow_up_summary(
+        data_dir,
+        today=snapshot_date,
+        temple_id=active_temple_id,
     )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
@@ -6526,6 +7739,7 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         "conversions": conversions,
         "receivables": receivables,
         "reconciliation": reconciliation,
+        "follow_ups": follow_ups,
         "revenue_rules": revenue_rules,
         "temples": temples,
     }
@@ -6686,6 +7900,29 @@ def format_report_markdown(report: dict[str, Any]) -> str:
         lines.append(
             f"- {reference}: {transaction['gbp_value']} from {transaction['payer'] or 'unknown payer'} "
             f"({transaction['match_label_display']}, {transaction['match_confidence']}/100)."
+        )
+
+    follow_ups = report["follow_ups"]
+    follow_up_metrics = follow_ups["metrics"]
+    lines.extend(["", "## Follow-Up Cadences", ""])
+    lines.append(
+        f"- Cadence: {'enabled' if follow_ups['cadence']['enabled'] else 'disabled'}; "
+        f"{follow_ups['due_count']} follow-up(s) due and {follow_ups['counts']['suppressed']} suppressed event(s)."
+    )
+    lines.append(
+        f"- Completed reminders: {follow_up_metrics['completed_reminders']}; "
+        f"response rate: {follow_up_metrics['response_rate_pct']}%; "
+        f"collected after a completed reminder: {follow_up_metrics['collected_after_reminder']}."
+    )
+    lines.append(
+        f"- Average collection time: {follow_up_metrics['average_collection_days']} days from issue; "
+        f"average overdue time: {follow_up_metrics['average_overdue_days']} days."
+    )
+    for item in follow_ups["upcoming"][:5]:
+        suppression = f"; suppressed: {item['suppression_reason']}" if item["suppression_reason"] else ""
+        lines.append(
+            f"- {item['reference']} - {item['client']}: {item['status_label']} for {item['scheduled_for']}"
+            f"{suppression}."
         )
 
     rules = report["revenue_rules"]
@@ -6851,6 +8088,7 @@ def run_worker_cycle(
     started = time.perf_counter()
     command_outcomes: list[dict[str, Any]] = []
     rule_temples: list[dict[str, Any]] = []
+    follow_up_temples: list[dict[str, Any]] = []
     try:
         command_outcomes = process_command_inbox_detailed(data_dir)
         config = load_config(data_dir)
@@ -6859,6 +8097,8 @@ def run_worker_cycle(
             temple_id = str(temple.get("id") or DEFAULT_TEMPLE_ID)
             rules = revenue_rules_summary(data_dir, temple_id=temple_id)
             evaluated_count = record_revenue_rule_runs(data_dir, rules, temple_id=temple_id)
+            follow_ups = process_follow_up_cadences(data_dir, temple_id=temple_id)
+            follow_up_temples.append(follow_ups)
             approvals = approval_queue_summary(data_dir, limit=1, temple_id=temple_id)
             rule_temples.append(
                 {
@@ -6880,7 +8120,16 @@ def run_worker_cycle(
                 "outcomes": command_outcomes[:25],
             },
             "rules": {"evaluated": 0, "triggered": 0, "blocked": 0, "temples": rule_temples},
-            "approvals": {"required": 0, "pending": 0},
+            "follow_ups": {
+                "evaluated": sum(int(item.get("evaluated", 0)) for item in follow_up_temples),
+                "drafted": sum(int(item.get("drafted", 0)) for item in follow_up_temples),
+                "suppressed": sum(int(item.get("suppressed", 0)) for item in follow_up_temples),
+                "temples": follow_up_temples,
+            },
+            "approvals": {
+                "required": sum(int(item.get("drafted", 0)) for item in follow_up_temples),
+                "pending": 0,
+            },
             "failures": [failure],
         }
         try:
@@ -6903,6 +8152,10 @@ def run_worker_cycle(
     approvals_required = sum(item["approval_required"] for item in rule_temples)
     pending_approvals = sum(item["pending_approvals"] for item in rule_temples)
     blocked_rules = sum(item["blocked"] for item in rule_temples)
+    follow_ups_evaluated = sum(int(item.get("evaluated", 0)) for item in follow_up_temples)
+    follow_ups_drafted = sum(int(item.get("drafted", 0)) for item in follow_up_temples)
+    follow_ups_suppressed = sum(int(item.get("suppressed", 0)) for item in follow_up_temples)
+    approvals_required += follow_ups_drafted
     outcome = {
         "commands": {
             "total": len(command_outcomes),
@@ -6916,6 +8169,12 @@ def run_worker_cycle(
             "triggered": rules_triggered,
             "blocked": blocked_rules,
             "temples": rule_temples,
+        },
+        "follow_ups": {
+            "evaluated": follow_ups_evaluated,
+            "drafted": follow_ups_drafted,
+            "suppressed": follow_ups_suppressed,
+            "temples": follow_up_temples,
         },
         "approvals": {
             "required": approvals_required,
@@ -6942,6 +8201,7 @@ def run_worker_cycle(
             f"Worker cycle #{cycle_id} {status} via {normalized_trigger}: "
             f"{outcome['commands']['succeeded']}/{outcome['commands']['total']} commands; "
             f"{rules_triggered}/{rules_evaluated} rules triggered; "
+            f"{follow_ups_drafted}/{follow_ups_evaluated} follow-up draft(s); "
             f"{approvals_required} approval gate(s)"
         ),
         "worker",

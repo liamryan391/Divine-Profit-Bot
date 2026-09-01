@@ -24,6 +24,7 @@ from .core import (
     enqueue_command,
     ensure_state,
     external_connections_snapshot,
+    follow_up_summary,
     format_money,
     confirm_reconciliation_match,
     generate_opportunities,
@@ -40,9 +41,11 @@ from .core import (
     load_config,
     parse_date,
     parse_money_to_minor,
+    process_follow_up_cadences,
     queue_receivable_reminder,
     receivables_summary,
     reconciliation_summary,
+    record_follow_up_outcome,
     record_receivable_payment,
     reset_account_password,
     run_worker_cycle,
@@ -53,6 +56,8 @@ from .core import (
     switch_temple,
     strategy_roi_summary,
     temple_summary,
+    update_client_contact_state,
+    update_follow_up_cadence,
     update_receivable_status,
 )
 from .deployment import (
@@ -206,6 +211,38 @@ def build_parser() -> argparse.ArgumentParser:
     receivable_status.add_argument("id", type=int)
     receivable_status.add_argument("status", choices=["open", "void"])
     receivable_status.set_defaults(func=cmd_receivable_status)
+
+    follow_up = sub.add_parser("follow-up", help="Configure and review human-approved collection cadences.")
+    follow_up_sub = follow_up.add_subparsers(required=True)
+    follow_up_status = follow_up_sub.add_parser("status", help="Show cadence, queue, and outcome metrics.")
+    follow_up_status.add_argument("--limit", type=int, default=30)
+    follow_up_status.add_argument("--format", choices=["text", "json"], default="text")
+    follow_up_status.set_defaults(func=cmd_follow_up_status)
+    follow_up_configure = follow_up_sub.add_parser("configure", help="Update the active temple cadence.")
+    follow_up_configure.add_argument("--due-soon", default="3,0", help="Days before due, comma separated.")
+    follow_up_configure.add_argument("--overdue", default="3,7,14,30", help="Days after due, comma separated.")
+    follow_up_configure.add_argument("--minimum-gap", type=int, default=2)
+    follow_up_configure.add_argument("--max-reminders", type=int, default=6)
+    follow_up_configure.add_argument("--stop-after", type=int, default=60, help="Stop after this many overdue days.")
+    follow_up_configure.add_argument("--disable", action="store_true", help="Disable background cadence drafting.")
+    follow_up_configure.set_defaults(func=cmd_follow_up_configure)
+    follow_up_run = follow_up_sub.add_parser("run", help="Draft any currently due reminders for approval.")
+    follow_up_run.add_argument("--date", help="Optional review date in YYYY-MM-DD format.")
+    follow_up_run.set_defaults(func=cmd_follow_up_run)
+    follow_up_client = follow_up_sub.add_parser("client", help="Set a client contact state.")
+    follow_up_client.add_argument("client")
+    follow_up_client.add_argument("status", choices=["active", "paused", "do_not_contact"])
+    follow_up_client.add_argument("--until", help="Optional suppression end date in YYYY-MM-DD format.")
+    follow_up_client.add_argument("--reason", default="")
+    follow_up_client.set_defaults(func=cmd_follow_up_client)
+    follow_up_outcome = follow_up_sub.add_parser("outcome", help="Record the outcome of a completed reminder.")
+    follow_up_outcome.add_argument("event_id", type=int)
+    follow_up_outcome.add_argument(
+        "outcome",
+        choices=["no_response", "payment_promised", "partial_payment", "paid", "disputed", "wrong_contact", "other"],
+    )
+    follow_up_outcome.add_argument("--note", default="")
+    follow_up_outcome.set_defaults(func=cmd_follow_up_outcome)
 
     reconcile = sub.add_parser("reconcile", help="Import and review payment evidence.")
     reconcile_sub = reconcile.add_subparsers(required=True)
@@ -626,6 +663,81 @@ def cmd_receivable_remind(args: argparse.Namespace, data_dir: Path) -> int:
 def cmd_receivable_status(args: argparse.Namespace, data_dir: Path) -> int:
     receivable = update_receivable_status(data_dir, args.id, args.status)
     print(f"Receivable #{receivable['id']} marked {receivable['state_label']}.")
+    return 0
+
+
+def cmd_follow_up_status(args: argparse.Namespace, data_dir: Path) -> int:
+    summary = follow_up_summary(data_dir, limit=args.limit)
+    if args.format == "json":
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+    cadence = summary["cadence"]
+    metrics = summary["metrics"]
+    print(
+        f"Follow-up cadence: {'enabled' if cadence['enabled'] else 'disabled'}; "
+        f"{summary['due_count']} due; {summary['counts']['drafted']} drafted; "
+        f"{summary['counts']['suppressed']} suppressed."
+    )
+    print(
+        f"Schedule: {cadence['due_soon_display']} day(s) before due; "
+        f"{cadence['overdue_display']} day(s) overdue; minimum gap {cadence['minimum_gap_days']} day(s)."
+    )
+    print(
+        f"Outcomes: {metrics['completed_reminders']} completed, {metrics['response_rate_pct']}% response rate, "
+        f"{metrics['collected_after_reminder']} collected after a completed reminder."
+    )
+    for item in summary["upcoming"]:
+        suppression = f" - suppressed: {item['suppression_reason']}" if item["suppression_reason"] else ""
+        print(
+            f"#{item['receivable_id']} {item['reference']} - {item['client']}: "
+            f"{item['status_label']} on {item['scheduled_for']}{suppression}"
+        )
+    return 0
+
+
+def cmd_follow_up_configure(args: argparse.Namespace, data_dir: Path) -> int:
+    cadence = update_follow_up_cadence(
+        data_dir,
+        due_soon_days=args.due_soon,
+        overdue_days=args.overdue,
+        minimum_gap_days=args.minimum_gap,
+        max_reminders=args.max_reminders,
+        stop_after_overdue_days=args.stop_after,
+        enabled=not args.disable,
+    )
+    print(
+        f"Follow-up cadence {'enabled' if cadence['enabled'] else 'disabled'}: "
+        f"due-soon {cadence['due_soon_display']}; overdue {cadence['overdue_display']}."
+    )
+    return 0
+
+
+def cmd_follow_up_run(args: argparse.Namespace, data_dir: Path) -> int:
+    result = process_follow_up_cadences(data_dir, today=parse_date(args.date) if args.date else None)
+    print(
+        f"Follow-up review: {result['evaluated']} due, {result['drafted']} drafted for approval, "
+        f"{result['suppressed']} suppressed, {result['existing']} already handled."
+    )
+    return 0
+
+
+def cmd_follow_up_client(args: argparse.Namespace, data_dir: Path) -> int:
+    state = update_client_contact_state(
+        data_dir,
+        client=args.client,
+        status=args.status,
+        suppress_until=parse_date(args.until) if args.until else None,
+        reason=args.reason,
+    )
+    until = f" until {state['suppress_until']}" if state["suppress_until"] else ""
+    print(f"{state['client']} contact state: {state['status_label']}{until}.")
+    return 0
+
+
+def cmd_follow_up_outcome(args: argparse.Namespace, data_dir: Path) -> int:
+    result = record_follow_up_outcome(data_dir, args.event_id, args.outcome, args.note)
+    event = result["event"]
+    print(f"Follow-up event #{event['id']} outcome: {event['outcome_label']}.")
     return 0
 
 

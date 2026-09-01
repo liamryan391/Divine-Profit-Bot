@@ -6,6 +6,7 @@ import {
   Ban,
   Banknote,
   BellRing,
+  CalendarClock,
   Check,
   CirclePause,
   CirclePlay,
@@ -19,6 +20,7 @@ import {
   Landmark,
   ListChecks,
   Mail,
+  MessageSquareText,
   Plus,
   RefreshCcw,
   ReceiptText,
@@ -30,6 +32,7 @@ import {
   Target,
   TrendingUp,
   Upload,
+  UserRoundCog,
   X,
 } from "lucide-react";
 import type { FormEvent } from "react";
@@ -39,6 +42,7 @@ import type {
   ConversionSummary,
   DashboardPayload,
   ExternalSnapshot,
+  FollowUpEvent,
   ImportResult,
   LeadEntry,
   Opportunity,
@@ -967,6 +971,271 @@ export function ReceivablesPanel({
         </section>
       ) : null}
     </section>
+  );
+}
+
+export function FollowUpCadencesPanel({
+  dashboard,
+  busy,
+  feedback,
+  onSubmit,
+}: {
+  dashboard: DashboardPayload;
+  busy: string;
+  feedback: WorkflowFeedbackMap;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm?: boolean) => void;
+}) {
+  const summary = dashboard.follow_ups;
+  if (!summary) {
+    return (
+      <section className="temple-panel mt-4 min-w-0">
+        <div className="section-heading">
+          <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+            <CalendarClock aria-hidden="true" className="text-temple-gold" size={20} />
+            Follow-Up Cadences
+          </h2>
+          <Badge>Server update required</Badge>
+        </div>
+        <EmptyRow>Restart the web server to load the v3.3 follow-up cadence API and schema.</EmptyRow>
+      </section>
+    );
+  }
+  const cadence = summary.cadence;
+  const clients = Array.from(
+    new Set([
+      ...dashboard.receivables.rows.map((item) => item.client),
+      ...summary.client_states.map((item) => item.client),
+    ]),
+  ).sort((left, right) => left.localeCompare(right));
+  return (
+    <section className="temple-panel mt-4 min-w-0">
+      <div className="section-heading">
+        <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+          <CalendarClock aria-hidden="true" className="text-temple-gold" size={20} />
+          Follow-Up Cadences
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{cadence.enabled ? "Cadence enabled" : "Cadence paused"}</Badge>
+          <Badge>{summary.due_count} due</Badge>
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+        <MiniMetric label="Due Now" value={String(summary.due_count)} />
+        <MiniMetric label="Drafted" value={String(summary.counts.drafted || 0)} />
+        <MiniMetric label="Completed" value={String(summary.metrics.completed_reminders)} />
+        <MiniMetric label="Response Rate" value={`${summary.metrics.response_rate_pct}%`} />
+        <MiniMetric label="Collected After Reminder" value={summary.metrics.collected_after_reminder} />
+      </div>
+
+      <div className="mt-5 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
+        <section className="min-w-0">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Cadence Schedule</h3>
+          <form
+            noValidate
+            key={`cadence-${cadence.updated_at}`}
+            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+            onSubmit={(event) => onSubmit(event, "/api/follow-ups/cadence", "Cadence configuration saved", false)}
+          >
+            <SelectField label="Background Drafting" name="enabled" defaultValue={String(cadence.enabled)}>
+              <option value="true">Enabled</option>
+              <option value="false">Paused</option>
+            </SelectField>
+            <Field label="Days Before Due" name="due_soon_days" defaultValue={cadence.due_soon_display} placeholder="3, 0" required />
+            <Field label="Days Overdue" name="overdue_days" defaultValue={cadence.overdue_display} placeholder="3, 7, 14, 30" required />
+            <Field label="Minimum Gap" name="minimum_gap_days" type="number" min={0} max={90} defaultValue={cadence.minimum_gap_days} required />
+            <Field label="Maximum Reminders" name="max_reminders" type="number" min={1} max={100} defaultValue={cadence.max_reminders} required />
+            <Field label="Stop After Overdue Days" name="stop_after_overdue_days" type="number" min={1} max={3650} defaultValue={cadence.stop_after_overdue_days} required />
+            <div className="sm:col-span-2 lg:col-span-3">
+              <FormNotice feedback={feedback["/api/follow-ups/cadence"]} />
+            </div>
+            <div className="flex flex-wrap gap-2 sm:col-span-2 lg:col-span-3">
+              <Button icon={CalendarClock} disabled={busy === "/api/follow-ups/cadence"} type="submit">
+                {busy === "/api/follow-ups/cadence" ? "Saving..." : "Save Cadence"}
+              </Button>
+            </div>
+          </form>
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Draft Due Reminders</h3>
+          <p className="mb-3 text-sm leading-6 text-temple-muted">
+            Reviews the schedule now and creates approval drafts only. No message is sent from this action.
+          </p>
+          <form noValidate className="grid gap-3" onSubmit={(event) => onSubmit(event, "/api/follow-ups/run", "Due cadences reviewed")}>
+            <FormNotice feedback={feedback["/api/follow-ups/run"]} />
+            <Button icon={CirclePlay} disabled={busy === "/api/follow-ups/run"} type="submit">
+              {busy === "/api/follow-ups/run" ? "Reviewing..." : "Run Due Cadences"}
+            </Button>
+          </form>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            <MiniMetric label="Average Collection" value={`${summary.metrics.average_collection_days} days`} />
+            <MiniMetric label="Average Overdue" value={`${summary.metrics.average_overdue_days} days`} />
+          </div>
+        </section>
+      </div>
+
+      <div className="mt-6 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+        <section className="min-w-0">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-black uppercase text-temple-muted">
+            <UserRoundCog aria-hidden="true" size={17} />
+            Client Contact State
+          </h3>
+          <form
+            noValidate
+            className="grid gap-3 sm:grid-cols-2"
+            onSubmit={(event) => onSubmit(event, "/api/follow-ups/client", "Client contact state saved")}
+          >
+            <div className="sm:col-span-2">
+              <SelectField label="Client" name="client" defaultValue="">
+                <option value="">Select a receivable client</option>
+                {clients.map((client) => <option key={client} value={client}>{client}</option>)}
+              </SelectField>
+            </div>
+            <SelectField label="Contact Status" name="status" defaultValue="active">
+              <option value="active">Active</option>
+              <option value="paused">Paused</option>
+              <option value="do_not_contact">Do not contact</option>
+            </SelectField>
+            <Field label="Suppress Until" name="suppress_until" type="date" />
+            <div className="sm:col-span-2">
+              <Field label="Reason" name="reason" placeholder="Consent, dispute, holiday, or account context" />
+            </div>
+            <div className="sm:col-span-2">
+              <FormNotice feedback={feedback["/api/follow-ups/client"]} />
+            </div>
+            <div className="sm:col-span-2">
+              <Button icon={ShieldCheck} disabled={busy === "/api/follow-ups/client" || !clients.length} type="submit">
+                {busy === "/api/follow-ups/client" ? "Saving..." : "Save Contact State"}
+              </Button>
+            </div>
+          </form>
+          {summary.client_states.length ? (
+            <div className="mt-4 divide-y divide-temple-line border-y border-temple-line">
+              {summary.client_states.slice(0, 8).map((state) => (
+                <div key={state.id} className="grid gap-1 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="break-words">{state.client}</strong>
+                    <Badge>{state.status_label}</Badge>
+                  </div>
+                  <span className="break-words text-sm text-temple-muted">
+                    {state.suppress_until ? `Until ${shortDate(state.suppress_until)}` : "No end date"}
+                    {state.reason ? ` - ${state.reason}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-black uppercase text-temple-muted">Due And Upcoming Queue</h3>
+            <Badge>{summary.upcoming.length} shown</Badge>
+          </div>
+          {summary.upcoming.length ? (
+            <div className="divide-y divide-temple-line border-y border-temple-line">
+              {summary.upcoming.map((item) => (
+                <div key={`${item.receivable_id}-${item.cadence_kind}-${item.offset_days}`} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <strong className="block break-words">#{item.receivable_id} {item.reference} - {item.client}</strong>
+                    <span className="block break-words text-sm text-temple-muted">
+                      {item.outstanding} outstanding - scheduled {shortDate(item.scheduled_for)}
+                    </span>
+                    {item.suppression_reason ? <span className="mt-1 block break-words text-sm text-temple-gold">{item.suppression_reason}</span> : null}
+                  </div>
+                  <Badge>{item.status_label}</Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyRow>No open receivables are inside the configured cadence.</EmptyRow>
+          )}
+        </section>
+      </div>
+
+      <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-black uppercase text-temple-muted">
+            <MessageSquareText aria-hidden="true" size={17} />
+            Reminder History
+          </h3>
+          <Badge>{summary.recent.length} shown</Badge>
+        </div>
+        {summary.recent.length ? (
+          <div className="divide-y divide-temple-line border-y border-temple-line">
+            {summary.recent.map((event) => (
+              <FollowUpHistoryRow key={event.id} event={event} busy={busy} feedback={feedback} onSubmit={onSubmit} />
+            ))}
+          </div>
+        ) : (
+          <EmptyRow>No reminder events have been recorded yet.</EmptyRow>
+        )}
+      </section>
+
+      <ul className="mt-5 grid gap-1 border-t border-temple-line pt-4 text-sm text-temple-muted sm:grid-cols-2">
+        {summary.policy.map((item) => <li key={item} className="break-words">{item}</li>)}
+      </ul>
+    </section>
+  );
+}
+
+function FollowUpHistoryRow({
+  event,
+  busy,
+  feedback,
+  onSubmit,
+}: {
+  event: FollowUpEvent;
+  busy: string;
+  feedback: WorkflowFeedbackMap;
+  onSubmit: (event: FormEvent<HTMLFormElement>, path: string, success: string, resetForm?: boolean) => void;
+}) {
+  const outcomePath = `/api/follow-ups/${event.id}/outcome`;
+  return (
+    <article className="grid min-w-0 gap-4 py-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.75fr)] xl:items-start">
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <strong className="break-words">#{event.id} {event.reference} - {event.client}</strong>
+          <Badge>{event.status_label}</Badge>
+          <Badge>{event.outcome_label}</Badge>
+        </div>
+        <span className="mt-1 block break-words text-sm text-temple-muted">
+          {event.schedule_label} - {event.source} - {event.outstanding} outstanding
+        </span>
+        <span className="mt-1 block break-words text-sm text-temple-muted">
+          Approval {event.approval_id ? `#${event.approval_id}` : "not created"}
+          {event.suppression_reason ? ` - ${event.suppression_reason}` : ""}
+        </span>
+        {event.outcome_note ? <span className="mt-1 block break-words text-sm text-temple-blue">{event.outcome_note}</span> : null}
+      </div>
+      {event.can_record_outcome ? (
+        <form noValidate className="grid min-w-0 gap-3 sm:grid-cols-2" onSubmit={(formEvent) => onSubmit(formEvent, outcomePath, "Reminder outcome recorded")}>
+          <SelectField label="Outcome" name="outcome" defaultValue={event.outcome === "pending" ? "no_response" : event.outcome}>
+            <option value="no_response">No response</option>
+            <option value="payment_promised">Payment promised</option>
+            <option value="partial_payment">Partial payment</option>
+            <option value="paid">Paid</option>
+            <option value="disputed">Disputed</option>
+            <option value="wrong_contact">Wrong contact</option>
+            <option value="other">Other</option>
+          </SelectField>
+          <Field label="Outcome Note" name="note" defaultValue={event.outcome_note} placeholder="Result or next step" />
+          <div className="sm:col-span-2">
+            <FormNotice feedback={feedback[outcomePath]} />
+          </div>
+          <div className="sm:col-span-2">
+            <Button icon={Check} variant="secondary" disabled={busy === outcomePath} type="submit">
+              {busy === outcomePath ? "Saving..." : "Record Outcome"}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="temple-row text-sm text-temple-muted">
+          {event.status === "suppressed" ? "No approval draft was created." : "Approve and complete the draft before recording an outcome."}
+        </div>
+      )}
+    </article>
   );
 }
 

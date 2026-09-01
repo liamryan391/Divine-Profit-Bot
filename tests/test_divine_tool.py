@@ -45,6 +45,7 @@ from divine_tool.core import (
     enqueue_command,
     ensure_state,
     external_connections_snapshot,
+    follow_up_summary,
     generate_opportunities,
     generate_report,
     import_income_csv,
@@ -63,7 +64,9 @@ from divine_tool.core import (
     load_config,
     parse_money_to_minor,
     process_command_inbox,
+    process_follow_up_cadences,
     record_lead_conversion,
+    record_follow_up_outcome,
     record_receivable_payment,
     record_heartbeat,
     record_revenue_rule_runs,
@@ -83,6 +86,8 @@ from divine_tool.core import (
     switch_temple,
     temple_summary,
     update_account_profile,
+    update_client_contact_state,
+    update_follow_up_cadence,
     update_receivable_status,
     update_revenue_rule,
     worker_status,
@@ -402,6 +407,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"Receivables Pipeline", js_body)
                     self.assertIn(b"Collection Queue", js_body)
                     self.assertIn(b"Payment Reconciliation", js_body)
+                    self.assertIn(b"Follow-Up Cadences", js_body)
+                    self.assertIn(b"Reminder History", js_body)
                     self.assertIn(b"Human Review Queue", js_body)
                     self.assertIn(b"Worker Operations", js_body)
                     self.assertIn(b"Recent Worker Cycles", js_body)
@@ -414,6 +421,8 @@ class DivineToolTests(unittest.TestCase):
                     self.assertIn(b"/api/receivables", js_body)
                     self.assertIn(b"/api/receivables/payment", js_body)
                     self.assertIn(b"/api/reconciliation/import", js_body)
+                    self.assertIn(b"/api/follow-ups/cadence", js_body)
+                    self.assertIn(b"/api/follow-ups/run", js_body)
                     self.assertIn(b"/api/worker/status", js_body)
                     self.assertIn(b"/api/daemon/run-once", js_body)
 
@@ -865,6 +874,95 @@ class DivineToolTests(unittest.TestCase):
                 self.assertEqual(summary["matched_count"], 1)
                 self.assertEqual(summary["review_count"], 0)
                 self.assertEqual(summary["recent_decisions"][0]["action"], "confirmed")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_follow_up_web_api_requires_auth_and_preserves_human_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            session = create_session(data_dir, "creator", "strong-pass-123")
+            create_receivable(
+                data_dir,
+                client="API Cadence Client",
+                reference="INV-API-CADENCE-001",
+                amount_minor=parse_money_to_minor("90"),
+                due_on=date.today(),
+                issued_on=date.today() - timedelta(days=7),
+            )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            headers = {
+                "Content-Type": "application/json",
+                "Cookie": f"divine_session={session['token']}",
+            }
+
+            def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+                request = Request(
+                    f"{base_url}{path}",
+                    data=json.dumps(payload).encode("utf-8"),
+                    method="POST",
+                    headers=headers,
+                )
+                with urlopen(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            try:
+                with self.assertRaises(HTTPError) as unauthenticated:
+                    urlopen(f"{base_url}/api/follow-ups")
+                self.assertEqual(unauthenticated.exception.code, 401)
+                unauthenticated.exception.close()
+
+                configured = post(
+                    "/api/follow-ups/cadence",
+                    {
+                        "due_soon_days": "3,0",
+                        "overdue_days": "3,7,14",
+                        "minimum_gap_days": 2,
+                        "max_reminders": 5,
+                        "stop_after_overdue_days": 45,
+                        "enabled": True,
+                    },
+                )
+                self.assertTrue(configured["ok"])
+                self.assertEqual(configured["cadence"]["max_reminders"], 5)
+
+                post(
+                    "/api/follow-ups/client",
+                    {"client": "API Cadence Client", "status": "paused", "reason": "Awaiting account check"},
+                )
+                suppressed = post("/api/follow-ups/run", {})
+                self.assertEqual(suppressed["run"]["drafted"], 0)
+                self.assertEqual(suppressed["run"]["suppressed"], 1)
+
+                post("/api/follow-ups/client", {"client": "API Cadence Client", "status": "active"})
+                drafted = post("/api/follow-ups/run", {})
+                self.assertEqual(drafted["run"]["drafted"], 1)
+                event = drafted["state"]["follow_ups"]["recent"][0]
+                approval_id = int(event["approval_id"])
+                self.assertEqual(event["status"], "drafted")
+
+                post("/api/approval/review", {"id": approval_id, "decision": "approve"})
+                completed = post("/api/approval/review", {"id": approval_id, "decision": "complete"})
+                self.assertEqual(completed["approval"]["status"], "completed")
+                outcome = post(
+                    f"/api/follow-ups/{event['id']}/outcome",
+                    {"outcome": "no_response", "note": "No reply after manual dispatch"},
+                )
+                self.assertEqual(outcome["event"]["outcome"], "no_response")
+
+                with urlopen(
+                    Request(
+                        f"{base_url}/api/follow-ups",
+                        headers={"Cookie": f"divine_session={session['token']}"},
+                    )
+                ) as response:
+                    summary = json.loads(response.read().decode("utf-8"))["follow_ups"]
+                self.assertEqual(summary["metrics"]["no_response_count"], 1)
             finally:
                 server.shutdown()
                 server.server_close()
@@ -1506,6 +1604,133 @@ class DivineToolTests(unittest.TestCase):
             approvals = approval_queue_summary(data_dir)
             self.assertCountEqual(reminder_outcomes, ["queued", "blocked"])
             self.assertEqual(approvals["counts"]["pending"], 1)
+
+    def test_follow_up_cadence_is_idempotent_and_honors_client_suppression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            today = date(2026, 9, 1)
+            active_id = create_receivable(
+                data_dir,
+                client="Cadence Client",
+                reference="INV-CADENCE-001",
+                amount_minor=parse_money_to_minor("500"),
+                due_on=today - timedelta(days=3),
+                issued_on=today - timedelta(days=14),
+            )
+            suppressed_id = create_receivable(
+                data_dir,
+                client="Protected Client",
+                reference="INV-CADENCE-002",
+                amount_minor=parse_money_to_minor("300"),
+                due_on=today - timedelta(days=3),
+                issued_on=today - timedelta(days=14),
+            )
+            update_follow_up_cadence(
+                data_dir,
+                due_soon_days="3,0",
+                overdue_days="3,7,14",
+                minimum_gap_days=2,
+                max_reminders=4,
+                stop_after_overdue_days=45,
+            )
+            update_client_contact_state(
+                data_dir,
+                client="Protected Client",
+                status="do_not_contact",
+                reason="Client requested no reminders",
+            )
+
+            first = process_follow_up_cadences(data_dir, today=today)
+            second = process_follow_up_cadences(data_dir, today=today)
+            summary = follow_up_summary(data_dir, today=today)
+
+            self.assertEqual(first["drafted"], 1)
+            self.assertEqual(first["suppressed"], 1)
+            self.assertEqual(second["drafted"], 0)
+            self.assertEqual(second["existing"], 1)
+            self.assertEqual(second["suppressed"], 1)
+            self.assertEqual(summary["counts"]["drafted"], 1)
+            self.assertEqual(summary["counts"]["suppressed"], 1)
+            self.assertEqual(approval_queue_summary(data_dir)["counts"]["pending"], 1)
+
+            active_event = next(item for item in summary["recent"] if item["receivable_id"] == active_id)
+            protected_event = next(item for item in summary["recent"] if item["receivable_id"] == suppressed_id)
+            self.assertIsNotNone(active_event["approval_id"])
+            self.assertIsNone(protected_event["approval_id"])
+            self.assertIn("do not contact", protected_event["suppression_reason"].lower())
+
+            update_client_contact_state(data_dir, client="Protected Client", status="active")
+            released = process_follow_up_cadences(data_dir, today=today)
+            self.assertEqual(released["drafted"], 1)
+            self.assertEqual(approval_queue_summary(data_dir)["counts"]["pending"], 2)
+
+            review_approval_action(data_dir, int(active_event["approval_id"]), "approve")
+            review_approval_action(data_dir, int(active_event["approval_id"]), "complete")
+            with self.assertRaises(DivineToolError):
+                queue_receivable_reminder(data_dir, active_id)
+
+    def test_follow_up_outcomes_track_collection_and_cancel_stale_drafts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            today = date.today()
+            receivable_id = create_receivable(
+                data_dir,
+                client="Outcome Client",
+                reference="INV-OUTCOME-001",
+                amount_minor=parse_money_to_minor("200"),
+                due_on=today,
+                issued_on=today - timedelta(days=10),
+            )
+            reminder = queue_receivable_reminder(data_dir, receivable_id)
+            event_id = int(reminder["event_id"])
+            with self.assertRaises(DivineToolError):
+                record_follow_up_outcome(data_dir, event_id, "payment_promised")
+            review_approval_action(data_dir, reminder["approval_id"], "approve")
+            review_approval_action(data_dir, reminder["approval_id"], "complete")
+            promised = record_follow_up_outcome(
+                data_dir,
+                event_id,
+                "payment_promised",
+                "Client promised payment this week",
+            )
+            self.assertEqual(promised["event"]["outcome"], "payment_promised")
+
+            partial = record_receivable_payment(
+                data_dir,
+                receivable_id,
+                amount_minor=parse_money_to_minor("50"),
+                payment_reference="PAY-OUTCOME-001",
+                occurred_on=today,
+            )
+            self.assertEqual(partial["receivable"]["outstanding_gbp_minor"], 15000)
+            self.assertEqual(follow_up_summary(data_dir)["recent"][0]["outcome"], "partial_payment")
+
+            update_follow_up_cadence(
+                data_dir,
+                due_soon_days="3,0",
+                overdue_days="3,7,14,30",
+                minimum_gap_days=0,
+                max_reminders=6,
+                stop_after_overdue_days=60,
+            )
+            stale = queue_receivable_reminder(data_dir, receivable_id)
+            record_receivable_payment(
+                data_dir,
+                receivable_id,
+                amount_minor=parse_money_to_minor("150"),
+                payment_reference="PAY-OUTCOME-002",
+                occurred_on=today,
+            )
+            final = follow_up_summary(data_dir)
+            events = {item["id"]: item for item in final["recent"]}
+            self.assertEqual(events[event_id]["outcome"], "paid")
+            self.assertEqual(events[int(stale["event_id"])]["status"], "cancelled")
+            self.assertEqual(final["metrics"]["paid_count"], 1)
+            self.assertEqual(final["metrics"]["collected_after_reminder_minor"], 20000)
+            self.assertEqual(final["metrics"]["assisted_paid_receivables"], 1)
+            report = generate_report(data_dir, period_name="week", today=today)
+            self.assertIn("## Follow-Up Cadences", report["markdown"])
+            self.assertEqual(report["follow_ups"]["metrics"]["completed_reminders"], 1)
 
     def test_reconciliation_import_scores_confirms_and_preserves_idempotency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

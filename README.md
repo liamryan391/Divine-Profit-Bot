@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v3.2.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v3.3.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -42,6 +42,10 @@ python -m divine_tool receivable remind 1
 python -m divine_tool reconcile import .\bank-export.csv --provider bank --dry-run
 python -m divine_tool reconcile list --status review
 python -m divine_tool reconcile confirm 1 1 --note "Reference and amount verified"
+python -m divine_tool follow-up status
+python -m divine_tool follow-up configure --due-soon "3,0" --overdue "3,7,14,30"
+python -m divine_tool follow-up run
+python -m divine_tool follow-up client "Client Ltd" paused --until 2026-09-14 --reason "Account query"
 python -m divine_tool account status
 python -m divine_tool deploy preflight
 python -m divine_tool upgrade
@@ -86,7 +90,7 @@ Start-Process python -ArgumentList "-m divine_tool daemon --interval 300" -Windo
 By default, state lives in `.divine_tool/`:
 
 - `config.json`: quota, moods, channels, automation settings, and boundaries.
-- `divine_tool.sqlite3`: income, leads, receivables, payments, reconciliation evidence, rules, accounts, events, worker-cycle history, and other durable application state.
+- `divine_tool.sqlite3`: income, leads, receivables, payments, reconciliation evidence, follow-up cadences and outcomes, rules, accounts, events, worker-cycle history, and other durable application state.
 - `commands.jsonl`: daemon command inbox.
 - `commands.processed.jsonl`: processed daemon commands.
 - `commands.failed.jsonl`: failed daemon commands.
@@ -130,7 +134,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 - Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 - Componentized React layout shell with shared cards, panels, fields, buttons, badges, toolbars, and dashboard sections.
-- Hash-based navigation for overview, temples, strategies, leads, receivables, reconciliation, imports, approvals, reports, and settings views.
+- Hash-based navigation for overview, temples, strategies, leads, receivables, follow-ups, reconciliation, imports, approvals, reports, and settings views.
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
@@ -139,6 +143,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Receivables Pipeline for invoices and other money owed, due and overdue exposure, partial or full collections, and human-approved payment reminders.
 - Double-counting protection for receivables linked to booked lead income, with explicit opt-in income recording for standalone collections.
 - Payment Reconciliation for read-only bank/provider CSV evidence, explainable receivable suggestions, explicit confirmation or ignore decisions, duplicate protection, and a complete batch/decision audit trail.
+- Follow-Up Cadences for configurable due-soon and overdue schedules, client pause and do-not-contact safeguards, approval-gated drafts, durable reminder history, and collection outcome measurements.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 - Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
@@ -177,6 +182,22 @@ python -m divine_tool reconcile ignore 2 --reason "Internal transfer"
 
 Core API routes are `GET /api/reconciliation`, `POST /api/reconciliation/import`, `POST /api/reconciliation/{id}/confirm`, and `POST /api/reconciliation/{id}/ignore`. CSV imports accept common date, amount, currency, reference, payer, and description headings; non-GBP rows require a GBP-equivalent column.
 
+## Follow-Up Cadences
+
+Stage 6.3 turns open receivables into a controlled reminder schedule. Each temple can configure days before due, days overdue, minimum contact gaps, maximum completed reminders, and the final overdue cutoff. The daemon and manual run command use the same idempotent processor, but they only create pending approval drafts; neither path sends an external message.
+
+Client contact state can be active, paused, or do not contact. Suppressed steps remain in the reminder history without an approval draft, and a cleared temporary suppression can release the same step without duplicating it. Approving and manually completing a draft records contact time. Later payments update the latest completed reminder to partial or paid, cancel any stale active draft, and feed collection-time and outcome metrics.
+
+```powershell
+python -m divine_tool follow-up status
+python -m divine_tool follow-up configure --due-soon "3,0" --overdue "3,7,14,30" --minimum-gap 2 --max-reminders 6 --stop-after 60
+python -m divine_tool follow-up client "Client Ltd" do_not_contact --reason "Client requested no reminders"
+python -m divine_tool follow-up run
+python -m divine_tool follow-up outcome 1 payment_promised --note "Payment promised Friday"
+```
+
+Core API routes are `GET /api/follow-ups`, `POST /api/follow-ups/cadence`, `POST /api/follow-ups/client`, `POST /api/follow-ups/run`, and `POST /api/follow-ups/{id}/outcome`. All routes are protected by the same owner authentication policy as receivables and approvals.
+
 ## Database Reliability
 
 Every application connection uses SQLite WAL mode, enforces foreign keys, and waits up to 10 seconds for a contested write lock. This lets the threaded web server and daemon share the same state database without failing immediately during short overlapping writes.
@@ -195,7 +216,7 @@ Each new archive carries file sizes and SHA-256 checksums. The backup command re
 
 ## Dashboard Performance
 
-The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, reconciliation, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
+The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, reconciliation, follow-up cadences, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
 
 The 10-second browser poll calls only `GET /api/worker/status`. Full weekly and monthly reports are generated only through `GET /api/report?period=week|month` when requested.
 
@@ -218,9 +239,11 @@ Stage 6.1 release `v3.1.0` passed all 39 automated tests, the production fronten
 
 Stage 6.2 release `v3.2.0` passes all 42 automated tests, including exact and ambiguous scoring, duplicate imports, authenticated decisions, audit history, and concurrent confirmation protection. The production dashboard build and static QA also pass against schema v9; deployment and visual evidence are recorded in the Stage 6.2 roadmap gate.
 
+Stage 6.3 release `v3.3.0` passes all 45 automated tests, including cadence idempotency, suppression release, approval gating, payment-linked outcomes, stale-draft cancellation, reporting, and authenticated API coverage. The production dashboard build and static QA pass against schema v10; deployment and visual evidence are recorded in the Stage 6.3 roadmap gate.
+
 ## Worker Operations
 
-The continuous daemon, `daemon --once`, and the dashboard's Run Worker Cycle action all use the same cycle implementation. Every cycle processes claimed commands, evaluates and records active revenue rules for every temple, counts approval gates and pending approvals, and stores its duration and failures in SQLite.
+The continuous daemon, `daemon --once`, and the dashboard's Run Worker Cycle action all use the same cycle implementation. Every cycle processes claimed commands, evaluates and records active revenue rules, reviews due follow-up cadence steps for every temple, counts approval gates and pending approvals, and stores its duration and failures in SQLite.
 
 Cycle sources remain distinct for honest monitoring:
 

@@ -212,6 +212,7 @@ export interface DashboardSnapshotMetadata {
 export interface ApprovalAction {
   id: number;
   receivable_id?: number | null;
+  follow_up_event_id?: number | null;
   kind: string;
   kind_label: string;
   title: string;
@@ -413,6 +414,116 @@ export interface ReceivablesSummary {
   rows: ReceivableEntry[];
   at_risk: ReceivableEntry[];
   recent_payments: ReceivablePayment[];
+  policy: string[];
+}
+
+export interface FollowUpCadence {
+  id: number;
+  temple_id: string;
+  name: string;
+  enabled: boolean;
+  due_soon_days: number[];
+  overdue_days: number[];
+  due_soon_display: string;
+  overdue_display: string;
+  minimum_gap_days: number;
+  max_reminders: number;
+  stop_after_overdue_days: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClientContactState {
+  id: number;
+  temple_id: string;
+  client_key: string;
+  client: string;
+  status: string;
+  effective_status: string;
+  status_label: string;
+  suppress_until: string;
+  reason: string;
+  last_contact_at: string;
+  last_outcome: string;
+  suppressed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FollowUpEvent {
+  id: number;
+  temple_id: string;
+  receivable_id: number;
+  cadence_id?: number | null;
+  approval_id?: number | null;
+  source: string;
+  cadence_kind: string;
+  offset_days: number;
+  scheduled_for: string;
+  client_key: string;
+  client: string;
+  reference: string;
+  due_on: string;
+  status: string;
+  status_label: string;
+  suppression_reason: string;
+  outcome: string;
+  outcome_label: string;
+  outcome_note: string;
+  schedule_label: string;
+  outstanding: string;
+  outstanding_gbp_minor: number;
+  approval_required: boolean;
+  can_record_outcome: boolean;
+  drafted_at: string;
+  reviewed_at: string;
+  outcome_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FollowUpScheduleItem {
+  receivable_id: number;
+  reference: string;
+  client: string;
+  outstanding: string;
+  outstanding_gbp_minor: number;
+  due_on: string;
+  cadence_kind: string;
+  offset_days: number;
+  scheduled_for: string;
+  days_until: number;
+  status: string;
+  status_label: string;
+  suppression_reason: string;
+}
+
+export interface FollowUpMetrics {
+  completed_reminders: number;
+  response_count: number;
+  response_rate_pct: number;
+  payment_promised_count: number;
+  partial_payment_count: number;
+  paid_count: number;
+  no_response_count: number;
+  collected_after_reminder: string;
+  collected_after_reminder_minor: number;
+  assisted_paid_receivables: number;
+  average_collection_days: number;
+  average_overdue_days: number;
+  outcomes: Record<string, number>;
+}
+
+export interface FollowUpSummary {
+  temple_id: string;
+  cadence: FollowUpCadence;
+  counts: Record<string, number>;
+  due_count: number;
+  suppressed_client_count: number;
+  upcoming: FollowUpScheduleItem[];
+  recent: FollowUpEvent[];
+  client_states: ClientContactState[];
+  metrics: FollowUpMetrics;
   policy: string[];
 }
 
@@ -670,6 +781,7 @@ export interface DashboardPayload {
   conversions?: ConversionSummary;
   receivables: ReceivablesSummary;
   reconciliation?: ReconciliationSummary;
+  follow_ups?: FollowUpSummary;
   revenue_rules?: RevenueRulesSummary;
   temples: TempleSummary;
   auth: AuthStatus;

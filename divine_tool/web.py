@@ -40,6 +40,7 @@ from .core import (
     enqueue_command,
     ensure_state,
     external_connections_snapshot,
+    follow_up_summary,
     format_money,
     generate_opportunities,
     generate_report,
@@ -58,6 +59,8 @@ from .core import (
     load_config,
     parse_date,
     parse_money_to_minor,
+    process_follow_up_cadences,
+    record_follow_up_outcome,
     record_lead_conversion,
     record_receivable_payment,
     receivables_summary,
@@ -76,6 +79,8 @@ from .core import (
     update_receivable_status,
     update_revenue_rule,
     update_account_profile,
+    update_client_contact_state,
+    update_follow_up_cadence,
     worker_status,
 )
 from .deployment import deployment_environment, normalize_origin
@@ -234,6 +239,11 @@ def make_handler(
                     status = query.get("status", ["all"])[0]
                     limit = int(query.get("limit", ["60"])[0])
                     self.send_json({"reconciliation": reconciliation_summary(data_dir, status=status, limit=limit)})
+                    return
+                if parsed.path == "/api/follow-ups":
+                    query = parse_qs(parsed.query)
+                    limit = int(query.get("limit", ["60"])[0])
+                    self.send_json({"follow_ups": follow_up_summary(data_dir, limit=limit)})
                     return
                 if parsed.path == "/api/revenue-rules/summary":
                     self.send_json({"revenue_rules": revenue_rules_summary(data_dir)})
@@ -465,6 +475,53 @@ def make_handler(
                             "reconciliation_import": result,
                             "state": dashboard_payload(data_dir, account),
                         }
+                    )
+                    return
+                if parsed.path == "/api/follow-ups/cadence":
+                    cadence = update_follow_up_cadence(
+                        data_dir,
+                        due_soon_days=str(payload["due_soon_days"]),
+                        overdue_days=str(payload["overdue_days"]),
+                        minimum_gap_days=int(payload["minimum_gap_days"]),
+                        max_reminders=int(payload["max_reminders"]),
+                        stop_after_overdue_days=int(payload["stop_after_overdue_days"]),
+                        enabled=bool_payload(payload.get("enabled", True)),
+                    )
+                    self.send_json(
+                        {"ok": True, "cadence": cadence, "state": dashboard_payload(data_dir, account)}
+                    )
+                    return
+                if parsed.path == "/api/follow-ups/client":
+                    client_state = update_client_contact_state(
+                        data_dir,
+                        client=str(payload["client"]),
+                        status=str(payload["status"]),
+                        suppress_until=parse_date(payload["suppress_until"])
+                        if payload.get("suppress_until")
+                        else None,
+                        reason=str(payload.get("reason", "")),
+                    )
+                    self.send_json(
+                        {"ok": True, "client_state": client_state, "state": dashboard_payload(data_dir, account)}
+                    )
+                    return
+                if parsed.path == "/api/follow-ups/run":
+                    run = process_follow_up_cadences(
+                        data_dir,
+                        today=parse_date(payload["date"]) if payload.get("date") else None,
+                    )
+                    self.send_json({"ok": True, "run": run, "state": dashboard_payload(data_dir, account)})
+                    return
+                follow_up_parts = follow_up_path_parts(parsed.path)
+                if follow_up_parts and len(follow_up_parts) == 2 and follow_up_parts[1] == "outcome":
+                    result = record_follow_up_outcome(
+                        data_dir,
+                        event_id=int(follow_up_parts[0]),
+                        outcome=str(payload["outcome"]),
+                        note=str(payload.get("note", "")),
+                    )
+                    self.send_json(
+                        {"ok": True, "event": result["event"], "state": dashboard_payload(data_dir, account)}
                     )
                     return
                 reconciliation_parts = reconciliation_path_parts(parsed.path)
@@ -1003,6 +1060,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "conversions": snapshot["conversions"],
         "receivables": snapshot["receivables"],
         "reconciliation": snapshot["reconciliation"],
+        "follow_ups": snapshot["follow_ups"],
         "revenue_rules": snapshot["revenue_rules"],
         "temples": snapshot["temples"],
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},
@@ -1112,6 +1170,15 @@ def reconciliation_path_parts(path: str) -> list[str] | None:
     if not path.startswith("/api/reconciliation/"):
         return None
     parts = [part for part in path.removeprefix("/api/reconciliation/").split("/") if part]
+    if not parts:
+        return None
+    return parts
+
+
+def follow_up_path_parts(path: str) -> list[str] | None:
+    if not path.startswith("/api/follow-ups/"):
+        return None
+    parts = [part for part in path.removeprefix("/api/follow-ups/").split("/") if part]
     if not parts:
         return None
     return parts

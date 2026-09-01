@@ -10,6 +10,7 @@ import {
   CommandAltarPanel,
   ConfigPanel,
   ExternalSignalsPanel,
+  FollowUpCadencesPanel,
   ImportAltarPanel,
   LeadPipelinePanel,
   MercyExceptionPanel,
@@ -65,6 +66,7 @@ export function DashboardViewContent(props: DashboardViewContentProps) {
       {props.view === "strategies" ? <StrategiesView {...props} /> : null}
       {props.view === "leads" ? <LeadsView {...props} /> : null}
       {props.view === "receivables" ? <ReceivablesView {...props} /> : null}
+      {props.view === "follow_ups" ? <FollowUpsView {...props} /> : null}
       {props.view === "reconciliation" ? <ReconciliationView {...props} /> : null}
       {props.view === "imports" ? <ImportsView {...props} /> : null}
       {props.view === "approvals" ? <ApprovalsView {...props} /> : null}
@@ -104,7 +106,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: follow-up cadences"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: retainers and recurring revenue"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
@@ -186,6 +188,18 @@ function ReceivablesView({ dashboard, busy, feedback, onJsonForm, onReceivableAc
       <DashboardGrid>
         <UrgentApprovalsPanel dashboard={dashboard} busy={busy} onReview={onReviewApproval} />
         <RecentIncomePanel dashboard={dashboard} />
+      </DashboardGrid>
+    </>
+  );
+}
+
+function FollowUpsView({ dashboard, busy, feedback, onJsonForm, onReviewApproval }: DashboardViewContentProps) {
+  return (
+    <>
+      <FollowUpCadencesPanel dashboard={dashboard} busy={busy} feedback={feedback} onSubmit={onJsonForm} />
+      <DashboardGrid>
+        <UrgentApprovalsPanel dashboard={dashboard} busy={busy} onReview={onReviewApproval} />
+        <UpgradePathPanel dashboard={dashboard} />
       </DashboardGrid>
     </>
   );
