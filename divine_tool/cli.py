@@ -16,6 +16,7 @@ from .core import (
     add_income,
     approval_action_to_dict,
     auth_status,
+    cash_forecast_summary,
     create_approval_draft,
     create_account,
     create_receivable,
@@ -281,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
     recurring_template.add_argument("id", type=int)
     recurring_template.add_argument("status", choices=["active", "paused", "ended"])
     recurring_template.set_defaults(func=cmd_recurring_template_status)
+
+    forecast = sub.add_parser("forecast", help="Show evidence-based cash timing and quota-gap scenarios.")
+    forecast.add_argument("--horizon", type=int, default=90, help="Forecast horizon in days, from 1 to 365.")
+    forecast.add_argument("--date", help="Optional forecast date in YYYY-MM-DD format.")
+    forecast.add_argument("--format", choices=["text", "json"], default="text")
+    forecast.set_defaults(func=cmd_forecast)
 
     reconcile = sub.add_parser("reconcile", help="Import and review payment evidence.")
     reconcile_sub = reconcile.add_subparsers(required=True)
@@ -846,6 +853,49 @@ def cmd_recurring_run(args: argparse.Namespace, data_dir: Path) -> int:
 def cmd_recurring_template_status(args: argparse.Namespace, data_dir: Path) -> int:
     template = update_recurring_revenue_template_status(data_dir, args.id, args.status)
     print(f"Recurring template #{template['id']} marked {template['status_label']}.")
+    return 0
+
+
+def cmd_forecast(args: argparse.Namespace, data_dir: Path) -> int:
+    summary = cash_forecast_summary(
+        data_dir,
+        today=parse_date(args.date) if args.date else None,
+        horizon_days=args.horizon,
+    )
+    if args.format == "json":
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+    print(
+        f"Cash forecast through {summary['horizon_end']}: {summary['booked_income']} booked income and "
+        f"{summary['collected_cash']} collected cash this {summary['quota_period']['name']}."
+    )
+    print(
+        f"Issued outstanding: {summary['issued_outstanding']}; scheduled recurring: "
+        f"{summary['scheduled_recurring']}; booked quota gap: {summary['booked_quota_gap']}."
+    )
+    for scenario in summary["scenarios"]:
+        print(
+            f"- {scenario['label']}: {scenario['forecast_by_quota_deadline']} forecast by "
+            f"{summary['quota_period']['deadline']}; {scenario['cash_by_quota_deadline']} total cash; "
+            f"{scenario['quota_cash_gap']} cash gap; {scenario['within_horizon']} within horizon."
+        )
+    evidence = summary["evidence"]
+    print(
+        f"Timing evidence: {evidence['completed_receivable_count']} completed receivable(s), "
+        f"{evidence['clients_with_history']} client(s), expected delay "
+        f"{evidence['temple_expected_delay_days']} day(s), delayed band "
+        f"{evidence['temple_delayed_delay_days']} day(s)."
+    )
+    if summary["items"]:
+        print("Forecast items:")
+        for item in summary["items"][:20]:
+            print(
+                f"- {item['reference']} - {item['client']}: {item['amount']} {item['cash_state_label']}; "
+                f"best {item['best_on']}, expected {item['expected_on']}, delayed {item['delayed_on']} "
+                f"({item['timing_confidence']} timing confidence)."
+            )
+    else:
+        print("No issued or scheduled cash falls inside this forecast horizon.")
     return 0
 
 

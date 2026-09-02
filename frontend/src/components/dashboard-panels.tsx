@@ -8,6 +8,7 @@ import {
   BellRing,
   CalendarClock,
   CalendarRange,
+  ChartSpline,
   Check,
   CirclePause,
   CirclePlay,
@@ -41,6 +42,8 @@ import type { FormEvent } from "react";
 import type {
   ApprovalAction,
   ApprovalSummary,
+  CashForecastItem,
+  CashForecastScenario,
   ConversionSummary,
   DashboardPayload,
   ExternalSnapshot,
@@ -1257,6 +1260,192 @@ export function RecurringRevenuePanel({
       </ul>
     </section>
   );
+}
+
+export function CashForecastPanel({ dashboard }: { dashboard: DashboardPayload }) {
+  const summary = dashboard.cash_forecast;
+  if (!summary) {
+    return (
+      <section className="temple-panel mt-4 min-w-0">
+        <div className="section-heading">
+          <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+            <ChartSpline aria-hidden="true" className="text-temple-gold" size={20} />
+            Cash Forecast
+          </h2>
+          <Badge>Server update required</Badge>
+        </div>
+        <EmptyRow>Restart the web server to load the v3.5 cash forecast API.</EmptyRow>
+      </section>
+    );
+  }
+
+  return (
+    <section className="temple-panel mt-4 min-w-0">
+      <div className="section-heading">
+        <h2 className="flex min-w-0 items-center gap-2 text-lg font-black">
+          <ChartSpline aria-hidden="true" className="text-temple-gold" size={20} />
+          Cash Forecast
+        </h2>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{summary.forecast_item_count} items</Badge>
+          <Badge>Through {shortDate(summary.horizon_end)}</Badge>
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+        <MiniMetric label="Booked Income" value={summary.booked_income} />
+        <MiniMetric label="Collected Cash" value={summary.collected_cash} />
+        <MiniMetric label="Issued Outstanding" value={summary.issued_outstanding} />
+        <MiniMetric label={`Scheduled ${summary.horizon_days} Days`} value={summary.scheduled_recurring} />
+        <MiniMetric label="Expected Cash Gap" value={summary.expected_cash_gap} />
+      </div>
+
+      <p className="mt-3 text-sm leading-6 text-temple-muted">
+        Booked income is quota-ledger evidence. Collected cash is payment evidence. Forecast amounts remain separate from both until a real payment is recorded.
+      </p>
+
+      <section className="mt-5 min-w-0 border-t border-temple-line pt-5" aria-labelledby="cash-scenarios-title">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 id="cash-scenarios-title" className="text-sm font-black uppercase text-temple-muted">Collection Scenarios</h3>
+          <Badge>Quota deadline {shortDate(summary.quota_period.deadline)}</Badge>
+        </div>
+        <div className="grid gap-3 xl:grid-cols-3">
+          {summary.scenarios.map((scenario) => <CashScenario key={scenario.id} scenario={scenario} horizonDays={summary.horizon_days} />)}
+        </div>
+      </section>
+
+      <div className="mt-6 grid min-w-0 gap-6 border-t border-temple-line pt-5 xl:grid-cols-2">
+        <section className="min-w-0">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Accounting Boundary</h3>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <MiniMetric label="Booked Quota Gap" value={summary.booked_quota_gap} />
+            <MiniMetric label="Current Cash Gap" value={summary.current_cash_gap} />
+            <MiniMetric label="Booked Receivables Due" value={summary.booked_receivables_outstanding} />
+            <MiniMetric label="Unbooked Receivables Due" value={summary.unbooked_receivables_outstanding} />
+          </div>
+        </section>
+        <section className="min-w-0 xl:border-l xl:border-temple-line xl:pl-6">
+          <h3 className="mb-3 text-sm font-black uppercase text-temple-muted">Timing Evidence</h3>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <MiniMetric label="Completed Receivables" value={String(summary.evidence.completed_receivable_count)} />
+            <MiniMetric label="Clients With History" value={String(summary.evidence.clients_with_history)} />
+            <MiniMetric label="Expected Delay" value={`${summary.evidence.temple_expected_delay_days} days`} />
+            <MiniMetric label="Delayed Band" value={`${summary.evidence.temple_delayed_delay_days} days`} />
+          </div>
+          <p className="mt-3 text-sm leading-6 text-temple-muted">
+            With no client or temple history, expected timing uses {summary.evidence.default_expected_delay_days} days after due and delayed timing uses {summary.evidence.default_delayed_delay_days} days.
+          </p>
+        </section>
+      </div>
+
+      <section className="mt-6 min-w-0 border-t border-temple-line pt-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black uppercase text-temple-muted">Forecast Timeline</h3>
+          <Badge>{summary.issued_item_count} issued - {summary.scheduled_item_count} scheduled</Badge>
+        </div>
+        {summary.items.length ? (
+          <div className="divide-y divide-temple-line border-y border-temple-line">
+            {summary.items.slice(0, 30).map((item) => <CashForecastRow key={item.key} item={item} />)}
+          </div>
+        ) : (
+          <EmptyRow>No issued or scheduled cash falls inside this forecast horizon.</EmptyRow>
+        )}
+        {summary.excluded_issued_beyond_horizon_count ? (
+          <p className="mt-3 text-sm text-temple-muted">
+            {summary.excluded_issued_beyond_horizon_count} issued receivable(s) fall beyond this {summary.horizon_days}-day view.
+          </p>
+        ) : null}
+      </section>
+
+      <ul className="mt-5 grid gap-1 border-t border-temple-line pt-4 text-sm text-temple-muted sm:grid-cols-2">
+        {summary.policy.map((item) => <li key={item} className="break-words">{item}</li>)}
+      </ul>
+    </section>
+  );
+}
+
+function CashScenario({ scenario, horizonDays }: { scenario: CashForecastScenario; horizonDays: number }) {
+  return (
+    <article className={cx("temple-row grid min-w-0 gap-3 border-l-4", cashScenarioBorder(scenario.id))}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+        <strong className="break-words text-lg">{scenario.label}</strong>
+        <Badge>{scenario.quota_cash_coverage_pct}% cash coverage</Badge>
+      </div>
+      <div>
+        <span className="block text-xs font-black uppercase text-temple-muted">Cash By Quota Deadline</span>
+        <strong className="mt-1 block break-words text-2xl text-temple-text">{scenario.cash_by_quota_deadline}</strong>
+        <span className="mt-1 block text-sm leading-6 text-temple-muted">{scenario.description}</span>
+      </div>
+      <div
+        className="h-2 overflow-hidden rounded-lg bg-[#0b1120]"
+        role="progressbar"
+        aria-label={`${scenario.label} cash quota coverage`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={scenario.quota_cash_coverage_pct}
+      >
+        <div className={cx("h-full", cashScenarioFill(scenario.id))} style={{ width: `${scenario.quota_cash_coverage_pct}%` }} />
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <MiniMetric label="New Forecast Cash" value={scenario.forecast_by_quota_deadline} />
+        <MiniMetric label="Cash Quota Gap" value={scenario.quota_cash_gap} />
+        <MiniMetric label="Issued Share" value={scenario.issued_by_quota_deadline} />
+        <MiniMetric label={`${horizonDays}-Day Forecast`} value={scenario.within_horizon} />
+      </div>
+    </article>
+  );
+}
+
+function CashForecastRow({ item }: { item: CashForecastItem }) {
+  return (
+    <article className="grid min-w-0 gap-3 py-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(330px,0.85fr)] xl:items-start">
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <strong className="break-words">{item.reference} - {item.client}</strong>
+          <Badge>{item.cash_state_label}</Badge>
+          <span className={cx("text-xs font-black uppercase", cashConfidenceText(item.timing_confidence))}>
+            {item.timing_confidence_label} timing confidence
+          </span>
+        </div>
+        <span className="mt-1 block break-words text-sm text-temple-muted">
+          {item.amount} outstanding - due {shortDate(item.due_on)} - {item.state_label}
+        </span>
+        <span className="mt-1 block break-words text-sm leading-6 text-temple-muted">{item.timing_basis}</span>
+      </div>
+      <dl className="grid min-w-0 grid-cols-3 gap-2">
+        <ForecastDate label="Best" value={item.best_on} tone="text-temple-green" />
+        <ForecastDate label="Expected" value={item.expected_on} tone="text-temple-blue" />
+        <ForecastDate label="Delayed" value={item.delayed_on} tone="text-temple-gold" />
+      </dl>
+    </article>
+  );
+}
+
+function ForecastDate({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <div className="min-w-0 rounded-lg bg-white/[0.035] p-2.5 text-center">
+      <dt className="text-xs font-black uppercase text-temple-muted">{label}</dt>
+      <dd className={cx("mt-1 break-words text-sm font-black", tone)}>{shortDate(value)}</dd>
+    </div>
+  );
+}
+
+function cashScenarioBorder(scenario: CashForecastScenario["id"]) {
+  if (scenario === "best") return "border-l-temple-green";
+  if (scenario === "delayed") return "border-l-temple-gold";
+  return "border-l-temple-blue";
+}
+
+function cashScenarioFill(scenario: CashForecastScenario["id"]) {
+  if (scenario === "best") return "bg-temple-green";
+  if (scenario === "delayed") return "bg-temple-gold";
+  return "bg-temple-blue";
+}
+
+function cashConfidenceText(confidence: CashForecastItem["timing_confidence"]) {
+  if (confidence === "high") return "text-temple-green";
+  if (confidence === "medium") return "text-temple-blue";
+  return "text-temple-gold";
 }
 
 export function FollowUpCadencesPanel({

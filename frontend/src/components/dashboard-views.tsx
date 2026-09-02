@@ -7,6 +7,7 @@ import type { DashboardPayload, ExternalSnapshot, ImportResult, ReconciliationIm
 import {
   AccountRecoveryPanel,
   ApprovalQueuePanel,
+  CashForecastPanel,
   CommandAltarPanel,
   ConfigPanel,
   ExternalSignalsPanel,
@@ -68,6 +69,7 @@ export function DashboardViewContent(props: DashboardViewContentProps) {
       {props.view === "leads" ? <LeadsView {...props} /> : null}
       {props.view === "receivables" ? <ReceivablesView {...props} /> : null}
       {props.view === "recurring" ? <RecurringView {...props} /> : null}
+      {props.view === "forecast" ? <ForecastView {...props} /> : null}
       {props.view === "follow_ups" ? <FollowUpsView {...props} /> : null}
       {props.view === "reconciliation" ? <ReconciliationView {...props} /> : null}
       {props.view === "imports" ? <ImportsView {...props} /> : null}
@@ -108,7 +110,7 @@ function OverviewView({ dashboard, busy, onReviewApproval, onPulseWorker }: Dash
           icon={Gauge}
           label="Temple Level"
           value={dashboard.version}
-          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: cash forecasting"}
+          detail={dashboard.status.remaining_minor === 0 ? "Upgrade window unlocked" : "Next: approved dispatch integrations"}
         />
       </MetricGrid>
       <QuotaProgressPanel dashboard={dashboard} />
@@ -197,6 +199,10 @@ function ReceivablesView({ dashboard, busy, feedback, onJsonForm, onReceivableAc
 
 function RecurringView({ dashboard, busy, feedback, onJsonForm }: DashboardViewContentProps) {
   return <RecurringRevenuePanel dashboard={dashboard} busy={busy} feedback={feedback} onSubmit={onJsonForm} />;
+}
+
+function ForecastView({ dashboard }: DashboardViewContentProps) {
+  return <CashForecastPanel dashboard={dashboard} />;
 }
 
 function FollowUpsView({ dashboard, busy, feedback, onJsonForm, onReviewApproval }: DashboardViewContentProps) {

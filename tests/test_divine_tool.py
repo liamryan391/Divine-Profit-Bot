@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 import sqlite3
@@ -31,6 +32,7 @@ from divine_tool.core import (
     approval_queue_summary,
     auth_status,
     advance_lead,
+    cash_forecast_summary,
     create_account,
     create_approval_draft,
     create_lead,
@@ -1856,6 +1858,216 @@ class DivineToolTests(unittest.TestCase):
                     cadence="monthly",
                     start_on=today,
                 )
+
+    def test_cash_forecast_uses_completed_client_history_without_writing_ledger_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            today = date(2026, 9, 2)
+            first_due = date(2026, 7, 1)
+            for index, delay_days in enumerate((2, 4, 8), start=1):
+                due_on = first_due + timedelta(days=(index - 1) * 7)
+                receivable_id = create_receivable(
+                    data_dir,
+                    client="Reliable Client",
+                    reference=f"HISTORY-{index}",
+                    amount_minor=parse_money_to_minor("100"),
+                    issued_on=due_on - timedelta(days=14),
+                    due_on=due_on,
+                )
+                record_receivable_payment(
+                    data_dir,
+                    receivable_id,
+                    amount_minor=parse_money_to_minor("100"),
+                    occurred_on=due_on + timedelta(days=delay_days),
+                    payment_reference=f"PAID-{index}",
+                )
+
+            current_id = create_receivable(
+                data_dir,
+                client="Reliable Client",
+                reference="CURRENT-001",
+                amount_minor=parse_money_to_minor("1000"),
+                issued_on=today - timedelta(days=14),
+                due_on=today + timedelta(days=1),
+            )
+            record_receivable_payment(
+                data_dir,
+                current_id,
+                amount_minor=parse_money_to_minor("100"),
+                occurred_on=today,
+                payment_reference="PARTIAL-001",
+            )
+            with closing(connect(data_dir)) as conn:
+                before = tuple(
+                    int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    for table in ("income", "receivables", "receivable_payments")
+                )
+
+            forecast = cash_forecast_summary(data_dir, today=today)
+
+            with closing(connect(data_dir)) as conn:
+                after = tuple(
+                    int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    for table in ("income", "receivables", "receivable_payments")
+                )
+            self.assertEqual(before, after)
+            self.assertEqual(forecast["collected_cash_minor"], 10000)
+            self.assertEqual(forecast["booked_income_minor"], 0)
+            self.assertEqual(forecast["issued_outstanding_minor"], 90000)
+            self.assertEqual(forecast["evidence"]["completed_receivable_count"], 3)
+            item = next(item for item in forecast["items"] if item["reference"] == "CURRENT-001")
+            self.assertEqual(item["timing_confidence"], "high")
+            self.assertEqual(item["timing_evidence_scope"], "client")
+            self.assertEqual(item["expected_delay_days"], 4)
+            self.assertEqual(item["delayed_delay_days"], 11)
+            self.assertEqual(item["best_on"], "2026-09-03")
+            self.assertEqual(item["expected_on"], "2026-09-07")
+            self.assertEqual(item["delayed_on"], "2026-09-14")
+            scenarios = {scenario["id"]: scenario for scenario in forecast["scenarios"]}
+            self.assertEqual(scenarios["best"]["cash_by_quota_deadline_minor"], 100000)
+            self.assertEqual(scenarios["best"]["quota_cash_gap_minor"], 0)
+            self.assertEqual(scenarios["expected"]["cash_by_quota_deadline_minor"], 10000)
+            self.assertEqual(scenarios["expected"]["quota_cash_gap_minor"], 15000)
+            report = generate_report(data_dir, period_name="week", today=today)
+            self.assertIn("## Cash Forecast", report["markdown"])
+            self.assertIn("do not guarantee collection", report["markdown"])
+
+    def test_cash_forecast_separates_booked_unbooked_scheduled_and_temple_cash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            today = date(2026, 9, 2)
+            lead_id = create_lead(
+                data_dir,
+                title="Booked Service",
+                source="referral",
+                offer="implementation",
+                estimated_value_minor=parse_money_to_minor("600"),
+                probability=80,
+                stage="proposal",
+                next_action="Issue the agreed invoice",
+            )
+            record_lead_conversion(
+                data_dir,
+                lead_id,
+                amount_minor=parse_money_to_minor("600"),
+                occurred_on=today,
+            )
+            create_receivable(
+                data_dir,
+                client="Booked Client",
+                reference="BOOKED-001",
+                amount_minor=parse_money_to_minor("600"),
+                issued_on=today,
+                due_on=today + timedelta(days=2),
+                lead_id=lead_id,
+            )
+            create_receivable(
+                data_dir,
+                client="Unbooked Client",
+                reference="UNBOOKED-001",
+                amount_minor=parse_money_to_minor("300"),
+                issued_on=today,
+                due_on=today + timedelta(days=3),
+            )
+            create_recurring_revenue_template(
+                data_dir,
+                name="Final Instalment",
+                kind="instalment",
+                client="Recurring Client",
+                reference_prefix="FINAL",
+                amount_minor=parse_money_to_minor("200"),
+                cadence="monthly",
+                start_on=today + timedelta(days=2),
+                payment_terms_days=1,
+                total_occurrences=1,
+            )
+            create_temple(data_dir, "Other Temple", temple_id="other")
+            other_receivable = create_receivable(
+                data_dir,
+                client="Other Client",
+                reference="OTHER-001",
+                amount_minor=parse_money_to_minor("999"),
+                issued_on=today,
+                due_on=today + timedelta(days=1),
+                temple_id="other",
+            )
+            record_receivable_payment(
+                data_dir,
+                other_receivable,
+                amount_minor=parse_money_to_minor("999"),
+                occurred_on=today,
+                temple_id="other",
+            )
+
+            forecast = cash_forecast_summary(data_dir, today=today, temple_id="main")
+
+            self.assertEqual(forecast["booked_income_minor"], 60000)
+            self.assertEqual(forecast["booked_quota_gap_minor"], 0)
+            self.assertEqual(forecast["collected_cash_minor"], 0)
+            self.assertEqual(forecast["current_cash_gap_minor"], 25000)
+            self.assertEqual(forecast["booked_receivables_outstanding_minor"], 60000)
+            self.assertEqual(forecast["unbooked_receivables_outstanding_minor"], 30000)
+            self.assertEqual(forecast["scheduled_recurring_minor"], 20000)
+            self.assertEqual(forecast["forecast_item_count"], 3)
+            self.assertNotIn("OTHER-001", {item["reference"] for item in forecast["items"]})
+            scheduled = next(item for item in forecast["items"] if item["source_kind"] == "scheduled_recurring")
+            self.assertFalse(scheduled["issued"])
+            self.assertFalse(scheduled["booked"])
+            self.assertEqual(scheduled["timing_confidence"], "low")
+            scenarios = {scenario["id"]: scenario for scenario in forecast["scenarios"]}
+            self.assertEqual(scenarios["best"]["forecast_by_quota_deadline_minor"], 110000)
+            self.assertEqual(scenarios["best"]["scheduled_by_quota_deadline_minor"], 20000)
+            self.assertEqual(scenarios["expected"]["cash_by_quota_deadline_minor"], 0)
+            self.assertEqual(scenarios["expected"]["quota_cash_gap_minor"], 25000)
+            self.assertEqual(dashboard_payload(data_dir)["cash_forecast"]["scheduled_recurring_minor"], 20000)
+
+    def test_cash_forecast_web_api_requires_auth_and_cli_matches_core_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            create_account(data_dir, "creator", "strong-pass-123")
+            session = create_session(data_dir, "creator", "strong-pass-123")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(data_dir))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with self.assertRaises(HTTPError) as unauthenticated:
+                    urlopen(f"{base_url}/api/cash-forecast")
+                self.assertEqual(unauthenticated.exception.code, 401)
+                unauthenticated.exception.close()
+
+                headers = {"Cookie": f"divine_session={session['token']}"}
+                with urlopen(Request(f"{base_url}/api/cash-forecast?horizon=30", headers=headers)) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["cash_forecast"]["horizon_days"], 30)
+                self.assertEqual([row["id"] for row in payload["cash_forecast"]["scenarios"]], ["best", "expected", "delayed"])
+
+                with urlopen(Request(f"{base_url}/api/status", headers=headers)) as response:
+                    dashboard = json.loads(response.read().decode("utf-8"))
+                self.assertIn("cash_forecast", dashboard)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = cli_main(
+                    [
+                        "--data-dir",
+                        str(data_dir),
+                        "forecast",
+                        "--date",
+                        "2026-09-02",
+                        "--horizon",
+                        "30",
+                        "--format",
+                        "json",
+                    ]
+                )
+            self.assertEqual(exit_code, 0)
+            cli_payload = json.loads(stdout.getvalue())
+            self.assertEqual(cli_payload["horizon_days"], 30)
+            self.assertEqual(cli_payload["temple_id"], "main")
 
     def test_follow_up_cadence_is_idempotent_and_honors_client_suppression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,4 +1,17 @@
-export type DashboardView = "overview" | "temples" | "strategies" | "leads" | "receivables" | "recurring" | "follow_ups" | "reconciliation" | "imports" | "approvals" | "reports" | "settings";
+export type DashboardView =
+  | "overview"
+  | "temples"
+  | "strategies"
+  | "leads"
+  | "receivables"
+  | "recurring"
+  | "forecast"
+  | "follow_ups"
+  | "reconciliation"
+  | "imports"
+  | "approvals"
+  | "reports"
+  | "settings";
 
 export interface DashboardViewMeta {
   id: DashboardView;
@@ -47,6 +60,12 @@ export const dashboardViews: DashboardViewMeta[] = [
     summary: "Retainers, subscriptions, instalments, generation windows, expected value, and renewal risk.",
   },
   {
+    id: "forecast",
+    label: "Forecast",
+    kicker: "Cash Timing",
+    summary: "Best, expected, and delayed collection dates with evidence bands and separate booked-versus-cash quota gaps.",
+  },
+  {
     id: "follow_ups",
     label: "Follow-Ups",
     kicker: "Cadence Desk",
@@ -91,12 +110,13 @@ export const dashboardViewMeta: Record<DashboardView, DashboardViewMeta> = {
   leads: dashboardViews[3],
   receivables: dashboardViews[4],
   recurring: dashboardViews[5],
-  follow_ups: dashboardViews[6],
-  reconciliation: dashboardViews[7],
-  imports: dashboardViews[8],
-  approvals: dashboardViews[9],
-  reports: dashboardViews[10],
-  settings: dashboardViews[11],
+  forecast: dashboardViews[6],
+  follow_ups: dashboardViews[7],
+  reconciliation: dashboardViews[8],
+  imports: dashboardViews[9],
+  approvals: dashboardViews[10],
+  reports: dashboardViews[11],
+  settings: dashboardViews[12],
 };
 
 export function viewHref(view: DashboardView) {

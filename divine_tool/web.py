@@ -27,6 +27,7 @@ from .core import (
     add_lead_note,
     advance_lead,
     auth_status,
+    cash_forecast_summary,
     create_account,
     create_session,
     create_approval_draft,
@@ -253,6 +254,11 @@ def make_handler(
                     query = parse_qs(parsed.query)
                     limit = int(query.get("limit", ["60"])[0])
                     self.send_json({"recurring_revenue": recurring_revenue_summary(data_dir, limit=limit)})
+                    return
+                if parsed.path == "/api/cash-forecast":
+                    query = parse_qs(parsed.query)
+                    horizon = int(query.get("horizon", ["90"])[0])
+                    self.send_json({"cash_forecast": cash_forecast_summary(data_dir, horizon_days=horizon)})
                     return
                 if parsed.path == "/api/revenue-rules/summary":
                     self.send_json({"revenue_rules": revenue_rules_summary(data_dir)})
@@ -1126,6 +1132,7 @@ def dashboard_payload(data_dir: Path, account: dict[str, Any] | None = None) -> 
         "reconciliation": snapshot["reconciliation"],
         "follow_ups": snapshot["follow_ups"],
         "recurring_revenue": snapshot["recurring_revenue"],
+        "cash_forecast": snapshot["cash_forecast"],
         "revenue_rules": snapshot["revenue_rules"],
         "temples": snapshot["temples"],
         "auth": auth_status(data_dir) | {"account": account, "authenticated": bool(account)},

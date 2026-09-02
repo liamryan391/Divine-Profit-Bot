@@ -1,4 +1,4 @@
-import { CalendarClock, ClipboardList, FileText, Landmark, LayoutDashboard, ListChecks, LogOut, ReceiptText, Repeat2, Settings, Target, TrendingUp, Upload } from "lucide-react";
+import { CalendarClock, ChartSpline, ClipboardList, FileText, Landmark, LayoutDashboard, ListChecks, LogOut, ReceiptText, Repeat2, Settings, Target, TrendingUp, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AuthStatus, Temple, WorkerStatus } from "../types";
@@ -14,6 +14,7 @@ const navIcons: Record<DashboardView, LucideIcon> = {
   leads: Target,
   receivables: ReceiptText,
   recurring: Repeat2,
+  forecast: ChartSpline,
   follow_ups: CalendarClock,
   reconciliation: ListChecks,
   imports: Upload,

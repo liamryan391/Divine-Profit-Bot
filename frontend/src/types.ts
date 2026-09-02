@@ -514,6 +514,120 @@ export interface RecurringRevenueSummary {
   policy: string[];
 }
 
+export interface CashForecastEvidence {
+  completed_receivable_count: number;
+  clients_with_history: number;
+  temple_expected_delay_days: number;
+  temple_delayed_delay_days: number;
+  default_expected_delay_days: number;
+  default_delayed_delay_days: number;
+  observed_delay_floor_days: number;
+  observed_delay_ceiling_days: number;
+}
+
+export interface CashForecastScenario {
+  id: "best" | "expected" | "delayed";
+  label: string;
+  description: string;
+  date_field: string;
+  forecast_by_quota_deadline_minor: number;
+  forecast_by_quota_deadline: string;
+  issued_by_quota_deadline_minor: number;
+  issued_by_quota_deadline: string;
+  scheduled_by_quota_deadline_minor: number;
+  scheduled_by_quota_deadline: string;
+  cash_by_quota_deadline_minor: number;
+  cash_by_quota_deadline: string;
+  quota_cash_gap_minor: number;
+  quota_cash_gap: string;
+  quota_cash_coverage_pct: number;
+  within_30_days_minor: number;
+  within_30_days: string;
+  within_horizon_minor: number;
+  within_horizon: string;
+  item_count_by_quota_deadline: number;
+  item_count_within_horizon: number;
+}
+
+export interface CashForecastItem {
+  key: string;
+  source_kind: "issued_receivable" | "scheduled_recurring";
+  source_label: string;
+  source_id: number;
+  template_id?: number | null;
+  template_name?: string;
+  occurrence_number?: number;
+  client: string;
+  reference: string;
+  description: string;
+  cash_state: "booked_receivable" | "unbooked_receivable" | "scheduled_recurring";
+  cash_state_label: string;
+  booked: boolean;
+  issued: boolean;
+  state: string;
+  state_label: string;
+  issued_on: string;
+  scheduled_on: string;
+  due_on: string;
+  amount_minor: number;
+  amount: string;
+  paid_minor: number;
+  paid: string;
+  timing_confidence: "high" | "medium" | "low";
+  timing_confidence_label: string;
+  timing_evidence_count: number;
+  timing_evidence_scope: "client" | "temple" | "default";
+  timing_basis: string;
+  expected_delay_days: number;
+  delayed_delay_days: number;
+  best_on: string;
+  expected_on: string;
+  delayed_on: string;
+}
+
+export interface CashForecastSummary {
+  temple_id: string;
+  generated_on: string;
+  horizon_days: number;
+  horizon_end: string;
+  quota_period: {
+    name: string;
+    start: string;
+    end: string;
+    deadline: string;
+  };
+  quota_minor: number;
+  quota: string;
+  booked_income_minor: number;
+  booked_income: string;
+  booked_quota_gap_minor: number;
+  booked_quota_gap: string;
+  collected_cash_minor: number;
+  collected_cash: string;
+  current_cash_gap_minor: number;
+  current_cash_gap: string;
+  issued_outstanding_minor: number;
+  issued_outstanding: string;
+  booked_receivables_outstanding_minor: number;
+  booked_receivables_outstanding: string;
+  unbooked_receivables_outstanding_minor: number;
+  unbooked_receivables_outstanding: string;
+  scheduled_recurring_minor: number;
+  scheduled_recurring: string;
+  forecast_item_count: number;
+  issued_item_count: number;
+  scheduled_item_count: number;
+  excluded_issued_beyond_horizon_count: number;
+  expected_cash_by_quota_deadline_minor: number;
+  expected_cash_by_quota_deadline: string;
+  expected_cash_gap_minor: number;
+  expected_cash_gap: string;
+  scenarios: CashForecastScenario[];
+  items: CashForecastItem[];
+  evidence: CashForecastEvidence;
+  policy: string[];
+}
+
 export interface FollowUpCadence {
   id: number;
   temple_id: string;
@@ -880,6 +994,7 @@ export interface DashboardPayload {
   reconciliation?: ReconciliationSummary;
   follow_ups?: FollowUpSummary;
   recurring_revenue?: RecurringRevenueSummary;
+  cash_forecast?: CashForecastSummary;
   revenue_rules?: RevenueRulesSummary;
   temples: TempleSummary;
   auth: AuthStatus;

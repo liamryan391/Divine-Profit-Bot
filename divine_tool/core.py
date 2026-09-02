@@ -276,6 +276,12 @@ RECURRING_REVENUE_CADENCES = {"weekly", "monthly", "quarterly", "yearly"}
 RECURRING_REVENUE_STATUSES = {"active", "paused", "ended"}
 RECURRING_GENERATION_MAX_AHEAD_DAYS = 90
 RECURRING_GENERATION_MAX_OCCURRENCES_PER_RUN = 12
+CASH_FORECAST_DEFAULT_HORIZON_DAYS = 90
+CASH_FORECAST_MAX_HORIZON_DAYS = 365
+CASH_FORECAST_DEFAULT_DELAY_DAYS = 7
+CASH_FORECAST_DEFAULT_DELAYED_DAYS = 21
+CASH_FORECAST_HISTORY_MIN_DAYS = -30
+CASH_FORECAST_HISTORY_MAX_DAYS = 120
 RECONCILIATION_PROVIDERS = {"bank", "generic", "paypal", "square", "stripe"}
 RECONCILIATION_STATUSES = {"unmatched", "suggested", "matched", "ignored"}
 RECONCILIATION_FILTERS = RECONCILIATION_STATUSES | {"all", "review"}
@@ -5530,6 +5536,463 @@ def recurring_revenue_summary(
     }
 
 
+def rounded_median(values: list[int]) -> int:
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("Median requires at least one value.")
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return int(
+        ((Decimal(ordered[middle - 1]) + Decimal(ordered[middle])) / Decimal(2)).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+
+def upper_quartile(values: list[int]) -> int:
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("Upper quartile requires at least one value.")
+    rank = max((3 * len(ordered) + 3) // 4, 1)
+    return ordered[min(rank - 1, len(ordered) - 1)]
+
+
+def cash_forecast_client_key(client: str) -> str:
+    return " ".join(client.casefold().split())
+
+
+def cash_forecast_timing_model(
+    client: str,
+    client_history: dict[str, list[int]],
+    temple_history: list[int],
+    *,
+    source_kind: str,
+) -> dict[str, Any]:
+    client_values = client_history.get(cash_forecast_client_key(client), [])
+    if client_values:
+        evidence = client_values
+        evidence_scope = "client"
+        timing_basis = (
+            f"{len(evidence)} completed receivable(s) for this client; "
+            "observed due-date delays are capped from -30 to 120 days."
+        )
+    elif temple_history:
+        evidence = temple_history
+        evidence_scope = "temple"
+        timing_basis = (
+            f"{len(evidence)} completed receivable(s) across this temple; "
+            "observed due-date delays are capped from -30 to 120 days."
+        )
+    else:
+        evidence = []
+        evidence_scope = "default"
+        timing_basis = "No completed-payment history; uses the disclosed 7-day baseline."
+
+    if evidence:
+        expected_delay_days = max(rounded_median(evidence), 0)
+        delayed_delay_days = max(upper_quartile(evidence), expected_delay_days + 7, 0)
+    else:
+        expected_delay_days = CASH_FORECAST_DEFAULT_DELAY_DAYS
+        delayed_delay_days = CASH_FORECAST_DEFAULT_DELAYED_DAYS
+
+    if evidence_scope == "client" and len(evidence) >= 3:
+        confidence = "high"
+    elif evidence_scope == "client" or len(evidence) >= 5:
+        confidence = "medium"
+    else:
+        confidence = "low"
+    if source_kind == "scheduled_recurring" and confidence == "high":
+        confidence = "medium"
+        timing_basis += " The recurring item is not yet issued, so confidence is capped at medium."
+
+    return {
+        "timing_confidence": confidence,
+        "timing_confidence_label": title_case_from_key(confidence),
+        "timing_evidence_count": len(evidence),
+        "timing_evidence_scope": evidence_scope,
+        "timing_basis": timing_basis,
+        "expected_delay_days": expected_delay_days,
+        "delayed_delay_days": delayed_delay_days,
+    }
+
+
+def cash_forecast_dates(
+    due_on: date,
+    today: date,
+    expected_delay_days: int,
+    delayed_delay_days: int,
+) -> dict[str, str]:
+    best_on = max(today, due_on)
+    expected_on = max(best_on, due_on + timedelta(days=expected_delay_days))
+    delayed_floor = today + timedelta(days=7) if due_on < today else expected_on
+    delayed_on = max(expected_on, delayed_floor, due_on + timedelta(days=delayed_delay_days))
+    return {
+        "best_on": best_on.isoformat(),
+        "expected_on": expected_on.isoformat(),
+        "delayed_on": delayed_on.isoformat(),
+    }
+
+
+def cash_forecast_scenario(
+    scenario_id: str,
+    items: list[dict[str, Any]],
+    *,
+    today: date,
+    quota_period: Period,
+    horizon_end: date,
+    quota_minor: int,
+    collected_minor: int,
+) -> dict[str, Any]:
+    labels = {
+        "best": ("Best", "Due date, or today when already overdue."),
+        "expected": ("Expected", "Median evidence delay after the due date."),
+        "delayed": ("Delayed", "Upper evidence band with at least seven extra days."),
+    }
+    label, description = labels[scenario_id]
+    date_field = f"{scenario_id}_on"
+    window_30 = today + timedelta(days=30)
+
+    def arriving_by(item: dict[str, Any], end: date, *, exclusive: bool = False) -> bool:
+        arrival = date.fromisoformat(str(item[date_field]))
+        return today <= arrival < end if exclusive else today <= arrival <= end
+
+    quota_items = [item for item in items if arriving_by(item, quota_period.end, exclusive=True)]
+    items_30 = [item for item in items if arriving_by(item, window_30)]
+    items_horizon = [item for item in items if arriving_by(item, horizon_end)]
+    forecast_by_quota_minor = sum(int(item["amount_minor"]) for item in quota_items)
+    cash_by_quota_minor = collected_minor + forecast_by_quota_minor
+    quota_cash_gap_minor = max(quota_minor - cash_by_quota_minor, 0)
+    coverage_pct = 100.0 if quota_minor <= 0 else round(min(cash_by_quota_minor / quota_minor, 1) * 100, 1)
+    issued_by_quota_minor = sum(
+        int(item["amount_minor"])
+        for item in quota_items
+        if item["source_kind"] == "issued_receivable"
+    )
+    scheduled_by_quota_minor = forecast_by_quota_minor - issued_by_quota_minor
+    within_30_minor = sum(int(item["amount_minor"]) for item in items_30)
+    within_horizon_minor = sum(int(item["amount_minor"]) for item in items_horizon)
+    return {
+        "id": scenario_id,
+        "label": label,
+        "description": description,
+        "date_field": date_field,
+        "forecast_by_quota_deadline_minor": forecast_by_quota_minor,
+        "forecast_by_quota_deadline": format_money(forecast_by_quota_minor),
+        "issued_by_quota_deadline_minor": issued_by_quota_minor,
+        "issued_by_quota_deadline": format_money(issued_by_quota_minor),
+        "scheduled_by_quota_deadline_minor": scheduled_by_quota_minor,
+        "scheduled_by_quota_deadline": format_money(scheduled_by_quota_minor),
+        "cash_by_quota_deadline_minor": cash_by_quota_minor,
+        "cash_by_quota_deadline": format_money(cash_by_quota_minor),
+        "quota_cash_gap_minor": quota_cash_gap_minor,
+        "quota_cash_gap": format_money(quota_cash_gap_minor),
+        "quota_cash_coverage_pct": coverage_pct,
+        "within_30_days_minor": within_30_minor,
+        "within_30_days": format_money(within_30_minor),
+        "within_horizon_minor": within_horizon_minor,
+        "within_horizon": format_money(within_horizon_minor),
+        "item_count_by_quota_deadline": len(quota_items),
+        "item_count_within_horizon": len(items_horizon),
+    }
+
+
+def cash_forecast_summary(
+    data_dir: Path,
+    *,
+    today: date | None = None,
+    horizon_days: int = CASH_FORECAST_DEFAULT_HORIZON_DAYS,
+    temple_id: str | None = None,
+    report: dict[str, Any] | None = None,
+    state_ready: bool = False,
+) -> dict[str, Any]:
+    if not state_ready:
+        ensure_state(data_dir)
+    scoped_temple_id = active_temple_id_for_data_dir(data_dir, temple_id)
+    today = today or date.today()
+    horizon_days = int(horizon_days)
+    if horizon_days < 1 or horizon_days > CASH_FORECAST_MAX_HORIZON_DAYS:
+        raise DivineToolError(
+            f"Cash forecast horizon must be between 1 and {CASH_FORECAST_MAX_HORIZON_DAYS} days."
+        )
+    active_status = report if report is not None else status_report(data_dir, today, temple_id=scoped_temple_id)
+    quota_period = active_status["period"]
+    horizon_end = today + timedelta(days=horizon_days)
+
+    with db(data_dir) as conn:
+        open_rows = list(
+            conn.execute(
+                """
+                SELECT *
+                FROM receivables
+                WHERE temple_id = ? AND status != 'void' AND paid_gbp_minor < gbp_minor
+                ORDER BY due_on, id
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        history_rows = list(
+            conn.execute(
+                """
+                SELECT r.id, r.client, r.due_on, MAX(p.occurred_on) AS collected_on
+                FROM receivables r
+                JOIN receivable_payments p
+                  ON p.receivable_id = r.id AND p.temple_id = r.temple_id
+                WHERE r.temple_id = ? AND r.status != 'void'
+                  AND r.gbp_minor > 0 AND r.paid_gbp_minor >= r.gbp_minor
+                GROUP BY r.id, r.client, r.due_on
+                ORDER BY collected_on, r.id
+                """,
+                (scoped_temple_id,),
+            )
+        )
+        collected_row = conn.execute(
+            """
+            SELECT COALESCE(SUM(gbp_minor), 0) AS total
+            FROM receivable_payments
+            WHERE temple_id = ? AND date(occurred_on) >= date(?) AND date(occurred_on) < date(?)
+            """,
+            (scoped_temple_id, quota_period.start.isoformat(), quota_period.end.isoformat()),
+        ).fetchone()
+        template_rows = list(
+            conn.execute(
+                """
+                SELECT t.*, COUNT(o.id) AS generated_count,
+                       COALESCE(MAX(o.occurrence_number), 0) AS last_occurrence_number,
+                       COALESCE(SUM(r.gbp_minor), 0) AS generated_value_minor
+                FROM recurring_revenue_templates t
+                LEFT JOIN recurring_receivable_occurrences o ON o.template_id = t.id
+                LEFT JOIN receivables r ON r.id = o.receivable_id AND r.temple_id = o.temple_id
+                WHERE t.temple_id = ?
+                GROUP BY t.id
+                ORDER BY t.id
+                """,
+                (scoped_temple_id,),
+            )
+        )
+
+    temple_history: list[int] = []
+    client_history: dict[str, list[int]] = {}
+    for row in history_rows:
+        observed_delay = (
+            date.fromisoformat(str(row["collected_on"])) - date.fromisoformat(str(row["due_on"]))
+        ).days
+        bounded_delay = max(
+            min(observed_delay, CASH_FORECAST_HISTORY_MAX_DAYS),
+            CASH_FORECAST_HISTORY_MIN_DAYS,
+        )
+        temple_history.append(bounded_delay)
+        client_history.setdefault(cash_forecast_client_key(str(row["client"])), []).append(bounded_delay)
+
+    forecast_items: list[dict[str, Any]] = []
+    issued_outstanding_minor = 0
+    booked_outstanding_minor = 0
+    unbooked_outstanding_minor = 0
+    excluded_issued_count = 0
+    for row in open_rows:
+        receivable = receivable_to_dict(row, today=today)
+        outstanding_minor = int(receivable["outstanding_gbp_minor"])
+        issued_outstanding_minor += outstanding_minor
+        if receivable["already_counted"]:
+            booked_outstanding_minor += outstanding_minor
+        else:
+            unbooked_outstanding_minor += outstanding_minor
+        due_on = date.fromisoformat(str(receivable["due_on"]))
+        model = cash_forecast_timing_model(
+            str(receivable["client"]),
+            client_history,
+            temple_history,
+            source_kind="issued_receivable",
+        )
+        dates = cash_forecast_dates(
+            due_on,
+            today,
+            int(model["expected_delay_days"]),
+            int(model["delayed_delay_days"]),
+        )
+        if date.fromisoformat(dates["best_on"]) > horizon_end:
+            excluded_issued_count += 1
+            continue
+        forecast_items.append(
+            {
+                "key": f"receivable-{receivable['id']}",
+                "source_kind": "issued_receivable",
+                "source_label": "Issued Receivable",
+                "source_id": int(receivable["id"]),
+                "template_id": receivable.get("recurring_template_id"),
+                "client": str(receivable["client"]),
+                "reference": str(receivable["reference"]),
+                "description": str(receivable.get("description") or ""),
+                "cash_state": "booked_receivable" if receivable["already_counted"] else "unbooked_receivable",
+                "cash_state_label": "Booked Receivable" if receivable["already_counted"] else "Unbooked Receivable",
+                "booked": bool(receivable["already_counted"]),
+                "issued": True,
+                "state": str(receivable["state"]),
+                "state_label": str(receivable["state_label"]),
+                "issued_on": str(receivable["issued_on"]),
+                "scheduled_on": str(receivable.get("recurring_scheduled_on") or ""),
+                "due_on": due_on.isoformat(),
+                "amount_minor": outstanding_minor,
+                "amount": format_money(outstanding_minor),
+                "paid_minor": int(receivable["paid_gbp_minor"]),
+                "paid": str(receivable["paid"]),
+            }
+            | model
+            | dates
+        )
+
+    scheduled_total_minor = 0
+    scheduled_item_count = 0
+    for template_row in template_rows:
+        template = recurring_template_to_dict(template_row, today=today)
+        for scheduled in recurring_expected_schedule(template, today=today, horizon=horizon_end):
+            due_on = date.fromisoformat(str(scheduled["scheduled_on"])) + timedelta(
+                days=int(template["payment_terms_days"])
+            )
+            if due_on > horizon_end:
+                continue
+            model = cash_forecast_timing_model(
+                str(scheduled["client"]),
+                client_history,
+                temple_history,
+                source_kind="scheduled_recurring",
+            )
+            dates = cash_forecast_dates(
+                due_on,
+                today,
+                int(model["expected_delay_days"]),
+                int(model["delayed_delay_days"]),
+            )
+            amount_minor = int(scheduled["gbp_minor"])
+            scheduled_total_minor += amount_minor
+            scheduled_item_count += 1
+            forecast_items.append(
+                {
+                    "key": f"recurring-{scheduled['template_id']}-{scheduled['occurrence_number']}",
+                    "source_kind": "scheduled_recurring",
+                    "source_label": "Scheduled Recurring",
+                    "source_id": int(scheduled["occurrence_number"]),
+                    "template_id": int(scheduled["template_id"]),
+                    "client": str(scheduled["client"]),
+                    "reference": recurring_generated_reference(
+                        template,
+                        int(scheduled["occurrence_number"]),
+                        date.fromisoformat(str(scheduled["scheduled_on"])),
+                    ),
+                    "description": str(template.get("description") or template["name"]),
+                    "cash_state": "scheduled_recurring",
+                    "cash_state_label": "Scheduled Recurring",
+                    "booked": False,
+                    "issued": False,
+                    "state": "scheduled",
+                    "state_label": "Scheduled",
+                    "issued_on": "",
+                    "scheduled_on": str(scheduled["scheduled_on"]),
+                    "due_on": due_on.isoformat(),
+                    "amount_minor": amount_minor,
+                    "amount": format_money(amount_minor),
+                    "paid_minor": 0,
+                    "paid": format_money(0),
+                    "template_name": str(scheduled["template_name"]),
+                    "occurrence_number": int(scheduled["occurrence_number"]),
+                }
+                | model
+                | dates
+            )
+
+    forecast_items.sort(
+        key=lambda item: (
+            str(item["expected_on"]),
+            0 if item["source_kind"] == "issued_receivable" else 1,
+            -int(item["amount_minor"]),
+            str(item["key"]),
+        )
+    )
+    collected_minor = int(collected_row["total"])
+    quota_minor = int(active_status["quota_minor"])
+    booked_income_minor = int(active_status["earned_minor"])
+    booked_gap_minor = max(quota_minor - booked_income_minor, 0)
+    current_cash_gap_minor = max(quota_minor - collected_minor, 0)
+    scenarios = [
+        cash_forecast_scenario(
+            scenario_id,
+            forecast_items,
+            today=today,
+            quota_period=quota_period,
+            horizon_end=horizon_end,
+            quota_minor=quota_minor,
+            collected_minor=collected_minor,
+        )
+        for scenario_id in ("best", "expected", "delayed")
+    ]
+    expected_scenario = scenarios[1]
+    expected_delay = max(rounded_median(temple_history), 0) if temple_history else CASH_FORECAST_DEFAULT_DELAY_DAYS
+    delayed_delay = (
+        max(upper_quartile(temple_history), expected_delay + 7, 0)
+        if temple_history
+        else CASH_FORECAST_DEFAULT_DELAYED_DAYS
+    )
+    quota_deadline = quota_period.end - timedelta(days=1)
+    return {
+        "temple_id": scoped_temple_id,
+        "generated_on": today.isoformat(),
+        "horizon_days": horizon_days,
+        "horizon_end": horizon_end.isoformat(),
+        "quota_period": {
+            "name": quota_period.name,
+            "start": quota_period.start.isoformat(),
+            "end": quota_period.end.isoformat(),
+            "deadline": quota_deadline.isoformat(),
+        },
+        "quota_minor": quota_minor,
+        "quota": format_money(quota_minor),
+        "booked_income_minor": booked_income_minor,
+        "booked_income": format_money(booked_income_minor),
+        "booked_quota_gap_minor": booked_gap_minor,
+        "booked_quota_gap": format_money(booked_gap_minor),
+        "collected_cash_minor": collected_minor,
+        "collected_cash": format_money(collected_minor),
+        "current_cash_gap_minor": current_cash_gap_minor,
+        "current_cash_gap": format_money(current_cash_gap_minor),
+        "issued_outstanding_minor": issued_outstanding_minor,
+        "issued_outstanding": format_money(issued_outstanding_minor),
+        "booked_receivables_outstanding_minor": booked_outstanding_minor,
+        "booked_receivables_outstanding": format_money(booked_outstanding_minor),
+        "unbooked_receivables_outstanding_minor": unbooked_outstanding_minor,
+        "unbooked_receivables_outstanding": format_money(unbooked_outstanding_minor),
+        "scheduled_recurring_minor": scheduled_total_minor,
+        "scheduled_recurring": format_money(scheduled_total_minor),
+        "forecast_item_count": len(forecast_items),
+        "issued_item_count": sum(1 for item in forecast_items if item["source_kind"] == "issued_receivable"),
+        "scheduled_item_count": scheduled_item_count,
+        "excluded_issued_beyond_horizon_count": excluded_issued_count,
+        "expected_cash_by_quota_deadline_minor": int(expected_scenario["cash_by_quota_deadline_minor"]),
+        "expected_cash_by_quota_deadline": str(expected_scenario["cash_by_quota_deadline"]),
+        "expected_cash_gap_minor": int(expected_scenario["quota_cash_gap_minor"]),
+        "expected_cash_gap": str(expected_scenario["quota_cash_gap"]),
+        "scenarios": scenarios,
+        "items": forecast_items,
+        "evidence": {
+            "completed_receivable_count": len(temple_history),
+            "clients_with_history": len(client_history),
+            "temple_expected_delay_days": expected_delay,
+            "temple_delayed_delay_days": delayed_delay,
+            "default_expected_delay_days": CASH_FORECAST_DEFAULT_DELAY_DAYS,
+            "default_delayed_delay_days": CASH_FORECAST_DEFAULT_DELAYED_DAYS,
+            "observed_delay_floor_days": CASH_FORECAST_HISTORY_MIN_DAYS,
+            "observed_delay_ceiling_days": CASH_FORECAST_HISTORY_MAX_DAYS,
+        },
+        "policy": [
+            "Forecast dates are estimates from due dates and completed-payment timing; they do not guarantee collection.",
+            "Timing confidence describes the evidence behind a date, not the probability that a client will pay.",
+            "Booked income comes from the income ledger; collected cash comes only from recorded receivable payments.",
+            "Outstanding and scheduled amounts remain forecasts and never mark a receivable paid or increase quota income.",
+            "Scheduled recurring items are unissued and unbooked; generated receivables are shown once as issued items.",
+        ],
+    }
+
+
 def update_recurring_revenue_template_status(
     data_dir: Path,
     template_id: int,
@@ -8223,11 +8686,11 @@ def generate_upgrades(
     report = report if report is not None else status_report(data_dir, today, temple_id=temple_id)
     if report["remaining_minor"] == 0:
         return [
-            "Forecast expected cash dates from open receivables and historical payment timing.",
-            "Compare best, expected, and delayed collection scenarios without treating forecasts as cash.",
-            "Measure the quota gap against both booked recurring value and collected income.",
-            "Review renewal-risk templates before their notice windows close.",
-            "Tune generation lead windows using actual invoicing and collection timing.",
+            "Connect one narrow approved-message adapter with revocable credentials.",
+            "Require an explicit human dispatch action for every approved reminder.",
+            "Record provider delivery receipts without treating delivery as payment evidence.",
+            "Retry only transient delivery failures and preserve the complete audit trail.",
+            "Keep bulk unsolicited outreach and autonomous sending blocked.",
         ]
     return [
         "Quota is not satisfied yet, so upgrades stay focused on revenue recovery.",
@@ -8293,6 +8756,13 @@ def generate_report(
         limit=25,
         today=today,
         temple_id=scoped_temple_id,
+        state_ready=True,
+    )
+    cash_forecast = cash_forecast_summary(
+        data_dir,
+        today=today,
+        temple_id=scoped_temple_id,
+        report=active_status,
         state_ready=True,
     )
     strategy_names = {
@@ -8362,6 +8832,7 @@ def generate_report(
         "reconciliation": reconciliation,
         "follow_ups": follow_ups,
         "recurring_revenue": recurring_revenue,
+        "cash_forecast": cash_forecast,
         "revenue_rules": revenue_rules,
         "opportunities": opportunities[:5],
         "upgrade_recommendations": upgrades,
@@ -8431,6 +8902,13 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         temple_id=active_temple_id,
         state_ready=True,
     )
+    cash_forecast = cash_forecast_summary(
+        data_dir,
+        today=snapshot_date,
+        temple_id=active_temple_id,
+        report=status,
+        state_ready=True,
+    )
     strategy_names = {
         str(channel.get("id") or slugify(str(channel.get("name", "Revenue channel")))): str(
             channel.get("name", "Revenue channel")
@@ -8494,6 +8972,7 @@ def dashboard_snapshot(data_dir: Path, today: date | None = None) -> dict[str, A
         "reconciliation": reconciliation,
         "follow_ups": follow_ups,
         "recurring_revenue": recurring_revenue,
+        "cash_forecast": cash_forecast,
         "revenue_rules": revenue_rules,
         "temples": temples,
     }
@@ -8663,6 +9142,37 @@ def format_report_markdown(report: dict[str, Any]) -> str:
         lines.append("- No recurring templates are inside their renewal notice window.")
     else:
         lines.append("- No recurring revenue templates have been created.")
+
+    forecast = report["cash_forecast"]
+    evidence = forecast["evidence"]
+    lines.extend(["", "## Cash Forecast", ""])
+    lines.append(
+        f"- Actual booked income this quota period: {forecast['booked_income']}; "
+        f"actual collected receivable cash: {forecast['collected_cash']}."
+    )
+    lines.append(
+        f"- Issued outstanding: {forecast['issued_outstanding']} "
+        f"({forecast['booked_receivables_outstanding']} already booked and "
+        f"{forecast['unbooked_receivables_outstanding']} unbooked); "
+        f"scheduled recurring within {forecast['horizon_days']} days: {forecast['scheduled_recurring']}."
+    )
+    for scenario in forecast["scenarios"]:
+        lines.append(
+            f"- {scenario['label']} scenario: {scenario['forecast_by_quota_deadline']} forecast to arrive by "
+            f"{forecast['quota_period']['deadline']}; {scenario['cash_by_quota_deadline']} total period cash, "
+            f"{scenario['quota_cash_gap']} cash gap, and {scenario['within_horizon']} forecast within "
+            f"{forecast['horizon_days']} days."
+        )
+    lines.append(
+        f"- Timing evidence: {evidence['completed_receivable_count']} completed receivable(s) across "
+        f"{evidence['clients_with_history']} client(s); temple expected delay "
+        f"{evidence['temple_expected_delay_days']} day(s), delayed band "
+        f"{evidence['temple_delayed_delay_days']} day(s)."
+    )
+    lines.append(
+        "- Forecasts are estimates only. They do not guarantee collection, mark receivables paid, "
+        "or increase quota income."
+    )
 
     reconciliation = report["reconciliation"]
     lines.extend(["", "## Payment Reconciliation", ""])

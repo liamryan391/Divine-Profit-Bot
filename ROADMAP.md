@@ -34,10 +34,11 @@ This roadmap defines how the project moves from the current command-line foundat
 - `v3.2.0`: Phase 6 Payment Reconciliation with read-only transaction evidence, explainable matching, human confirmation, and audit history.
 - `v3.3.0`: Phase 6 Follow-Up Cadences with configurable schedules, contact suppression, approval-gated drafts, and collection outcomes.
 - `v3.4.0`: Phase 6 Retainers And Recurring Revenue with controlled receivable generation, lifecycle controls, expected value, and renewal risk.
+- `v3.5.0`: Phase 6 Cash Forecasting with evidence-based timing bands, collection scenarios, and separate booked-income and collected-cash quota gaps.
 
 ## Current Status
 
-Current version: `v3.4.0`.
+Current version: `v3.5.0`.
 
 Completed:
 
@@ -102,6 +103,7 @@ Completed:
 - Phase 6 Stage 6.2: shipped read-only payment evidence imports, explainable receivable matching, explicit income treatment, idempotent confirmation, authenticated UI/API/CLI controls, and complete batch/decision audit history.
 - Phase 6 Stage 6.3: shipped configurable follow-up cadences, client suppression, approval-gated drafts, durable reminder history, and collection outcomes.
 - Phase 6 Stage 6.4: shipped recurring templates for retainers, subscriptions, and instalments with bounded idempotent generation, pause/end controls, expected recurring value, and renewal-risk visibility.
+- Phase 6 Stage 6.5: shipped read-only cash forecasting from due dates and completed-payment timing, with best, expected, and delayed scenarios plus explicit booked-versus-collected quota gaps.
 
 ## Phase 0: Foundation
 
@@ -443,7 +445,7 @@ Sequencing rule:
 - Roadmap 2.0 reached its completion gate before Phase 5 resumed.
 - Phase 5 Stages 5.1 through 5.3 are now shipped.
 - Backend Roadmap 3.0 resolved the Phase 5 operational blockers and passed its release gate; Phase 6 is now unblocked.
-- Phase 6 is active; Stages 6.1 through 6.4 are shipped, and Stage 6.5 is next.
+- Phase 6 is active; Stages 6.1 through 6.5 are shipped, and Stage 6.6 is next.
 
 ### Stage 2.0.1: React Frontend Foundation
 
@@ -918,7 +920,7 @@ Evidence collected on 1 September 2026:
 
 ### Stage 6.5: Cash Forecasting
 
-Status: planned.
+Status: complete.
 
 Deliverables:
 
@@ -927,6 +929,18 @@ Deliverables:
 - Quota-gap forecasts that distinguish booked revenue from collected cash.
 
 Release target: `v3.5.0`.
+
+Release status: shipped.
+
+Evidence collected on 2 September 2026:
+
+- Forecasts are computed read-only from open receivables, completed-payment dates, ungenerated recurring schedules, and the active temple quota period; schema v11 remains unchanged.
+- Each forecast item shows best, expected, and delayed cash dates. Expected timing uses the client median when available, temple evidence otherwise, and a disclosed seven-day baseline when no completed history exists.
+- Delayed timing uses the upper evidence band with an additional buffer. Observed due-date delays are capped from 30 days early to 120 days late, and qualitative confidence states the evidence scope and sample count.
+- Booked income, recorded receivable cash, booked receivable balances, unbooked receivable balances, and unissued recurring schedules remain separate. Forecast amounts never mark an invoice paid or increase quota income.
+- Dashboard, authenticated API, CLI, and generated reports expose matching best, expected, and delayed quota-deadline scenarios plus 30-day and 90-day cash visibility.
+- All 51 automated tests pass, including client-history timing, partial-payment balances, no-write assertions, booked-versus-collected separation, recurring schedule treatment, temple isolation, authenticated API access, CLI output, and the existing migration, concurrency, recovery, and accounting regressions.
+- Production frontend build, static QA, Python compilation, Docker Compose validation, schema-v11 preflight, integrity checks, and authenticated desktop/mobile visual review pass across all 13 routes with a clean browser console.
 
 ### Stage 6.6: Human-Approved Dispatch Integrations
 
@@ -996,12 +1010,15 @@ The tool is fully operational for protected local use when the Creator can:
 - Generate due recurring receivables without duplicate occurrences or autonomous charges.
 - Pause, resume, or permanently end recurring schedules while preserving history.
 - Review normalized recurring value, upcoming billing, and renewal risk without treating expected revenue as collected cash.
+- Compare best, expected, and delayed cash dates with visible evidence and confidence bands.
+- Review booked-income and collected-cash quota gaps separately without writing forecast values into the ledger.
+- Include issued receivables and unissued recurring schedules once each in a temple-scoped 90-day cash view.
 
 ## Recommended Next Build Step
 
-Build Phase 6 Stage 6.5: Cash Forecasting.
+Build Phase 6 Stage 6.6: Human-Approved Dispatch Integrations.
 
-- Estimate expected cash dates from due dates, payment history, and explicit confidence bands.
-- Show best, expected, and delayed collection scenarios.
-- Forecast quota gaps while distinguishing booked revenue, generated receivables, and collected cash.
-- Preserve explainable assumptions and temple-scoped accounting evidence.
+- Add one narrow email or messaging adapter for explicitly approved reminder drafts.
+- Isolate credentials and support immediate revocation without storing secrets in SQLite or config files.
+- Record delivery receipts and bounded retry outcomes without treating delivery as payment evidence.
+- Keep bulk unsolicited outreach and autonomous sending blocked.

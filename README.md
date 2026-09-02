@@ -4,7 +4,7 @@ Divine Tool is a local hybrid web app and daemon worker. It tracks a weekly or m
 
 It does not perform fraud, spam, unauthorized access, market manipulation, or autonomous real-money trading. It is built to help the Creator pursue legitimate revenue and decide what to upgrade next.
 
-Current release: `v3.4.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
+Current release: `v3.5.0`. See [ROADMAP.md](ROADMAP.md) for phases, stages, and release gates.
 
 ## Quick Start
 
@@ -50,6 +50,7 @@ python -m divine_tool recurring create "Support Retainer" "Client Ltd" CLIENT-SU
 python -m divine_tool recurring status
 python -m divine_tool recurring run
 python -m divine_tool recurring template 1 paused
+python -m divine_tool forecast
 python -m divine_tool account status
 python -m divine_tool deploy preflight
 python -m divine_tool upgrade
@@ -138,7 +139,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Hosted deployment preflight, container packaging, health checks, daemon service configuration, and state backups.
 - Multi-temple profiles with separate quotas, moods, strategy templates, scoped income, and cross-temple rollups.
 - Componentized React layout shell with shared cards, panels, fields, buttons, badges, toolbars, and dashboard sections.
-- Hash-based navigation for overview, temples, strategies, leads, receivables, recurring revenue, follow-ups, reconciliation, imports, approvals, reports, and settings views.
+- Hash-based navigation for overview, temples, strategies, leads, receivables, recurring revenue, cash forecasting, follow-ups, reconciliation, imports, approvals, reports, and settings views.
 - Workflow form validation, inline feedback notices, loading states, and safer confirmation prompts.
 - Responsive layout and accessibility pass with skip navigation, visible focus states, live worker/status regions, semantic quota progress, reduced-motion support, and overflow-safe dense rows.
 - Lead Pipeline board with lead intake, weighted value, stage movement, due follow-ups, and priority scoring tied to quota gap and strategy evidence.
@@ -149,6 +150,7 @@ The local web app is now a React, TypeScript, and Tailwind CSS dashboard served 
 - Payment Reconciliation for read-only bank/provider CSV evidence, explainable receivable suggestions, explicit confirmation or ignore decisions, duplicate protection, and a complete batch/decision audit trail.
 - Follow-Up Cadences for configurable due-soon and overdue schedules, client pause and do-not-contact safeguards, approval-gated drafts, durable reminder history, and collection outcome measurements.
 - Retainers And Recurring Revenue for temple-scoped retainers, subscriptions, and finite instalments with bounded receivable generation, pause/resume/end controls, expected billing, and renewal risk.
+- Cash Forecasting for evidence-based best, expected, and delayed collection dates, timing confidence, and separate booked-income and collected-cash quota gaps.
 - Daemon rule evaluation history with per-temple pause and retire controls; rules never execute payments or external actions.
 - Bounded API bodies, persistent login throttling, auditable failed sign-ins, redacted server errors, strict hosted origins, CSRF checks, hardened cookies, and trusted-proxy HTTPS enforcement.
 - Unified worker cycles with structured command, rule, approval, duration, and failure outcomes across daemon, CLI, and browser runs.
@@ -221,6 +223,20 @@ python -m divine_tool recurring template 1 ended
 
 Core API routes are `GET /api/recurring-revenue`, `POST /api/recurring-revenue/templates`, `POST /api/recurring-revenue/run`, and `POST /api/recurring-revenue/templates/{id}/status`. Dashboard and report summaries distinguish normalized monthly recurring value, expected 30-day and 90-day billings, finite remaining value, generated receivables, and renewal risk from collected cash.
 
+## Cash Forecasting
+
+Stage 6.5 computes a read-only cash forecast from open receivable due dates, completed-payment timing, and future recurring schedules. Client history is preferred, temple-wide history is the fallback, and a disclosed seven-day expected delay is used when no completed-payment evidence exists. The delayed band uses upper timing evidence plus a buffer; observed delays are capped from 30 days early to 120 days late so one extreme payment cannot dominate the forecast.
+
+Every item shows best, expected, and delayed dates plus a qualitative timing-confidence label and its evidence basis. Confidence describes the support for the date estimate, not whether a client will pay. Generated receivables appear once as issued balances, while future recurring occurrences remain explicitly unissued and unbooked.
+
+```powershell
+python -m divine_tool forecast
+python -m divine_tool forecast --horizon 30
+python -m divine_tool forecast --format json
+```
+
+The protected API route is `GET /api/cash-forecast?horizon=90`, and the dashboard route is `#/forecast`. Forecast calculations never create income, payments, receivables, or recurring occurrences. Booked quota progress continues to come from the income ledger, while collected cash comes only from recorded receivable payments.
+
 ## Database Reliability
 
 Every application connection uses SQLite WAL mode, enforces foreign keys, and waits up to 10 seconds for a contested write lock. This lets the threaded web server and daemon share the same state database without failing immediately during short overlapping writes.
@@ -239,7 +255,7 @@ Each new archive carries file sizes and SHA-256 checksums. The backup command re
 
 ## Dashboard Performance
 
-The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, recurring revenue, reconciliation, follow-up cadences, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
+The dashboard loads one request-scoped snapshot on startup and after successful mutations. Quota status, opportunities, ROI, lead scoring, conversions, receivables, recurring revenue, cash forecasting, reconciliation, follow-up cadences, revenue rules, and temple rollups reuse the same snapshot inputs instead of recursively rebuilding each other.
 
 The 10-second browser poll calls only `GET /api/worker/status`. Full weekly and monthly reports are generated only through `GET /api/report?period=week|month` when requested.
 
@@ -265,6 +281,8 @@ Stage 6.2 release `v3.2.0` passes all 42 automated tests, including exact and am
 Stage 6.3 release `v3.3.0` passes all 45 automated tests, including cadence idempotency, suppression release, approval gating, payment-linked outcomes, stale-draft cancellation, reporting, and authenticated API coverage. The production dashboard build and static QA pass against schema v10; deployment and visual evidence are recorded in the Stage 6.3 roadmap gate.
 
 Stage 6.4 release `v3.4.0` passes all 48 automated tests, including month-end anchoring, bounded and concurrent idempotent generation, lifecycle controls, expected-value and renewal-risk visibility, authenticated API operations, worker parity, and explicit no-payment/no-income assertions. Production build, static QA, Python compilation, Docker Compose validation, schema-v11 preflight, integrity checks, and authenticated desktop/mobile review pass; all 12 routes remain overflow-free at 390 x 844 with a clean browser console.
+
+Stage 6.5 release `v3.5.0` passes all 51 automated tests, including historical timing bands, partial-payment balances, no-write guarantees, booked-versus-collected accounting, recurring-schedule treatment, temple isolation, authenticated API access, and CLI/report parity. Production build, static QA, Python compilation, Docker Compose validation, schema-v11 preflight, integrity checks, and authenticated desktop/mobile review pass; all 13 routes remain overflow-free at 390 x 844 with a clean browser console.
 
 ## Worker Operations
 
@@ -332,7 +350,7 @@ Run the static frontend QA check after a build:
 npm run qa:static
 ```
 
-The QA check verifies the generated HTML, CSS, and JS asset references, responsive/accessibility hooks, and the Lead, Receivables, and Reconciliation workflows.
+The QA check verifies the generated HTML, CSS, and JS asset references, responsive/accessibility hooks, and the Lead, Receivables, Recurring, Forecast, Follow-Up, and Reconciliation workflows.
 
 ## Lead Pipeline
 
